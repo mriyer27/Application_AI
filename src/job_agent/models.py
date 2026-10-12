@@ -147,7 +147,7 @@ ALLOWED_TRANSITIONS: dict[PipelineState, frozenset[PipelineState]] = {
     _S.DISCOVERED: frozenset({_S.SCORED, _S.FILTERED_OUT, _S.CLOSED}),
     _S.SCORED: frozenset({_S.SCORED, _S.SHORTLISTED, _S.FILTERED_OUT, _S.CLOSED}),
     _S.SHORTLISTED: frozenset({_S.SCORED, _S.FILTERED_OUT, _S.CLOSED}),
-    _S.FILTERED_OUT: frozenset({_S.SCORED, _S.SHORTLISTED, _S.CLOSED}),
+    _S.FILTERED_OUT: frozenset({_S.DISCOVERED, _S.SCORED, _S.SHORTLISTED, _S.CLOSED}),  # DISCOVERED: re-filter
     _S.DOCUMENTS_PENDING: frozenset(
         {_S.DOCUMENTS_READY, _S.FAILED, _S.NEEDS_MANUAL_ACTION, _S.WITHDRAWN, _S.CLOSED}
     ),

@@ -94,6 +94,7 @@ def test_material_change_is_recorded_and_scored_state_is_kept(db):
 
 def test_changed_listing_that_now_fails_filters_moves_to_filtered_out(db):
     out = upsert(db, nj())
+    repo.set_job_state(db, out.job_id, PipelineState.SCORED, actor="system")
     repo.set_job_state(db, out.job_id, PipelineState.SHORTLISTED, actor="system")
     upsert(db, nj(description_text=DESC + " Requires 6+ years of experience."),
            failing("experience_years", "requires 6+ years"), now=LATER)
@@ -103,6 +104,7 @@ def test_changed_listing_that_now_fails_filters_moves_to_filtered_out(db):
 
 def test_changed_listing_with_application_keeps_state(db):
     out = upsert(db, nj())
+    repo.set_job_state(db, out.job_id, PipelineState.SCORED, actor="system")
     repo.set_job_state(db, out.job_id, PipelineState.SHORTLISTED, actor="system")
     repo.create_application(db, out.job_id, actor="user")
     res = upsert(db, nj(location="Austin, TX"), failing(), now=LATER)
@@ -111,11 +113,12 @@ def test_changed_listing_with_application_keeps_state(db):
     assert "application exists" in jr.job_changes(db, out.job_id)[-1]["summary"]
 
 
-def test_filtered_out_listing_that_now_passes_is_noted_not_forced(db):
+def test_filtered_out_listing_that_now_passes_is_rediscovered(db):
     out = upsert(db, nj(location="Austin, TX"), failing())
     res = upsert(db, nj(location="New York, NY"), ok(), now=LATER)
-    assert res.status == "updated" and "not an allowed transition" in res.note
-    assert row(db, out.job_id)["pipeline_state"] == "filtered_out"
+    assert res.status == "updated"
+    r = row(db, out.job_id)
+    assert r["pipeline_state"] == "discovered" and r["filter_reason"] is None
 
 
 def test_cross_source_duplicate_by_url_is_stored_as_duplicate_and_idempotent(db):
@@ -160,10 +163,24 @@ def test_same_title_different_location_or_requisition_are_distinct(db):
                    requisition_id="R-2")
     assert upsert(db, other_city).status == "new"
     assert upsert(db, other_req).status == "new"
-    # Same source key, same requisition, different city: distinct postings.
+
+
+def test_same_board_same_requisition_different_city_are_distinct(db):
+    # Greenhouse posts one listing per city under one requisition: distinct postings.
+    upsert(db, nj(requisition_id="R-1"))
     same_board = nj(external_id="1002", requisition_id="R-1", location="Houston, TX",
                     job_url="https://job-boards.greenhouse.io/example/jobs/1002")
     assert upsert(db, same_board).status == "new"
+    # The same position from *another* source in a third city is not merged either.
+    other = nj(source_name="lever", source_identifier="example", external_id="x9", job_url=None,
+               requisition_id="R-1", location="Dallas, TX")
+    assert upsert(db, other).status == "new"
+
+
+def test_new_version_of_normalizer_updates_quietly(db):
+    out = upsert(db, nj(raw_metadata={"normalizer_version": 0}))
+    res = upsert(db, nj(salary_min=1.0, raw_metadata={"normalizer_version": jr.NORMALIZER_VERSION}), now=LATER)
+    assert res.status == "updated" and changes(db, out.job_id) == []
 
 
 def test_cross_source_requisition_match_is_duplicate(db):

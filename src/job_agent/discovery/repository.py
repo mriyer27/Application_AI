@@ -423,8 +423,10 @@ def _update_existing(db: Database, row: sqlite3.Row, fields: dict[str, Any], new
         return outcome
 
     # Material change.
-    old_meta = from_json(row["raw_metadata"], {})
-    upgrade_only = old_meta.get("normalizer_version") != NORMALIZER_VERSION
+    old_version = from_json(row["raw_metadata"], {}).get("normalizer_version")
+    new_version = from_json(fields["raw_metadata"], {}).get("normalizer_version")
+    # Re-derived by a newer normalizer (e.g. better salary parsing): update quietly, no "change" record.
+    upgrade_only = old_version is not None and new_version == NORMALIZER_VERSION and old_version != new_version
     changed = _changed_fields(row, fields)
     values = {**fields, **updates, "content_hash": new_hash, "last_changed_at": now}
     if row["duplicate_of_job_id"] is None and _url_taken_by_other(db, fields["job_url_canonical"], row["id"]):

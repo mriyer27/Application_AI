@@ -24,10 +24,10 @@ class LeverAdapter:
     name = "lever"
     is_mock = False
 
-    def __init__(self, http: PoliteHttpClient, *, max_pages: int, page_size: int = DEFAULT_PAGE_SIZE) -> None:
+    def __init__(self, http: PoliteHttpClient, *, max_pages: int, page_size: int | None = None) -> None:
         self.http = http
         self.max_pages = max_pages
-        self.page_size = page_size
+        self.page_size = page_size or DEFAULT_PAGE_SIZE
 
     def _url(self, company: str) -> str:
         return f"{API_BASE}/{quote(company, safe='')}"

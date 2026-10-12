@@ -35,7 +35,8 @@ class AshbyAdapter:
         jobs = data.get("jobs") if isinstance(data, dict) else None
         if not isinstance(jobs, list):
             raise PermanentError(f"ashby:{identifier}: unexpected response shape")
-        return f"reachable; {len(jobs)} listed job(s)"
+        listed = [j for j in jobs if not (isinstance(j, dict) and j.get("isListed") is False)]
+        return f"reachable; {len(listed)} listed job(s)"
 
     def fetch(self, identifier: str) -> FetchResult:
         result = FetchResult(self.name, identifier)

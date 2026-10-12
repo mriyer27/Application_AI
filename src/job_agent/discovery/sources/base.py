@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -58,7 +58,8 @@ class FetchResult:
         if len(self.invalid_reasons) < MAX_INVALID_REASONS:
             self.invalid_reasons.append(f"{ext or '?'}: {reason}"[:200])
 
-    def normalize_each(self, raw_items: object, convert) -> None:  # type: ignore[no-untyped-def]
+    def normalize_each(self, raw_items: object,
+                       convert: Callable[[dict[str, Any]], NormalizedJob | None]) -> None:
         """Apply ``convert(raw) -> NormalizedJob | None`` to each item, counting invalid ones."""
         if not isinstance(raw_items, list):
             raise PermanentError(f"{self.source_name}:{self.identifier}: unexpected response shape "
