@@ -255,18 +255,20 @@ class SecurityMiddleware:
         self.static_prefix = static_prefix
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket"):
-            await self.app(scope, receive, send)
-            return
-        headers = Headers(scope=scope)
-        host = host_without_port(headers.get("host", ""))
         if scope["type"] == "websocket":  # the dashboard has no websockets
             await send({"type": "websocket.close", "code": 1008})
             return
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        host = host_without_port(Headers(scope=scope).get("host", ""))
         cacheable = scope.get("path", "").startswith(self.static_prefix)
+        started = False
 
         async def send_with_headers(message: Message) -> None:
+            nonlocal started
             if message["type"] == "http.response.start":
+                started = True
                 raw = [(k, v) for k, v in message.get("headers", [])
                        if k.decode("latin-1").lower() not in SECURITY_HEADERS
                        and (cacheable or k.decode("latin-1").lower() != "cache-control")]
@@ -287,7 +289,19 @@ class SecurityMiddleware:
             })
             await send({"type": "http.response.body", "body": body})
             return
-        await self.app(scope, receive, send_with_headers)
+        try:
+            await self.app(scope, receive, send_with_headers)
+        except Exception:
+            if not started:  # still send a generic 500 that carries the security headers
+                body = b"Internal Server Error"
+                await send_with_headers({
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                                (b"content-length", str(len(body)).encode())],
+                })
+                await send({"type": "http.response.body", "body": body})
+            raise
 
 
 # --------------------------------------------------------------------------- #

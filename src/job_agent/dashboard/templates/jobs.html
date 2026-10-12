@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+<form method="get" action="/jobs" class="filters">
+  <label>Search <input type="search" name="q" value="{{ filters.q }}" placeholder="employer or title" maxlength="100"></label>
+  <label>Category
+    <select name="category">
+      <option value="">any</option>
+      {% for c in categories %}<option value="{{ c }}"{% if filters.category == c %} selected{% endif %}>{{ c|humanize }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Status
+    <select name="state">
+      <option value="">any</option>
+      {% for s in states %}<option value="{{ s }}"{% if filters.state == s %} selected{% endif %}>{{ s|humanize }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Source
+    <select name="source">
+      <option value="">any</option>
+      {% for s in sources %}<option value="{{ s }}"{% if filters.source == s %} selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Sort
+    <select name="sort">
+      {% for s in sorts %}<option value="{{ s }}"{% if filters.sort == s %} selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+
+{% if result.items %}
+<ul class="cards">
+  {% for j in result.items %}
+  <li class="card job">
+    <div class="job-head">
+      <span class="score">{{ j.overall_score|score }}</span>
+      <div>
+        <a class="job-title" href="/jobs/{{ j.id }}">{{ j.title }}</a>
+        <div>{{ j.employer }}</div>
+      </div>
+    </div>
+    <div class="small muted">
+      {{ j.location or "location unknown" }} · {{ j.work_arrangement|humanize }} · {{ j.source_name }} · found {{ j.discovered_at|localtime("%Y-%m-%d") }}
+    </div>
+    <div class="badges">
+      {% if j.category %}{{ m.status_badge(j.category) }}{% else %}{{ m.badge("unscored") }}{% endif %}
+      {{ m.status_badge(j.application_status or j.pipeline_state) }}
+      {% if j.listing_status != "active" %}{{ m.badge(j.listing_status, "bad") }}{% endif %}
+      {% if j.user_relevance %}{{ m.badge("you: " ~ j.user_relevance) }}{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No jobs match.</p>
+{% endif %}
+{{ m.pager(result, page_url) }}
+{% endblock %}

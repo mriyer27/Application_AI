@@ -1,0 +1,40 @@
+{
+  "_comment": "MOCK job listings for tests and demos only. Not a real job board.",
+  "employer": "Mock Analytics Co (mock)",
+  "jobs": [
+    {
+      "id": "m-1",
+      "title": "Data Analyst",
+      "location": "New York, NY",
+      "workplace_type": "hybrid",
+      "employment_type": "Full-time",
+      "posted_at": "2026-09-28T00:00:00Z",
+      "url": "https://example.invalid/mock/jobs/m-1",
+      "description_html": "<p>Mock listing.</p><h3>Requirements</h3><ul><li>SQL</li><li>Excel</li></ul>",
+      "salary": {
+        "min": 80000,
+        "max": 95000,
+        "currency": "USD",
+        "interval": "per-year",
+        "text": "Base salary $80,000 - $95,000 (mock)"
+      }
+    },
+    {
+      "id": "m-2",
+      "title": "Product Analyst",
+      "location": "Remote (US)",
+      "workplace_type": "remote",
+      "employment_type": "Full-time",
+      "posted_at": "2026-09-28T00:00:00Z",
+      "url": "https://example.invalid/mock/jobs/m-2",
+      "description": "Mock listing for a product analyst."
+    },
+    {
+      "id": "m-3",
+      "title": "Senior Business Analyst",
+      "location": "New York, NY",
+      "url": "https://example.invalid/mock/jobs/m-3",
+      "description": "Mock senior listing."
+    }
+  ]
+}

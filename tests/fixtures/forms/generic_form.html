@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Business Analyst - Apply - Fixture Corp</title>
+<style>.error{color:#b00}.hp{display:none}</style></head>
+<body>
+<!-- Synthetic generic application form (test fixture; fictional employer). -->
+<h1>Apply: Business Analyst</h1>
+<form id="search" role="search" action="/search"><input type="search" name="q" aria-label="Search jobs"></form>
+<form id="application" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required></div>
+  <div><label>Email <input type="email" name="email" required></label></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div><label for="city">City</label><input id="city" name="city"></div>
+  <div><input name="linkedin" aria-label="LinkedIn profile URL"></div>
+  <div><input name="website" placeholder="Portfolio / website"></div>
+  <div><label for="resume">Resume/CV *</label><input type="file" id="resume" name="resume" accept=".pdf,.docx" required></div>
+  <div><label for="cover_letter">Cover letter</label><input type="file" id="cover_letter" name="cover_letter" accept=".pdf"></div>
+  <div><label for="school">School</label><input id="school" name="school"></div>
+  <div><label for="degree">Degree</label><input id="degree" name="degree"></div>
+  <div><label for="grad">Expected graduation date</label><input id="grad" name="graduation"></div>
+  <div><label for="source">How did you hear about us?</label>
+    <select id="source" name="source"><option value="">Select...</option><option>LinkedIn</option>
+      <option value="careers">Company careers page</option><option>Referral</option></select></div>
+  <fieldset><legend>Are you legally authorized to work in the United States? *</legend>
+    <label><input type="radio" name="work_auth" value="yes" required> Yes</label>
+    <label><input type="radio" name="work_auth" value="no"> No</label></fieldset>
+  <div><label for="sponsor">Will you now or in the future require visa sponsorship? *</label>
+    <select id="sponsor" name="sponsorship" required><option value="">--</option><option value="1">Yes</option>
+      <option value="0">No</option></select></div>
+  <div><label for="gender">Gender</label>
+    <select id="gender" name="gender"><option value="">Select</option><option>Female</option><option>Male</option>
+      <option>Decline to self-identify</option></select></div>
+  <fieldset><legend>Veteran status</legend>
+    <label><input type="radio" name="veteran" value="yes"> I am a protected veteran</label>
+    <label><input type="radio" name="veteran" value="no"> I am not a protected veteran</label></fieldset>
+  <div><label for="salary">Salary expectations</label><input id="salary" name="salary"></div>
+  <div><label for="why">Why do you want to work here?</label><textarea id="why" name="why"></textarea></div>
+  <div class="hp"><label for="hp">Leave this empty</label><input id="hp" name="hp_company"></div>
+  <div><label><input type="checkbox" name="certify" required> I certify that the information provided is true and complete.</label></div>
+  <button type="submit">Submit application</button>
+</form>
+</body>
+</html>

@@ -1,0 +1,96 @@
+{
+  "_note": "Synthetic messages (fictional people, employers and domains). The fake Gmail service in tests/unit/test_email_fakes.py turns each entry into a Gmail API message resource (base64url MIME parts). 'expected' is the category the rules classifier must produce.",
+  "messages": [
+    {
+      "id": "m-confirm-1",
+      "threadId": "t-confirm-1",
+      "received": "2026-10-05T14:00:00Z",
+      "from": "Acme Analytics Hiring Team <no-reply@us.greenhouse-mail.io>",
+      "subject": "Thank you for applying to Acme Analytics",
+      "snippet": "Hi Test, Thank you for applying for the Business Analyst position at Acme Analytics.",
+      "text": "Hi Test,\n\nThank you for applying for the Business Analyst position at Acme Analytics. We have received your application and our team will review it shortly.\n\nInternal reference BODYMARKER-c0nf1rm-7f3a (synthetic).\n\nBest,\nAcme Analytics Recruiting",
+      "expected": "application_confirmation"
+    },
+    {
+      "id": "m-recruiter-1",
+      "threadId": "t-recruiter-1",
+      "received": "2026-10-06T09:30:00Z",
+      "from": "Jordan Lee <jordan.lee@globex-corp.com>",
+      "subject": "Business Analyst opportunity at Globex",
+      "snippet": "Hi Test, I'm a technical recruiter at Globex.",
+      "text": "Hi Test,\n\nI'm a technical recruiter at Globex. I came across your profile and your background stood out. Would you be open to a quick call this week to discuss a Business Analyst role on our data team?\n\nThanks,\nJordan",
+      "expected": "recruiter_message"
+    },
+    {
+      "id": "m-interview-1",
+      "threadId": "t-interview-1",
+      "received": "2026-10-07T16:10:00Z",
+      "from": "Initech Talent Team <talent@initech.com>",
+      "subject": "Interview invitation - Data Analyst",
+      "snippet": "Thank you for your application. We would like to invite you to a first-round interview.",
+      "text": "Hello,\n\nThank you for your application. We would like to invite you to a first-round interview for the Data Analyst position. Please share your availability for next week.\n\nInitech Talent Team",
+      "expected": "interview_invitation"
+    },
+    {
+      "id": "m-schedule-1",
+      "threadId": "t-schedule-1",
+      "received": "2026-10-08T11:00:00Z",
+      "from": "Initech Scheduling <scheduling@goodtime.io>",
+      "subject": "Schedule your interview with Initech",
+      "snippet": "Please use the link below to select a time for your interview.",
+      "html": "<html><head><style>p{color:red}</style></head><body><p>Hi Test,</p><p>Please use the link below to <b>select a time</b> for your interview with Initech:</p><p><a href=\"https://goodtime.io/s/example\">https://goodtime.io/s/example</a></p></body></html>",
+      "expected": "scheduling_request"
+    },
+    {
+      "id": "m-assessment-1",
+      "threadId": "t-assessment-1",
+      "received": "2026-10-08T15:45:00Z",
+      "from": "Hooli Recruiting <noreply@hackerrank.com>",
+      "subject": "Hooli Online Assessment Invitation",
+      "snippet": "As the next step in your application, please complete the online assessment.",
+      "text": "Hi Test,\n\nAs the next step in your application for the Software Analyst role at Hooli, please complete the online assessment on HackerRank within 7 days.\n\nGood luck!",
+      "expected": "assessment"
+    },
+    {
+      "id": "m-reject-1",
+      "threadId": "t-reject-1",
+      "received": "2026-10-09T13:20:00Z",
+      "from": "Umbrella Careers <careers@umbrella-health.com>",
+      "subject": "Update on your application",
+      "snippet": "Thank you for your interest in the Business Analyst role at Umbrella Health.",
+      "text": "Dear Test,\n\nThank you for your interest in the Business Analyst role at Umbrella Health. Unfortunately, after careful review, we have decided to move forward with other candidates whose experience more closely matches our needs.\n\nWe wish you the best in your search.\nUmbrella Health Talent Acquisition",
+      "expected": "rejection"
+    },
+    {
+      "id": "m-offer-1",
+      "threadId": "t-offer-1",
+      "received": "2026-10-10T10:00:00Z",
+      "from": "Vandelay Industries HR <hr@vandelay-industries.com>",
+      "subject": "Offer letter - Data Analyst",
+      "snippet": "We are delighted to extend you an offer for the Data Analyst position.",
+      "text": "Dear Test,\n\nWe are delighted to extend you an offer for the Data Analyst position at Vandelay Industries. Please review the attached offer letter and let us know if you have any questions.\n\nVandelay Industries HR",
+      "expected": "offer"
+    },
+    {
+      "id": "m-followup-1",
+      "threadId": "t-followup-1",
+      "received": "2026-10-10T18:00:00Z",
+      "from": "Sam Rivera <sam.rivera@stark-labs.com>",
+      "subject": "Great meeting you at the career fair",
+      "snippet": "Hi Test, it was great meeting you at the career fair yesterday.",
+      "text": "Hi Test,\n\nIt was great meeting you at the Example State University career fair yesterday. Feel free to reach out if you have any questions about our analyst programs.\n\nSam",
+      "expected": "follow_up_opportunity"
+    },
+    {
+      "id": "m-newsletter-1",
+      "threadId": "t-newsletter-1",
+      "received": "2026-10-11T07:00:00Z",
+      "from": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+      "subject": "New jobs for Business Analyst in New York",
+      "snippet": "Jobs you may be interested in: Business Analyst at Acme Analytics.",
+      "headers": {"List-Unsubscribe": "<https://www.linkedin.com/unsubscribe/example>"},
+      "text": "Jobs you may be interested in:\n\nBusiness Analyst at Acme Analytics - New York, NY\nData Analyst at Globex - Remote\n\nWe'd love to help you find your next interview.\n\nUnsubscribe | Manage email preferences",
+      "expected": "other"
+    }
+  ]
+}

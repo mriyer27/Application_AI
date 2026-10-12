@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Applications{% endblock %}
+{% block content %}
+<h1>Applications</h1>
+<form method="get" action="/applications" class="filters">
+  <label>Status
+    <select name="status">
+      <option value="">any</option>
+      {% for s in states %}<option value="{{ s }}"{% if status == s %} selected{% endif %}>{{ s|humanize }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
+</form>
+{% if result.items %}
+<ul class="cards">
+  {% for a in result.items %}
+  <li class="card">
+    <a class="job-title" href="/applications/{{ a.id }}">{{ a.title }}</a> · {{ a.employer }}
+    <div class="badges">{{ m.status_badge(a.status) }}{% if a.confirmation_status != "none" %} {{ m.badge(a.confirmation_status) }}{% endif %}</div>
+    <div class="small muted">updated {{ a.status_updated_at|localtime }}{% if a.submitted_at %} · submitted {{ a.submitted_at|localtime }}{% endif %}{% if a.follow_up_due_at %} · follow-up due {{ a.follow_up_due_at|localtime }}{% endif %}</div>
+    {% if a.next_action %}<div class="small">Next: {{ a.next_action }}</div>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No applications yet.</p>
+{% endif %}
+{{ m.pager(result, page_url) }}
+{% endblock %}

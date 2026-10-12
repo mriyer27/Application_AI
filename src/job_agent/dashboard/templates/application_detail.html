@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Application {{ application.application_uid }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/applications">&larr; Applications</a></p>
+<h1>{% if job %}{{ job.title }} · {{ job.employer }}{% else %}Application {{ application.application_uid }}{% endif %}</h1>
+
+<section class="card">
+  <div class="badges">{{ m.status_badge(application.status) }} {{ m.badge("confirmation: " ~ application.confirmation_status) }}</div>
+  <dl class="kv">
+    <dt>Application</dt><dd>{{ application.application_uid }}</dd>
+    {% if job %}<dt>Job</dt><dd><a href="/jobs/{{ job.id }}">{{ job.title }}</a></dd>{% endif %}
+    <dt>Status since</dt><dd>{{ application.status_updated_at|localtime }}</dd>
+    <dt>Next action</dt><dd>{{ application.next_action or "—" }}</dd>
+    <dt>Official application page</dt><dd>{{ m.ext_link(application.application_url or (job.application_url if job else None), "Open application page") }}</dd>
+    <dt>Prepared</dt><dd>{{ application.prepared_at|localtime }}</dd>
+    <dt>Submitted</dt><dd>{{ application.submitted_at|localtime }}</dd>
+    <dt>Submission attempts</dt><dd>{{ application.submission_attempts }}</dd>
+    <dt>Follow-up due</dt><dd>{{ application.follow_up_due_at|localtime }}</dd>
+    {% if application.notes %}<dt>Notes</dt><dd class="pre-wrap">{{ application.notes }}</dd>{% endif %}
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Confirmation evidence</h2>
+  {% if application.confirmation_evidence %}
+  {{ m.value(application.confirmation_evidence) }}
+  {% else %}
+  <p class="muted">No confirmation evidence recorded.{% if application.status in ("submitted", "submission_attempted") %} Do not assume the application went through until there is evidence.{% endif %}</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Documents</h2>
+  {% if documents %}
+  <ul class="list">
+    {% for d in documents %}
+    <li><a href="/documents/{{ d.id }}/download">{{ d.file_name }}</a> {{ m.status_badge(d.status) }}{% if d.selected %} {{ m.badge("used for this application", "ok") }}{% endif %}
+      <span class="small muted">{{ d.doc_type|humanize }} v{{ d.version }} · {{ d.format }} · {{ d.created_at|localtime }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No documents generated yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Prepared answers</h2>
+  {% if answers %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Question</th><th>Answer</th><th>Source</th><th>Flags</th></tr></thead>
+    <tbody>
+    {% for a in answers %}
+    <tr class="{% if a.is_legal_declaration %}legal{% elif a.requires_review %}review{% endif %}">
+      <td>{{ a.field_label }}{% if a.required %} <span class="muted">(required)</span>{% endif %}</td>
+      <td class="pre-wrap">{% if a.answer is not none %}{{ a.answer }}{% else %}<span class="muted">not answered</span>{% endif %}</td>
+      <td class="small">{{ a.answer_source or "—" }} · {{ a.confidence }}</td>
+      <td>
+        {% if a.is_legal_declaration %}{{ m.badge("legal declaration", "bad") }}{% endif %}
+        {% if a.requires_review %}{{ m.badge("needs your review", "warn") }}{% endif %}
+        {% if a.review_reason %}<div class="small">{{ a.review_reason }}</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No form answers prepared.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Approvals</h2>
+  {% if approvals %}
+  <ul class="list">
+    {% for ap in approvals %}
+    <li><a href="/approvals/{{ ap.approval_uid }}">{{ ap.summary }}</a> {{ m.status_badge(ap.status) }}
+      <span class="small muted">{{ ap.request_type|humanize }} · requested {{ ap.requested_at|localtime }}{% if ap.decided_at %} · decided {{ ap.decided_at|localtime }} by {{ ap.decided_by }}{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No approval requests.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Status timeline</h2>
+  {% if events %}
+  <ol class="timeline">
+    {% for ev in events %}
+    <li>
+      <div><strong>{{ ev.event_type|humanize }}</strong>{% if ev.to_status %}: {{ ev.from_status|humanize if ev.from_status else "start" }} &rarr; {{ ev.to_status|humanize }}{% endif %}</div>
+      <div class="small muted">{{ ev.created_at|localtime }} · by {{ ev.actor }}</div>
+      {% if ev.details %}<details><summary class="small">details</summary>{{ m.value(ev.details) }}</details>{% endif %}
+      {% if ev.evidence %}<div class="small">Evidence:</div>{{ m.value(ev.evidence) }}{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">No events.</p>
+  {% endif %}
+</section>
+
+{% if followups or emails %}
+<section class="card grid-2">
+  <div>
+    <h2>Follow-ups</h2>
+    {% if followups %}<ul class="plain">{% for f in followups %}<li>{{ m.status_badge(f.status) }} {{ f.suggested_action }} <span class="small muted">due {{ f.due_at|localtime }}</span></li>{% endfor %}</ul>{% else %}<p class="muted">none</p>{% endif %}
+  </div>
+  <div>
+    <h2>Related emails</h2>
+    {% if emails %}<ul class="plain">{% for e in emails %}<li>{{ m.badge(e.category) }} {{ e.subject or "(no subject)" }} <span class="small muted">{{ e.received_at|localtime }} · {{ e.method }}{% if e.status_applied %} · applied {{ e.status_applied|humanize }}{% endif %}</span></li>{% endfor %}</ul>{% else %}<p class="muted">none</p>{% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

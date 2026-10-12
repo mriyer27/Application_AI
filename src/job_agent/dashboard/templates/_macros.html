@@ -1,0 +1,75 @@
+{# Shared macros. Import with: {% import "_macros.html" as m with context %} #}
+
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token }}">{% endmacro %}
+
+{# External links only for http(s) URLs; anything else is shown as inert text. #}
+{% macro ext_link(url, label=None) %}
+{%- set safe = url|http_url -%}
+{%- if safe -%}
+<a href="{{ safe }}" rel="noopener noreferrer" target="_blank">{{ label or safe }}</a>
+{%- elif url -%}
+<span class="muted" title="not an http(s) link">{{ url }}</span>
+{%- else -%}
+<span class="muted">—</span>
+{%- endif -%}
+{% endmacro %}
+
+{% macro confirm_box(text="I confirm this action", required=True) %}
+<label class="confirm"><input type="checkbox" name="confirm" value="yes"{% if required %} required{% endif %}> {{ text }}</label>
+{% endmacro %}
+
+{% macro badge(value, kind="") %}<span class="badge{% if kind %} badge-{{ kind }}{% endif %}">{{ value|humanize }}</span>{% endmacro %}
+
+{% macro status_badge(status) %}
+{%- set s = status or "" -%}
+{%- if s in ("succeeded", "approved", "submitted", "confirmation_received", "offer_received", "interview_scheduled", "interview_requested", "completed", "strong_match", "ok", "consumed") -%}
+{{ badge(s, "ok") }}
+{%- elif s in ("failed", "rejected", "permanent", "unknown_outcome", "fail", "blocker") -%}
+{{ badge(s, "bad") }}
+{%- elif s in ("pending", "partial", "awaiting_approval", "needs_manual_action", "needs_review", "running", "drafted", "warn", "review", "human_action_required", "authorization_required", "possible_match") -%}
+{{ badge(s, "warn") }}
+{%- else -%}
+{{ badge(s or "—") }}
+{%- endif -%}
+{% endmacro %}
+
+{# Generic, escaped rendering of JSON-like values (dicts, lists, scalars). #}
+{% macro value(v) %}
+{%- if v is mapping_value -%}
+{%- if v -%}
+<dl class="kv">{% for k, x in v.items() %}<dt>{{ k|humanize }}</dt><dd>{{ value(x) }}</dd>{% endfor %}</dl>
+{%- else -%}<span class="muted">none</span>{%- endif -%}
+{%- elif v is sequence_value -%}
+{%- if v -%}
+<ul class="plain">{% for x in v %}<li>{{ value(x) }}</li>{% endfor %}</ul>
+{%- else -%}<span class="muted">none</span>{%- endif -%}
+{%- elif v is none -%}<span class="muted">—</span>
+{%- elif v is sameas true -%}yes
+{%- elif v is sameas false -%}no
+{%- elif v is string and v|http_url -%}{{ ext_link(v) }}
+{%- else -%}<span class="pre-wrap">{{ v }}</span>
+{%- endif -%}
+{% endmacro %}
+
+{% macro string_list(items, empty="none") %}
+{%- if items -%}
+<ul class="plain">{% for x in items %}<li>{{ value(x) }}</li>{% endfor %}</ul>
+{%- else -%}<p class="muted">{{ empty }}</p>{%- endif -%}
+{% endmacro %}
+
+{% macro pager(result, page_url) %}
+{% if result.pages > 1 %}
+<nav class="pager" aria-label="Pagination">
+  {% if result.has_prev %}<a href="{{ page_url[result.page - 1] }}" rel="prev">&larr; Previous</a>{% endif %}
+  <span>Page {{ result.page }} of {{ result.pages }} ({{ result.total }} total)</span>
+  {% if result.has_next %}<a href="{{ page_url[result.page + 1] }}" rel="next">Next &rarr;</a>{% endif %}
+</nav>
+{% else %}
+<p class="muted small">{{ result.total }} total</p>
+{% endif %}
+{% endmacro %}
+
+{% macro copy_block(id, text) %}
+<pre class="copy-text" id="{{ id }}">{{ text }}</pre>
+<button type="button" class="copy-button" data-copy-target="{{ id }}" hidden>Copy</button>
+{% endmacro %}

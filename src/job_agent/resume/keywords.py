@@ -50,20 +50,23 @@ class JobKeywords:
     def top_terms(self, n: int = 15) -> list[str]:
         return [t for t, _ in sorted(self.terms.items(), key=lambda kv: (-kv[1], kv[0]))[:n]]
 
-    def safe_keywords(self, n: int = 15) -> list[str]:
-        """Short, sanitized keywords suitable to hand to the local LLM as hints.
+    def safe_keywords(self, n: int = 15, *, trusted_text: str) -> list[str]:
+        """Keywords that are safe to hand to the local LLM as hints.
 
-        Lexicon skill names first (fixed strings we control), then listing terms
-        that look like plain keywords. Anything resembling instructions is dropped.
+        Only listing keywords that also occur in ``trusted_text`` (the verified
+        profile) qualify, so no listing-originated free text (e.g. injected
+        instructions or skills the candidate lacks) reaches the model this way.
         """
+        trusted_words = {w.lower() for w in words(trusted_text)}
         out: list[str] = []
         for s in self.skills:
-            if s not in out:
+            if s not in out and mentions(trusted_text, s):
                 out.append(s)
-        for t in self.top_terms(n * 2):
+        for t in self.top_terms(n * 3):
             if len(out) >= n:
                 break
-            if _SAFE_KEYWORD.match(t) and len(t.split()) <= 3 and not _injection_suspected(t) and t not in out:
+            if (_SAFE_KEYWORD.match(t) and len(t.split()) <= 3 and not _injection_suspected(t)
+                    and all(w in trusted_words for w in t.split()) and t not in out):
                 out.append(t)
         return out[:n]
 

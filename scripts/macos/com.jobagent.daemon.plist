@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd LaunchAgent for the job-agent scheduler daemon (macOS, per user).
+
+  Install with scripts/macos/install-launchd.sh, which replaces @REPO_DIR@ with
+  the repository path and copies this file to ~/Library/LaunchAgents/. To do it
+  by hand: replace every @REPO_DIR@ (absolute path, no "~"), copy the file to
+  ~/Library/LaunchAgents/com.jobagent.daemon.plist, then run
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobagent.daemon.plist
+  Stop / unload:   launchctl bootout gui/$(id -u)/com.jobagent.daemon
+  See docs/scheduling.md. Nothing runs while the Mac is asleep or off.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jobagent.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@REPO_DIR@/.venv/bin/job-agent</string>
+        <string>daemon</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@REPO_DIR@</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JOB_AGENT_HOME</key>
+        <string>@REPO_DIR@</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <!-- Start at login (when the agent is loaded). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart after a crash or error exit, but not after a clean stop. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <!-- Wait at least 60 s between restarts. -->
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <!-- On unload launchd sends SIGTERM (graceful: a running task finishes) and
+         kills the process after this many seconds. -->
+    <key>ExitTimeOut</key>
+    <integer>900</integer>
+    <key>ProcessType</key>
+    <string>Standard</string>
+    <key>StandardOutPath</key>
+    <string>@REPO_DIR@/logs/launchd-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@REPO_DIR@/logs/launchd-daemon.err.log</string>
+</dict>
+</plist>

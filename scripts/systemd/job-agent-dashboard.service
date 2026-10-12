@@ -1,0 +1,27 @@
+# systemd *user* unit for the job-agent dashboard (Linux). Optional.
+#
+# Installed by scripts/install-systemd-user.sh --with-dashboard, which replaces
+# "%h/Application_AI" with the real repository path. The dashboard binds to
+# 127.0.0.1 by default (dashboard.host in config/config.yaml) and needs a
+# password set first: job-agent dashboard set-password. See docs/scheduling.md.
+
+[Unit]
+Description=job-agent dashboard (localhost web UI)
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Application_AI
+Environment="JOB_AGENT_HOME=%h/Application_AI"
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/job-agent/environment
+ExecStart="%h/Application_AI/.venv/bin/job-agent" dashboard
+Restart=on-failure
+RestartSec=30
+# 2 = configuration error (e.g. dashboard password not set): restarting would not help.
+RestartPreventExitStatus=2
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

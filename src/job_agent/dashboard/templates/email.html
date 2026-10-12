@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Email{% endblock %}
+{% block content %}
+<h1>Email</h1>
+<div class="flash {% if gmail.connected %}flash-ok{% else %}flash-warn{% endif %}">{{ gmail.label }}: {{ gmail.detail }}</div>
+<p class="small muted">Read-only. Suggested replies are drafts for you to copy into your own mail client; nothing is ever sent from here.</p>
+<form method="get" action="/email" class="filters">
+  <label>Category
+    <select name="category">
+      <option value="">any</option>
+      {% for c in categories %}<option value="{{ c }}"{% if category == c %} selected{% endif %}>{{ c|humanize }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" name="attention" value="1"{% if attention_only %} checked{% endif %}> needs attention only</label>
+  <button type="submit">Apply</button>
+</form>
+
+{% if result.items %}
+<ul class="cards">
+  {% for e in result.items %}
+  <li class="card">
+    <div><strong>{{ e.subject or "(no subject)" }}</strong></div>
+    <div class="small muted">{{ e.from_address or "unknown sender" }} · {{ e.received_at|localtime }}</div>
+    <div class="badges">
+      {{ m.badge(e.category) }}{% if e.category_confidence is not none %} <span class="small muted">{{ (e.category_confidence * 100)|score }}% · {{ e.classifier or "?" }}</span>{% endif %}
+      {% if e.requires_attention %}{{ m.badge("needs attention", "warn") }}{% endif %}
+      {% if e.injection_suspected %}{{ m.badge("suspicious instructions in email", "bad") }}{% endif %}
+    </div>
+    {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+    <div class="small">
+      {% if e.associations %}
+      Linked to:
+      {% for a in e.associations %}
+      {% if a.application_id %}<a href="/applications/{{ a.application_id }}">{{ a.application_uid }}</a>{% elif a.job_id %}<a href="/jobs/{{ a.job_id }}">job {{ a.job_id }}</a>{% endif %}
+      {% if a.employer %}({{ a.employer }}{% if a.title %} · {{ a.title }}{% endif %}){% endif %}
+      <span class="muted">{{ a.method }}{% if a.confirmed_by_user %}, confirmed{% endif %}{% if a.status_applied %}, set {{ a.status_applied|humanize }}{% endif %}</span>{% if not loop.last %};{% endif %}
+      {% endfor %}
+      {% else %}
+      <span class="muted">Not linked to a job or application.</span>
+      {% endif %}
+    </div>
+    {% if e.suggested_reply %}
+    <details>
+      <summary>Suggested reply (draft, not sent)</summary>
+      {{ m.copy_block("reply-" ~ e.id, e.suggested_reply) }}
+    </details>
+    {% endif %}
+    <details>
+      <summary>Link to a job / application</summary>
+      {% if associate_available %}
+      <form method="post" action="/email/{{ e.id }}/associate" class="stack">
+        {{ m.csrf() }}
+        <label>Job id or uid <input name="job_ref" maxlength="64" autocapitalize="none" spellcheck="false"></label>
+        <label>Application id or uid <input name="application_ref" maxlength="64" autocapitalize="none" spellcheck="false"></label>
+        <label class="check"><input type="checkbox" name="apply_status" value="yes"> also update the application status from this email (evidence-based)</label>
+        {{ m.confirm_box("I confirm the status update (required only when updating status)", required=False) }}
+        <button type="submit">Link</button>
+      </form>
+      {% else %}
+      <p class="muted">Email association is not available yet (email module not installed).</p>
+      {% endif %}
+    </details>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No messages{% if not gmail.connected %} — {{ gmail.label }}{% endif %}.</p>
+{% endif %}
+{{ m.pager(result, page_url) }}
+{% endblock %}

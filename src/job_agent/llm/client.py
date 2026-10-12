@@ -96,7 +96,9 @@ class ChatResult:
         return None
 
 
-class _Invalid(Exception):
+class OutputValidationError(Exception):
+    """A reply that does not match the schema. ``problems`` never contain reply text."""
+
     def __init__(self, problems: list[str]) -> None:
         super().__init__("; ".join(problems))
         self.problems = problems
@@ -312,7 +314,7 @@ class OllamaClient:
         result = self.chat(messages, model=model, format=fmt, temperature=temperature, max_tokens=max_tokens)
         try:
             return parse_model(result.content, schema)
-        except _Invalid as first:
+        except OutputValidationError as first:
             log.info("ollama output failed validation; corrective re-ask model=%s schema=%s problems=%d",
                      model, schema.__name__, len(first.problems))
             retry_messages = [
@@ -323,7 +325,7 @@ class OllamaClient:
         retry = self.chat(retry_messages, model=model, format=fmt, temperature=temperature, max_tokens=max_tokens)
         try:
             return parse_model(retry.content, schema)
-        except _Invalid as second:
+        except OutputValidationError as second:
             log.warning("ollama output invalid after corrective re-ask model=%s schema=%s problems=%d",
                         model, schema.__name__, len(second.problems))
             raise LLMInvalidOutput(
@@ -396,13 +398,13 @@ def clean_text(text: str) -> str:
 
 
 def parse_model(content: str, schema: type[T]) -> T:
-    """Parse a model reply into ``schema``. Raises ``_Invalid`` with content-free problem descriptions."""
+    """Parse a model reply into ``schema``; raises ``OutputValidationError`` (content-free problems)."""
     text = (content or "").strip()
     fenced = _FENCE_RE.match(text)
     if fenced:
         text = fenced.group(1).strip()
     if not text:
-        raise _Invalid(["the reply was empty"])
+        raise OutputValidationError(["the reply was empty"])
     try:
         return schema.model_validate_json(text)
     except ValidationError as exc:
@@ -410,7 +412,7 @@ def parse_model(content: str, schema: type[T]) -> T:
         for err in exc.errors(include_input=False, include_url=False)[:10]:
             loc = ".".join(str(x) for x in err.get("loc", ())) or "reply"
             problems.append(f"{loc}: {err.get('msg', 'invalid')}")
-        raise _Invalid(problems or ["the reply did not match the schema"]) from None
+        raise OutputValidationError(problems or ["the reply did not match the schema"]) from None
 
 
 # --------------------------------------------------------------------------- #

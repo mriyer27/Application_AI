@@ -25,6 +25,7 @@ log = get_logger(__name__)
 #: HTTP statuses retried with backoff (quota, transient server errors).
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _RATE_LIMIT_REASONS = ("ratelimitexceeded", "userratelimitexceeded", "quotaexceeded", "backenderror")
+DEFAULT_TIMEOUT_SECONDS = 30.0
 #: Hard cap on list pages per sync (500 ids per page at most).
 MAX_LIST_PAGES = 50
 #: Headers requested in metadata mode (gmail.metadata scope).
@@ -53,15 +54,21 @@ class GmailReadClient:
         self._sleep = sleep
 
     @classmethod
-    def from_credentials(cls, credentials: Any, **kwargs: Any) -> "GmailReadClient":
+    def from_credentials(cls, credentials: Any, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+                         **kwargs: Any) -> "GmailReadClient":
+        """Build the official client (bundled discovery document; no extra network call)."""
         try:
+            import google_auth_httplib2
+            import httplib2
             from googleapiclient.discovery import build
         except ImportError as exc:
             from job_agent.errors import HumanActionRequired
 
             raise HumanActionRequired(f"Gmail libraries are not installed ({exc})",
                                       human_action='.venv/bin/pip install -e ".[gmail]"')
-        service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        # An explicit timeout: httplib2's default would let a stalled connection hang the scheduler.
+        http = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout_seconds))
+        service = build("gmail", "v1", http=http, cache_discovery=False)
         return cls(service, **kwargs)
 
     @property

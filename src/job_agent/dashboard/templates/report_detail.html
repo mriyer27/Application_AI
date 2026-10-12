@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Report {{ report.report_date }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/reports">&larr; Reports</a></p>
+<h1>Report {{ report.report_date }}</h1>
+<section class="card">
+  <p>
+    {% if has_xlsx %}<a class="button" href="/reports/{{ report.id }}/download/xlsx">Download Excel</a>{% endif %}
+    {% if has_md %}<a class="button" href="/reports/{{ report.id }}/download/md">Download Markdown</a>{% endif %}
+    {% if not has_xlsx and not has_md %}<span class="muted">The report files are not available on disk.</span>{% endif %}
+  </p>
+  <p class="small muted">Generated {{ report.first_generated_at|localtime }}{% if report.generation_count > 1 %}, regenerated {{ report.generation_count - 1 }}× (last {{ report.last_generated_at|localtime }}){% endif %}.</p>
+</section>
+{% if report.stats %}
+<section class="card">
+  <h2>Statistics</h2>
+  {{ m.value(report.stats) }}
+</section>
+{% endif %}
+<section class="card markdown">
+  <h2>Summary</h2>
+  {% if summary_html is not none %}
+  {{ summary_html }}
+  {% else %}
+  <p class="muted">Markdown summary not found.</p>
+  {% endif %}
+</section>
+{% endblock %}

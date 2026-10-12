@@ -65,6 +65,14 @@ _ELIGIBILITY_RE = re.compile(
 _TYPOGRAPHIC = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-",
                               "\u2014": "-", "\u00a0": " "})
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069]")
+_FILLER_PREFIX_RE = re.compile(
+    r"^(?:(?:hands-on|working|solid|demonstrated|proven)\s+)?(?:experience\s+(?:with|in|using)|"
+    r"proficiency\s+(?:in|with)|proficient\s+(?:in|with)|knowledge\s+of|familiarity\s+with|familiar\s+with|"
+    r"understanding\s+of|exposure\s+to|expertise\s+in|skilled\s+in)\s+",
+    re.I,
+)
+_FILLER_SUFFIX_RE = re.compile(r"\s+(?:experience|knowledge|proficiency|expertise)$", re.I)
+_SPLIT_RE = re.compile(r"\s*,\s*|\s*;\s*|\s+and\s+|\s+or\s+|\s+&\s+", re.I)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,18 +223,47 @@ def find_term(term: str, text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _skill_core(skill: str) -> str:
+    core = _norm(_CONTROL_RE.sub("", skill))
+    previous = None
+    while previous != core:
+        previous = core
+        core = _FILLER_PREFIX_RE.sub("", core)
+        core = _FILLER_SUFFIX_RE.sub("", core).strip()
+    return core
+
+
+def skill_terms(skill: str, text: str) -> list[str]:
+    """Literal occurrences in ``text`` for one model-reported skill.
+
+    Filler such as "experience with" / "knowledge of" is removed first and
+    lists ("Excel and Tableau") are split when every part is in the text.
+    Anything not literally present (word boundary, case-insensitive) is dropped.
+    """
+    core = _skill_core(skill)
+    if not core:
+        return []
+    parts = [p for p in _SPLIT_RE.split(core) if p.strip()]
+    if len(parts) > 1:
+        found_parts = [find_term(p, text) for p in parts]
+        if all(found_parts):
+            return [f for f in found_parts if f]
+    whole = find_term(core, text)
+    if whole:
+        return [whole]
+    return [f for f in (find_term(p, text) for p in parts) if f] if len(parts) > 1 else []
+
+
 def filter_skills(skills: Iterable[str], text: str, *, limit: int = 40) -> list[str]:
     kept: list[str] = []
     seen: set[str] = set()
     for skill in skills:
         if not isinstance(skill, str) or len(skill) > 80 or len(skill.split()) > 8:
             continue
-        found = find_term(_CONTROL_RE.sub("", skill), text)
-        if found and found.lower() not in seen:
-            seen.add(found.lower())
-            kept.append(found)
-        if len(kept) >= limit:
-            break
+        for found in skill_terms(skill, text):
+            if found.lower() not in seen and len(kept) < limit:
+                seen.add(found.lower())
+                kept.append(found)
     return kept
 
 
@@ -255,10 +292,6 @@ def filter_verbatim(statements: Iterable[str], text: str, *, limit: int = 10) ->
 def _unit(value: float) -> float:
     if value is None or not math.isfinite(value):
         return 0.0
-    if 1 < value <= 10:
-        value /= 10  # "8 out of 10"
-    elif 10 < value <= 100:
-        value /= 100  # percentage
     return round(min(1.0, max(0.0, value)), 3)
 
 

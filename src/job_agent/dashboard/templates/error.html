@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ status_code }} · {{ title }}</h1>
+  <p>{{ message }}</p>
+  <p><a href="{{ '/' if user else '/login' }}">{{ 'Back to overview' if user else 'Sign in' }}</a></p>
+</section>
+{% endblock %}

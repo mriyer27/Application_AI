@@ -1,0 +1,40 @@
+# systemd *user* unit for the job-agent scheduler daemon (Linux).
+#
+# Install with scripts/install-systemd-user.sh, which replaces every
+# "%h/Application_AI" below with the real repository path (%h = your home
+# directory). If you copy this file by hand, edit those paths yourself, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now job-agent.service
+# See docs/scheduling.md. This runs only while you are logged in unless you
+# enable lingering (loginctl enable-linger "$USER"), and never while the
+# machine is asleep or off.
+
+[Unit]
+Description=job-agent scheduler daemon (human-supervised job search assistant)
+# Stop retrying after 5 failed starts within an hour (check: journalctl --user -u job-agent).
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Application_AI
+Environment="JOB_AGENT_HOME=%h/Application_AI"
+Environment=PYTHONUNBUFFERED=1
+# Optional extra variables (e.g. OLLAMA_HOST). Secrets are NOT needed here:
+# job-agent reads <repo>/.env itself. The leading "-" makes the file optional.
+EnvironmentFile=-%h/.config/job-agent/environment
+ExecStart="%h/Application_AI/.venv/bin/job-agent" daemon
+Restart=on-failure
+RestartSec=60
+# 2 = configuration error, 3 = another daemon is already running: restarting would not help.
+RestartPreventExitStatus=2 3
+# SIGTERM = graceful stop: a task that is running finishes first (discovery with
+# a local LLM can take several minutes). After the timeout systemd kills the
+# process and the unfinished run is marked "interrupted" at the next start.
+KillSignal=SIGTERM
+TimeoutStopSec=15min
+# Keep the laptop responsive while local-LLM analysis runs.
+Nice=10
+
+[Install]
+WantedBy=default.target

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import lru_cache
 
 STOPWORDS: frozenset[str] = frozenset(
     """
@@ -78,14 +79,21 @@ def split_sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENTENCE_SPLIT.split(text or "") if s and s.strip()]
 
 
+_WS = r"\s+"
+
+
+@lru_cache(maxsize=4096)
+def _phrase_rx(needle: str) -> re.Pattern[str]:
+    body = _WS.join(re.escape(p) for p in needle.split(" "))
+    return re.compile("(?<![A-Za-z0-9])" + body + "(?![A-Za-z0-9])", re.IGNORECASE)
+
+
 def mentions(haystack: str, needle: str) -> bool:
     """Case-insensitive, word-boundary phrase search (tolerates flexible whitespace)."""
     needle = normalize_space(needle)
     if not needle or not haystack:
         return False
-    parts = [re.escape(p) for p in needle.split(" ")]
-    rx = re.compile(rf"(?<![A-Za-z0-9]){r'\s+'.join(parts)}(?![A-Za-z0-9])", re.IGNORECASE)
-    return bool(rx.search(haystack))
+    return bool(_phrase_rx(needle).search(haystack))
 
 
 def to_latin1(text: str) -> str:

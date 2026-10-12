@@ -73,7 +73,7 @@ def check_read_only(scopes: Iterable[str] | None, *, what: str = "scopes") -> li
     if bad:
         raise AuthorizationRequired(
             f"Gmail {what} include non-read-only scopes {bad}; refusing to use them",
-            human_action=f"Run job-agent gmail revoke, remove the app at {REVOKE_URL}, then {AUTH_ACTION}",
+            human_action=f"Run job-agent gmail revoke, remove the app at {REVOKE_URL}, then run job-agent gmail auth",
         )
     return values
 
@@ -223,7 +223,7 @@ def authorize(ctx: "AppContext", *, open_browser: bool = True, flow_factory: Flo
             raise
         raise AuthorizationRequired(
             f"Gmail authorization did not complete: {redact_text(str(exc), pii=True)[:200]}",
-            human_action=f"{AUTH_ACTION} again and approve the read-only access",
+            human_action="Run job-agent gmail auth again and approve the read-only access",
         ) from None
     granted = _granted_scopes(creds, scopes)
     check_read_only(granted, what="granted scopes")
@@ -285,9 +285,7 @@ def load_credentials(ctx: "AppContext", *, request: Any = None) -> Any:
     if not creds.refresh_token:
         raise _auth_failure(ctx, "token expired and has no refresh token")
     if request is None:
-        from google.auth.transport.requests import Request
-
-        request = Request()
+        request = _transport_request()
     try:
         creds.refresh(request)
     except RefreshError as exc:
@@ -303,6 +301,18 @@ def load_credentials(ctx: "AppContext", *, request: Any = None) -> Any:
         raise
     _write_token(path, _token_data(creds, new_granted))
     return creds
+
+
+def _transport_request() -> Any:
+    try:
+        from google.auth.transport.requests import Request
+
+        return Request()
+    except ImportError:  # requests missing: use the httplib2 transport the API client uses anyway
+        import google_auth_httplib2
+        import httplib2
+
+        return google_auth_httplib2.Request(httplib2.Http())
 
 
 def _short_reason(exc: BaseException) -> str:
@@ -380,7 +390,7 @@ def gmail_status(ctx: "AppContext") -> GmailStatus:
     elif not libs:
         detail, step = "Gmail libraries not installed", _MISSING_LIBS_ACTION
     elif not client_present:
-        detail, step = "OAuth client file missing; NOT connected", f"Follow {SETUP_DOC}, then {AUTH_ACTION}"
+        detail, step = "OAuth client file missing; NOT connected", f"Follow {SETUP_DOC}, then run job-agent gmail auth"
     elif not token_present:
         detail, step = "not authorized; NOT connected", AUTH_ACTION
     elif err and reauthorized:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import sys
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import TYPE_CHECKING, Any
@@ -56,6 +57,8 @@ class FeatureUnavailable(PermanentError):
 
 def module_available(module_name: str) -> bool:
     """True if ``module_name`` can be found (without importing the module itself)."""
+    if module_name in sys.modules:  # already imported (or explicitly blocked with None)
+        return sys.modules[module_name] is not None
     try:
         return importlib.util.find_spec(module_name) is not None
     except (ImportError, ValueError):

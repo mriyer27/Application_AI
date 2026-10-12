@@ -230,6 +230,7 @@ def overview(db: Database, cfg: AppConfig, *, top_n: int = 8) -> dict[str, Any]:
         "new_jobs_today": int(new_today or 0),
         "top_matches": rows_dicts(top),
         "pending_approvals": list_approvals(db, status="pending", limit=10),
+        "pending_count": pending_approval_count(db),
         "followups_due": rows_dicts(followups_due),
         "attention_emails": rows_dicts(attention),
         "recent_errors": rows_dicts(errors),
@@ -326,6 +327,12 @@ def job_detail(db: Database, job_id: int) -> dict[str, Any] | None:
         "ORDER BY created_at DESC, id DESC LIMIT 1", (job_id, "job_analysis")
     )
     analysis = row_dict(analysis_row, ("output",), {"output": {}})
+    if analysis is not None and not isinstance(analysis.get("output"), dict):
+        analysis["output"] = {}
+    if score is not None:
+        for key in ("factors", "eligibility_flags", "evidence"):  # lists of objects per the ScoreResult contract
+            value = score.get(key)
+            score[key] = [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
     application = row_dict(db.query_one("SELECT * FROM applications WHERE job_id = ?", (job_id,)))
     documents = rows_dicts(db.query_all(
         "SELECT id, doc_type, version, format, file_name, status, generator, created_at FROM document_versions "

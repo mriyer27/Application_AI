@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Review approval{% endblock %}
+{% block content %}
+{% set warn_keys = ["legal_declarations", "validation_errors", "unanswered_required", "requires_review"] %}
+{% set main_keys = ["employer", "role", "application_url", "resume", "cover_letter", "answers", "agreements"] %}
+<p class="small"><a href="/approvals">&larr; Approvals</a></p>
+<h1>Review: {{ approval.summary }}</h1>
+
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+<section class="card">
+  <div class="badges">{{ m.status_badge(approval.status) }} {{ m.badge(approval.request_type) }}{% if approval.expired_now %} {{ m.badge("expired", "bad") }}{% endif %}</div>
+  <dl class="kv">
+    <dt>Request</dt><dd>{{ approval.approval_uid }}</dd>
+    <dt>Requested</dt><dd>{{ approval.requested_at|localtime }}</dd>
+    <dt>Expires</dt><dd>{{ approval.expires_at|localtime if approval.expires_at else "never" }}</dd>
+    {% if job %}<dt>Job</dt><dd><a href="/jobs/{{ job.id }}">{{ job.title }} · {{ job.employer }}</a></dd>{% endif %}
+    {% if application %}<dt>Application</dt><dd><a href="/applications/{{ application.id }}">{{ application.application_uid }}</a> ({{ application.status|humanize }})</dd>{% endif %}
+    <dt>Content fingerprint</dt><dd><code>{{ approval.payload_hash[:12] }}</code></dd>
+    {% if approval.decided_at %}<dt>Decided</dt><dd>{{ approval.decided_at|localtime }} by {{ approval.decided_by }}{% if approval.decision_note %} — {{ approval.decision_note }}{% endif %}</dd>{% endif %}
+    {% if approval.consumed_at %}<dt>Used</dt><dd>{{ approval.consumed_at|localtime }}</dd>{% endif %}
+  </dl>
+</section>
+
+<section class="card legal-box" aria-labelledby="legal-heading">
+  <h2 id="legal-heading">Legal declarations — verify each one yourself</h2>
+  {% if payload.get("legal_declarations") %}
+  {{ m.value(payload.get("legal_declarations")) }}
+  <p class="small">Work authorization, sponsorship, citizenship, export-control and clearance answers are never guessed. Approving confirms these are true for you today.</p>
+  {% elif "legal_declarations" in payload %}
+  <p>None in this request.</p>
+  {% else %}
+  <p class="muted">This request does not list legal declarations.</p>
+  {% endif %}
+</section>
+
+{% for key in warn_keys[1:] %}
+{% if payload.get(key) %}
+<section class="card warn-box">
+  <h2>{{ key|humanize|capitalize }}</h2>
+  {{ m.value(payload.get(key)) }}
+</section>
+{% endif %}
+{% endfor %}
+
+<section class="card">
+  <h2>What will be used</h2>
+  <dl class="kv">
+    {% for key in main_keys %}
+    {% if key in payload %}<dt>{{ key|humanize|capitalize }}</dt><dd>{{ m.value(payload[key]) }}</dd>{% endif %}
+    {% endfor %}
+    {% for key, v in payload.items() %}
+    {% if key not in main_keys and key not in warn_keys %}<dt>{{ key|humanize|capitalize }}</dt><dd>{{ m.value(v) }}</dd>{% endif %}
+    {% endfor %}
+  </dl>
+</section>
+
+{% if approval.status == "pending" and not approval.expired_now %}
+<section class="card">
+  <h2>Decision</h2>
+  <form method="post" action="/approvals/{{ approval.approval_uid }}/decide" class="stack">
+    {{ m.csrf() }}
+    <input type="hidden" name="expected_payload_hash" value="{{ approval.payload_hash }}">
+    <label>Note (optional) <input name="note" maxlength="1000"></label>
+    {{ m.confirm_box("I reviewed everything above, including every legal declaration") }}
+    <div class="inline-form">
+      <button type="submit" name="decision" value="approve" class="primary">Approve</button>
+      <button type="submit" name="decision" value="reject" class="danger">Reject</button>
+    </div>
+    <p class="small muted">If the request changes after you opened this page, the decision is refused and you must review it again.</p>
+  </form>
+</section>
+{% elif approval.status == "pending" %}
+<p class="flash flash-warn">This request has expired and can no longer be approved. A new request will be created if the agent prepares it again.</p>
+{% endif %}
+{% endblock %}
