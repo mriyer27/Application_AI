@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
-from job_agent.errors import JobAgentError
+from job_agent.errors import JobAgentError, PermanentError
 from job_agent.logging_config import get_logger
 from job_agent.profile import CandidateProfile
 from job_agent.resume.keywords import JobKeywords
@@ -50,17 +50,29 @@ class LLMAssist:
         self.notes.append(f"{what} failed ({type(exc).__name__}); verified text used instead")
         self.on_error(what, exc)
 
-    def reword(self, fact_text: str, *, job_title: str, job_keywords: list[str]) -> str | None:
+    def reword(self, fact_text: str, *, job_title: str, job_keywords: list[str]) -> tuple[str | None, str | None]:
+        """``(rewording, None)``, or ``(None, reason)`` when this one output was unusable.
+
+        A ``PermanentError`` (e.g. the llm module's ``LLMInvalidOutput``) only
+        rejects this fact's rewording. Unavailability (``RecoverableError``),
+        a missing module, or an unexpected bug stops further LLM calls; the
+        error is recorded and verbatim facts are used.
+        """
         if self.failed:
-            return None
+            return None, None
         try:
             from job_agent.llm.generation import reword_fact
 
             result = reword_fact(self.client, fact_text, job_title=job_title, job_keywords=job_keywords)
-        except Exception as exc:  # ImportError / JobAgentError per contract, or a bug in an optional
+        except PermanentError as exc:
+            log.info("llm rewording output rejected by the llm module: %s", type(exc).__name__)
+            return None, f"llm_output_invalid: {exc}"
+        except Exception as exc:  # ImportError / RecoverableError per contract, or a bug in an optional
             self._fail("llm rewording", exc)  # component: recorded, then verbatim text is used
-            return None
-        return result if isinstance(result, str) else None
+            return None, None
+        if not isinstance(result, str):
+            return None, "llm_output_invalid: rewording is not text"
+        return result, None
 
     def draft_cover_letter(self, **kwargs: Any) -> Any:
         if self.failed:
@@ -123,7 +135,13 @@ def reword_bullets(assist: LLMAssist, content: ResumeContent, profile: Candidate
         fact = profile.fact_by_id(bullet.fact_ids[0])
         if fact is None:
             continue
-        raw = assist.reword(normalize_space(fact.text), job_title=job_title, job_keywords=hints)
+        raw, invalid = assist.reword(normalize_space(fact.text), job_title=job_title, job_keywords=hints)
+        if invalid:
+            bullet.rejected_rewording = RejectedRewording(text="", reasons=[invalid[:300]])
+            issues.append(Issue(code="rewording_rejected", severity="info", location=section, document="resume",
+                                message=f"LLM rewording of fact {fact.id} rejected ({invalid[:200]}); "
+                                        "verbatim fact text used"))
+            continue
         if raw is None:
             continue
         candidate = normalize_space(raw).strip("\"'“”‘’ ").lstrip("-•* ").strip()

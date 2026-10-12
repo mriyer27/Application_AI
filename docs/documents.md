@@ -68,8 +68,10 @@ not given), each bullet is offered to the local model via
 rejected text plus reasons are stored in the claim's `rejected_rewording`. The
 model only receives the fact text, the sanitized job title and keyword hints
 that also occur in your profile — no listing free text. If the llm module is
-missing, Ollama is down, or a call fails, the error is recorded (`errors`
-table, component `resume:llm`) and verbatim facts are used. Scheduled
+missing or Ollama is unavailable, the error is recorded (`errors` table,
+component `resume:llm`), no further LLM calls are made and verbatim facts are
+used. An invalid output for one fact (e.g. the llm module's own number check
+fails) only rejects that fact's rewording. Scheduled
 auto-preparation (`documents.auto_prepare_top_n`) always runs without the LLM.
 
 ### Prompt injection

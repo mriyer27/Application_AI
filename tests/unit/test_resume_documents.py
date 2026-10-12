@@ -216,6 +216,26 @@ def test_llm_failures_fall_back_and_are_recorded(ctx, job, fake_llm):
     assert result2.resume_version == 2 and all(c.generator == "rules" for c in result2.claims)
 
 
+def test_invalid_output_for_one_fact_does_not_stop_rewording(ctx, job, profile, fake_llm):
+    original = profile.fact_by_id("agency_regression").text
+    reworded = original.replace("using SAS Enterprise Guide", "in SAS Enterprise Guide")
+
+    def reword(text, **kw):
+        if text == original:
+            return reworded
+        raise PermanentError("reworded fact changed numbers")  # what llm.LLMInvalidOutput subclasses
+
+    fake_llm["reword"] = reword
+    result = prepare_documents(ctx, job(), include_cover_letter=False)
+    assert len(fake_llm["reword_calls"]) == len(profile.all_facts())  # kept going after the bad output
+    accepted = next(c for c in result.claims if c.fact_ids == ["agency_regression"])
+    assert accepted.text == reworded and accepted.generator.startswith("llm:")
+    others = [c for c in result.claims if c.fact_ids != ["agency_regression"]]
+    assert all(c.generator == "rules" and c.rejected_rewording.reasons[0].startswith("llm_output_invalid")
+               for c in others)
+    assert ctx.db.scalar("SELECT COUNT(*) FROM errors") == 0
+
+
 def test_llm_module_absent_falls_back(ctx, job, monkeypatch):
     ctx.config.llm.enabled = True
     monkeypatch.setitem(sys.modules, "job_agent.llm.client", None)  # import raises ImportError
