@@ -1,9 +1,12 @@
 """Real headless Chromium against LOCAL fixture pages (tests/fixtures/forms) served on 127.0.0.1.
 
-The fixture server counts every POST so the tests can assert that preparing an
-application causes zero submissions. Every request to a host other than the
-fixture server is aborted (``block_third_party_requests``), so nothing leaves
-the machine. Skipped cleanly when Chromium cannot be launched.
+The fixture server records every request (``requests``) and every non-GET body
+(``posts``) so the tests can assert that preparing an application sends
+nothing. A second "attacker" server (another port on 127.0.0.1, reached as
+``localhost`` and as ``127.0.0.1``) records everything that reaches it; hostile
+fixture pages try to send typed data there. Most tests run in strict mode
+(``block_third_party_requests``), the SEC-1 tests also in the default mode.
+Nothing leaves the machine. Skipped cleanly when Chromium cannot be launched.
 """
 
 from __future__ import annotations
@@ -35,52 +38,78 @@ FORMS = Path(__file__).resolve().parents[1] / "fixtures" / "forms"
 # --------------------------------------------------------------------------- #
 # Local fixture server
 # --------------------------------------------------------------------------- #
+class _RecordingHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):  # keep test output quiet
+        pass
+
+    def _send(self, status: int, body: bytes = b"", headers: dict[str, str] | None = None) -> None:
+        self.send_response(status)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        if body:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def _body(self) -> bytes:
+        length = int(self.headers.get("Content-Length") or 0)
+        return self.rfile.read(length) if length else b""
+
+
 class FixtureServer:
+    """The employer's official site: serves tests/fixtures/forms and records every request."""
+
     def __init__(self) -> None:
-        self.posts: list[tuple[str, bytes]] = []
+        self.posts: list[tuple[str, bytes]] = []  # every non-GET request: (path, body)
+        self.requests: list[tuple[str, str]] = []  # every request: (method, path)
+        self.attacker_port = 0
         self.stop = threading.Event()
         outer = self
 
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):  # keep test output quiet
-                pass
-
-            def _send(self, status: int, body: bytes = b"", headers: dict[str, str] | None = None) -> None:
-                self.send_response(status)
-                for k, v in (headers or {}).items():
-                    self.send_header(k, v)
-                if body:
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                if body:
-                    self.wfile.write(body)
-
+        class Handler(_RecordingHandler):
             def do_GET(self):
+                outer.requests.append(("GET", self.path))
                 parts = urlsplit(self.path)
                 if parts.path == "/redirect-offhost":
                     port = outer.port
                     return self._send(302, headers={"Location": f"http://localhost:{port}/forms/simple_form.html"})
+                if parts.path == "/apply/confirm":
+                    return self._send(200, (FORMS / "review_step.html").read_bytes())
                 if parts.path.startswith("/forms/"):
                     file = FORMS / parts.path.removeprefix("/forms/")
                     if file.is_file() and file.parent == FORMS:
-                        outcome = parse_qs(parts.query).get("outcome", ["confirm"])[0]
-                        html = file.read_text(encoding="utf-8").replace("__SUBMIT_ACTION__", f"/submit/{outcome}")
+                        query = parse_qs(parts.query)
+                        outcome = query.get("outcome", ["confirm"])[0]
+                        html = (file.read_text(encoding="utf-8")
+                                .replace("__SUBMIT_ACTION__", f"/submit/{outcome}")
+                                .replace("__ATTACKER_IP__", f"http://127.0.0.1:{outer.attacker_port}")
+                                .replace("__ATTACKER__", f"http://localhost:{outer.attacker_port}")
+                                .replace("__IFRAME_POST__", "false" if query.get("iframe") == ["0"] else "true"))
                         return self._send(200, html.encode())
                 return self._send(404, b"<h1>Not found</h1>")
 
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                body = self.rfile.read(length) if length else b""
+            def _non_get(self):
+                body = self._body()
+                outer.requests.append((self.command, self.path))
                 outer.posts.append((self.path, body))
                 if self.path == "/submit/confirm":
                     return self._send(303, headers={"Location": "/forms/thank-you.html"})
+                if self.path == "/submit/review":
+                    return self._send(303, headers={"Location": "/apply/confirm"})
+                if self.path == "/submit/screening":
+                    return self._send(200, (FORMS / "screening_step.html").read_bytes())
+                if self.path == "/submit/xhr":
+                    return self._send(200, b"ok")
                 if self.path == "/submit/validation":
                     return self._send(200, (FORMS / "validation_result.html").read_bytes())
                 if self.path == "/submit/hang":
                     outer.stop.wait(60)
                     return self._send(200, b"<p>late</p>")
                 return self._send(404, b"<h1>Not found</h1>")
+
+            do_POST = do_PUT = do_PATCH = do_DELETE = _non_get
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
@@ -90,12 +119,44 @@ class FixtureServer:
     def url(self, path: str) -> str:
         return f"http://127.0.0.1:{self.port}{path}"
 
+    def non_get(self) -> list[tuple[str, str]]:
+        return [r for r in self.requests if r[0] not in {"GET", "HEAD"}]
+
     def __enter__(self) -> "FixtureServer":
         self.thread.start()
         return self
 
     def __exit__(self, *exc) -> None:
         self.stop.set()
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class AttackerServer:
+    """A host that is NOT the job's: records every request (incl. WebSocket upgrades) that reaches it."""
+
+    def __init__(self) -> None:
+        self.hits: list[tuple[str, str, str]] = []  # (method, Host header, path)
+        outer = self
+
+        class Handler(_RecordingHandler):
+            def _any(self):
+                self._body()
+                outer.hits.append((self.command, self.headers.get("Host") or "", self.path))
+                return self._send(200, b"<p>x</p>")
+
+            do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = _any
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def __enter__(self) -> "AttackerServer":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -108,8 +169,15 @@ def chromium():
 
 
 @pytest.fixture
-def server(chromium):
+def attacker(chromium):
+    with AttackerServer() as srv:
+        yield srv
+
+
+@pytest.fixture
+def server(chromium, attacker):
     with FixtureServer() as srv:
+        srv.attacker_port = attacker.port
         yield srv
 
 
@@ -160,12 +228,14 @@ def _answers(ctx, app_id: int) -> dict[str, dict]:
         "SELECT * FROM application_answers WHERE application_id = ?", (app_id,))}
 
 
-def _approve_simple(ctx, make_job, server, outcome: str) -> tuple[dict, str]:
+def _approve_simple(ctx, make_job, server, outcome: str, page: str = "simple_form.html",
+                    factory=None) -> tuple[dict, str]:
     _profile_with_answers(ctx)
-    info = _setup(ctx, make_job, server.url(f"/forms/simple_form.html?outcome={outcome}"))
-    prep = service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory)
+    query = f"outcome={outcome}" + ("&iframe=0" if page == "leaky_form.html" else "")
+    info = _setup(ctx, make_job, server.url(f"/forms/{page}?{query}"))
+    prep = service.prepare_application(ctx, info["job_uid"], browser_factory=factory or offline_factory)
     assert prep.status == S.AWAITING_APPROVAL, prep.message
-    assert server.posts == []
+    assert server.posts == [] and server.non_get() == []
     approval_uid = service.set_answer(ctx, info["app_uid"], "certify", "yes")
     service.decide(ctx, approval_uid, approve=True, actor="cli")
     ctx.config.applications.browser_submission_enabled = True
