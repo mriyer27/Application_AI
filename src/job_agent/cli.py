@@ -224,6 +224,68 @@ def resume() -> None:
     console.print("[green]Automation resumed.[/green]")
 
 
+@app.command("run-once")
+def run_once(
+    no_llm: bool = typer.Option(False, "--no-llm", help="Rules-only scoring (skip the local AI)."),
+    no_documents: bool = typer.Option(False, "--no-documents",
+                                      help="Do not draft documents for new shortlisted jobs."),
+    top: int = typer.Option(10, "--top", "-n", help="How many top matches to show afterwards."),
+) -> None:
+    """Run one discovery cycle now: discover -> (local AI) -> score -> draft documents.
+
+    Nothing is submitted or sent. Equivalent to the scheduled 'discover_and_score' task.
+    """
+    from rich.markup import escape
+
+    from job_agent.models import RunStatus
+    from job_agent.tasks import run_task
+
+    ctx = get_ctx()
+    if no_llm:
+        ctx.config.scoring.use_llm = False
+    if no_documents:
+        ctx.config.documents.auto_prepare_top_n = 0
+    console.print("Running discovery cycle (this can take a few minutes with the local AI)...")
+    result = run_task(ctx, "discover_and_score", trigger="manual")
+    style = {"succeeded": "green", "partial": "yellow", "skipped": "yellow"}.get(result.status.value, "red")
+    console.print(f"[{style}]discover_and_score: {result.status.value}[/] (run {result.run_uid})")
+    steps = result.summary.get("steps", {})
+    totals = (steps.get("discover") or {}).get("totals") or {}
+    if totals:
+        console.print("Discovery: " + ", ".join(f"{k}={v}" for k, v in totals.items() if isinstance(v, int)))
+    score = steps.get("score") or {}
+    if score:
+        console.print(f"Scoring: scored={score.get('scored', 0)} unchanged={score.get('skipped_unchanged', 0)} "
+                      f"shortlisted={score.get('shortlisted', 0)} by category={score.get('by_category', {})}")
+    console.print(f"Local AI: {steps.get('llm', 'n/a')}")
+    docs = steps.get("documents")
+    if docs:
+        console.print(f"Documents: {docs}")
+    for err in result.summary.get("errors", []):
+        console.print(f"[red]• {escape(str(err))}[/red]")
+    if result.error:
+        console.print(f"[red]{escape(result.error)}[/red]")
+    try:
+        from job_agent.scoring.repository import top_jobs
+
+        rows = top_jobs(ctx.db, limit=top)
+    except (ImportError, JobAgentError):
+        rows = []
+    if rows:
+        t = Table(title=f"Top {len(rows)} matches", header_style="bold")
+        for col in ("Job", "Score", "Category", "Employer", "Title", "Location"):
+            t.add_column(col, overflow="fold")
+        for r in rows:
+            t.add_row(escape(str(r.get("job_uid", ""))), f"{r.get('overall_score') or 0:.1f}",
+                      escape(str(r.get("category", ""))), escape(str(r.get("employer", ""))),
+                      escape(str(r.get("title", ""))), escape(str(r.get("location") or "")))
+        console.print(t)
+        console.print("Details: [bold]job-agent job show <job-uid>[/bold]  ·  documents: "
+                      "[bold]job-agent prepare <job-uid>[/bold]")
+    if result.status == RunStatus.FAILED:
+        raise typer.Exit(1)
+
+
 @app.command("config-check")
 def config_check(show: bool = typer.Option(False, "--show", help="Print the effective (non-secret) config.")) -> None:
     """Validate the configuration and candidate profile files."""
