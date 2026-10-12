@@ -142,9 +142,10 @@ def test_scoring_is_repeatable(config, profile, db, make_job):
 
 @pytest.mark.parametrize(
     "phrase,expected",
-    [("0-2 years of experience", 1.0), ("2+ years of experience", 1.0), ("3+ years of relevant experience", 0.6),
-     ("4 years of professional experience", 0.35), ("5+ years of experience", 0.1),
-     ("Minimum of 7 years in analytics", 0.1), ("two (2) years of experience with SQL", 1.0)],
+    [("0-2 years of experience", 1.0), ("1+ year of experience", 0.95), ("2+ years of experience", 0.8),
+     ("3+ years of relevant experience", 0.55), ("4 years of professional experience", 0.3),
+     ("5+ years of experience", 0.1), ("Minimum of 7 years in analytics", 0.1),
+     ("two (2) years of experience with SQL", 0.8)],
 )
 def test_experience_years_mapping(config, profile, phrase, expected):
     result = score_job(crafted(required_qualifications=json.dumps(["SQL", phrase])), profile, config)
@@ -162,7 +163,7 @@ def test_five_plus_years_is_a_potential_disqualifier(config, profile):
 def test_alternative_years_in_one_sentence_take_the_lower(config, profile):
     quals = ["4 years of experience, or 2 years of experience with a Master's degree"]
     assert factor(score_job(crafted(required_qualifications=json.dumps(quals)), profile, config),
-                  "experience_level").score == 1.0
+                  "experience_level").score == 0.8  # 2 years (the lower alternative)
 
 
 def test_title_seniority_and_entry_signals(config, profile):

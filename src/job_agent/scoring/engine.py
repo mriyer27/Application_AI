@@ -376,14 +376,13 @@ _ANALYSIS_SENIORITY = {
 }
 
 
+#: Fit of an explicit "N+ years" minimum for an early-career candidate (internships
+#: plus well under two years of professional experience).
+_YEARS_SCALE = {0: 1.0, 1: 0.95, 2: 0.8, 3: 0.55, 4: 0.3}
+
+
 def years_score(years: int) -> float:
-    if years <= 2:
-        return 1.0
-    if years == 3:
-        return 0.6
-    if years == 4:
-        return 0.35
-    return 0.1
+    return _YEARS_SCALE.get(max(years, 0), 0.1)
 
 
 def _num(text: str) -> int:
@@ -467,8 +466,8 @@ def _experience(data: dict[str, Any], profile: "CandidateProfile", analysis: Job
     years = explicit_years(data)
     if years is not None:
         score = years_score(years[0])
-        parts.append(f"listing asks for '{years[1]}' (counted as {years[0]}) -> {score:.2f} (0-2 years 1.0, "
-                     "3 years 0.6, 4 years 0.35, 5+ years 0.1; you are early-career)")
+        parts.append(f"listing asks for '{years[1]}' (counted as {years[0]}) -> {score:.2f} (0 years 1.0, "
+                     "1 year 0.95, 2 years 0.8, 3 years 0.55, 4 years 0.3, 5+ years 0.1; you are early-career)")
         if years[0] > 2:
             findings.missing.append(f"{years[0]}+ years of professional experience (profile: internships / early career)")
         if years[0] >= 5:
