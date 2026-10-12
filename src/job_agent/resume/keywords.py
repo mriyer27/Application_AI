@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 
 from job_agent.resume import lexicon
 from job_agent.resume.text import GENERIC_TERMS, STOPWORDS, content_set, mentions, normalize_space, stem, words
-from job_agent.security.untrusted import clean_untrusted, injection_suspected
+from job_agent.security.untrusted import clean_untrusted
+from job_agent.security.untrusted import injection_suspected as _injection_suspected
 
 _TITLE_W, _REQ_W, _PREF_W, _DESC_W, _MATCH_BOOST = 3.0, 2.0, 1.5, 1.0, 1.5
 _MAX_TERMS = 60
@@ -62,7 +63,7 @@ class JobKeywords:
         for t in self.top_terms(n * 2):
             if len(out) >= n:
                 break
-            if _SAFE_KEYWORD.match(t) and len(t.split()) <= 3 and not injection_suspected(t) and t not in out:
+            if _SAFE_KEYWORD.match(t) and len(t.split()) <= 3 and not _injection_suspected(t) and t not in out:
                 out.append(t)
         return out[:n]
 
@@ -134,6 +135,6 @@ def extract_job_keywords(title: str, required: list[str] | None = None, preferre
         terms=terms,
         requirements=req + pref,
         text=full_text,
-        injection_suspected=injection_suspected(full_text),
+        injection_suspected=_injection_suspected(full_text),
         _stems=content_set(full_text),
     )

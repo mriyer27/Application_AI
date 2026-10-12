@@ -28,6 +28,8 @@ from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from job_agent.database.connection import Database, from_json
+from job_agent.models import PipelineState
+from job_agent.reporting.text import parse_ts
 from job_agent.utils.time import to_iso, utcnow_iso
 
 # --------------------------------------------------------------------------- #
@@ -223,8 +225,6 @@ def trend_counts(db: Database, days: int, *, tz_name: str = "UTC",
     def add(key: str, rows: Sequence[sqlite3.Row]) -> None:
         seen: set[tuple[Any, date]] = set()
         for row in rows:
-            from job_agent.reporting.text import parse_ts
-
             dt = parse_ts(row["at"])
             if dt is None:
                 continue
@@ -253,8 +253,6 @@ def trend_counts(db: Database, days: int, *, tz_name: str = "UTC",
 def applications_by_status(db: Database) -> list[tuple[str, int]]:
     rows = db.query_all("SELECT status, COUNT(*) AS n FROM applications GROUP BY status")
     counts = {r["status"]: int(r["n"]) for r in rows}
-    from job_agent.models import PipelineState
-
     order = [p.value for p in PipelineState]
     ordered = [(st, counts[st]) for st in order if st in counts]
     ordered += [(st, n) for st, n in sorted(counts.items()) if st not in order]
@@ -517,7 +515,7 @@ def deadlines(db: Database, day_start_utc: str, horizon_utc: str, limit: int = 1
     """Open deadline-type follow-ups due before the horizon, and closing dates of jobs you care about."""
     open_f = f"f.status NOT IN ({_lit(OPEN_FOLLOWUP_EXCLUDED)})"
     rows = db.query_all(
-        f"SELECT 'followup' AS kind, f.followup_type AS what, f.due_at AS at, j.employer, j.title, j.job_url "
+        f"SELECT * FROM (SELECT 'followup' AS kind, f.followup_type AS what, f.due_at AS at, j.employer, j.title, j.job_url "
         "FROM followups f LEFT JOIN applications a ON a.id = f.application_id "
         "LEFT JOIN jobs j ON j.id = COALESCE(a.job_id, f.job_id) "
         f"WHERE {open_f} AND f.followup_type IN ('deadline', 'assessment_due', 'interview_upcoming') "
@@ -527,7 +525,7 @@ def deadlines(db: Database, day_start_utc: str, horizon_utc: str, limit: int = 1
         "FROM jobs j LEFT JOIN applications a ON a.job_id = j.id "
         "WHERE j.duplicate_of_job_id IS NULL AND j.listing_status = 'active' AND j.closing_at IS NOT NULL "
         f"AND {_win('j.closing_at')} AND (j.pipeline_state = 'shortlisted' OR (a.id IS NOT NULL AND a.status NOT IN "
-        f"({_lit(TERMINAL_APPLICATION_STATES)}) AND NOT ({SUBMITTED_SQL}))) "
+        f"({_lit(TERMINAL_APPLICATION_STATES)}) AND NOT ({SUBMITTED_SQL})))) "
         "ORDER BY julianday(at) LIMIT ?",
         (horizon_utc, day_start_utc, horizon_utc, limit),
     )
@@ -549,14 +547,14 @@ def failures(db: Database, day_start_utc: str, day_end_utc: str, limit: int = 20
     """Errors recorded in the window plus failed/interrupted runs that have no error row."""
     params = (day_start_utc, day_end_utc)
     rows = db.query_all(
-        "SELECT 'error' AS source, e.occurred_at AS at, e.component AS component, e.task_name AS task_name, "
+        "SELECT * FROM (SELECT 'error' AS source, e.occurred_at AS at, e.component AS component, e.task_name AS task_name, "
         "e.error_kind AS kind, e.message AS message, e.human_action AS human_action, e.resolved AS resolved "
         f"FROM errors e WHERE {_win('e.occurred_at')} "
         "UNION ALL "
         "SELECT 'run', r.started_at, 'task:' || r.task_name, r.task_name, COALESCE(r.error_kind, r.status), "
         "COALESCE(r.error_message, 'run ' || r.status), NULL, 0 FROM agent_runs r "
         f"WHERE r.status IN ('failed', 'interrupted') AND {_win('r.started_at')} "
-        "AND NOT EXISTS (SELECT 1 FROM errors e2 WHERE e2.run_id = r.id) "
+        "AND NOT EXISTS (SELECT 1 FROM errors e2 WHERE e2.run_id = r.id)) "
         "ORDER BY julianday(at) LIMIT ?",
         (*params, *params, limit),
     )

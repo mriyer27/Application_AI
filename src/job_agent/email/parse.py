@@ -237,10 +237,8 @@ def parse_message(message: dict[str, Any], *, body_char_limit: int) -> ParsedEma
     # internalDate is when Gmail received the message (not sender-controlled);
     # the Date header is used only when it is missing.
     received_at = _internal_date(message.get("internalDate")) or date_header_at
-    subject = clean_untrusted(headers.get("subject", ""), max_chars=SUBJECT_LIMIT).replace("\n", " ")
-    snippet = clean_untrusted(html.unescape(str(message.get("snippet") or "")), max_chars=SNIPPET_LIMIT)
-    if len(snippet) > SNIPPET_LIMIT:
-        snippet = snippet[:SNIPPET_LIMIT]
+    subject = clean_untrusted(headers.get("subject", ""), max_chars=5_000).replace("\n", " ")[:SUBJECT_LIMIT]
+    snippet = clean_untrusted(html.unescape(str(message.get("snippet") or "")), max_chars=5_000)[:SNIPPET_LIMIT]
     precedence = headers.get("precedence", "").lower()
     bulk = bool(headers.get("list-unsubscribe") or headers.get("list-id")) or precedence in {"bulk", "list", "junk"}
     return ParsedEmail(
