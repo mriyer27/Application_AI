@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from job_agent.config import LLMSection
@@ -9,7 +12,7 @@ from job_agent.llm import hardware
 from job_agent.llm.benchmark import BENCHMARK_POSTING, BenchmarkExtraction, benchmark
 from job_agent.llm.errors import LLMUnavailable
 from job_agent.llm.hardware import Hardware, detect_hardware, recommend_models
-from job_agent.llm.testing import FakeOllama
+from job_agent.llm.testing import FakeOllama, chat_envelope
 
 #: HP Pavilion Aero 13 (Ryzen 7 5800U, 8C/16T, integrated Radeon, 16 GB).
 AERO_13 = Hardware(total_ram_gb=15.4, cpu_count=16, cpu_model="AMD Ryzen 7 5800U with Radeon Graphics", gpu=None,
@@ -100,6 +103,23 @@ def test_benchmark_measures_speed_and_validity():
     assert fake.chat_requests[0]["format"] == BenchmarkExtraction.model_json_schema()
     assert "Example Analytics Group" in fake.chat_requests[0]["messages"][1]["content"]
     assert "fictional" in BENCHMARK_POSTING
+
+
+def test_benchmark_excludes_retried_runs_from_timings():
+    fake = FakeOllama(models=["m"]).queue(httpx.ReadTimeout("slow"), GOOD)
+    result = benchmark(fake.client(LLMSection(model="m", max_retries=1)), "m")
+    assert result.json_valid  # the output itself was fine ...
+    assert result.tokens_per_s is None and result.prompt_tokens_per_s is None  # ... but timings are not comparable
+    assert result.est_job_analysis_seconds is None and "needed 2 attempts" in result.errors[0]
+
+
+def test_benchmark_estimate_includes_server_overhead():
+    envelope = chat_envelope("m", json.dumps(GOOD))
+    envelope["total_duration"] = 20_000_000_000  # 2 s load + 10 s busy -> 1.8x overhead
+    fake = FakeOllama(models=["m"]).queue(httpx.Response(200, json=envelope))
+    result = benchmark(fake.client(LLMSection(model="m")), "m")
+    assert result.overhead_factor == pytest.approx(1.8)
+    assert result.est_job_analysis_seconds == pytest.approx((3000 / 150 + 500 / 75) * 1.8, rel=0.01)
 
 
 def test_benchmark_reports_invalid_json():

@@ -166,7 +166,7 @@ class LLMSection(_Section):
     base_url: str = "http://127.0.0.1:11434"
     model: str = "qwen2.5:7b-instruct"
     fallback_models: list[str] = Field(default_factory=lambda: ["qwen2.5:3b-instruct", "llama3.2:3b"])
-    timeout_seconds: float = Field(180, gt=0, le=1800)
+    timeout_seconds: float = Field(300, gt=0, le=1800)  # 7B models on CPU can need minutes per job
     max_retries: int = Field(2, ge=0, le=5)
     temperature: float = Field(0.1, ge=0, le=1.5)
     num_ctx: int = Field(8192, ge=1024, le=131_072)

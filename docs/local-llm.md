@@ -119,9 +119,22 @@ pays the load time again.
 Generation speed on CPU is limited mainly by memory bandwidth; prompt
 processing by CPU cores. **Measured** in the development container
 (4 shared vCPUs, Intel Xeon @ 2.1 GHz, no GPU, Ollama 0.12.6, structured
-outputs, `job-agent llm benchmark --cold`):
+outputs) with `job-agent llm benchmark --cold` and real `analyze_job` calls on a
+fictional ~3,000-character posting; ranges cover all runs, some of which shared
+the CPU with other work:
 
-MEASURED_TABLE_PLACEHOLDER
+| Model | Cold load | Prompt processing | Generation | One real job analysis (~1.2k prompt tokens) | Valid JSON (all live calls) |
+|---|---|---|---|---|---|
+| `qwen2.5:1.5b-instruct` | ~6 s | 130–210 tokens/s | 8–12 tokens/s | 44–88 s (6 timed runs) | 12/12 |
+| `qwen2.5:3b-instruct` | 5–16 s | 51–85 tokens/s | 3.5–6.6 tokens/s | 109–126 s (2 timed runs) | 6/6 |
+| `qwen2.5:7b-instruct` | ~23 s | 33–63 tokens/s | 1.7–2.9 tokens/s | 272 s (1 run) | 3/3 |
+
+Server-side time was 20–120 % higher than "load + prompt + generation" for
+these schema-constrained requests (JSON-schema sampling costs CPU time); the
+benchmark reports this as the *overhead factor* and includes it in its
+estimate. With the default `llm.timeout_seconds: 180`, a **cold** 7B request
+on this container timed out (and was retried); on slow machines raise the
+timeout to 300–600 s.
 
 The Ryzen 7 5800U has 8 real cores, higher clocks and fast LPDDR4x memory, so
 expect it to be noticeably faster than this container — but these are
@@ -163,9 +176,26 @@ for job analysis:
   truncated before they reach the model.
 - **Speed** — at a few tokens per second, each analysis takes minutes.
 
-In practice: `qwen2.5:7b-instruct` is the smallest model that handled these
-prompts consistently in testing; 3B models work but drop more; 1.5B models are
-useful only for testing the pipeline.
+What this looked like on the same fictional posting (one run each, so treat it
+as an illustration, not a benchmark):
+
+- `qwen2.5:1.5b-instruct` returned valid JSON every time, but put nice-to-have
+  tools under required skills, **missed the sponsorship sentence**, invented a
+  red flag ("no sponsorship statements provided") and wrote a fit explanation
+  that claimed something not in the posting. Useful for testing the pipeline,
+  not for decisions.
+- `qwen2.5:3b-instruct` copied both sponsorship sentences verbatim, but swapped
+  required and nice-to-have skills (Python as required, Excel as preferred),
+  reported 2 years for "0-2 years" (the number is in the posting, so the
+  deterministic check keeps it), and its summary mentioned Tableau, which the
+  posting never names (summaries are prose and are not fact-checked).
+- `qwen2.5:7b-instruct` separated required (SQL, Excel) from preferred skills
+  (Python, Power BI, Jira, Confluence), copied both sponsorship sentences
+  verbatim and read "0-2 years" correctly — at roughly 4.5 minutes per job on
+  4 slow vCPUs.
+- The models rated `ai_relevance` 0.6–0.8 for a role with no AI content: the
+  relevance numbers are advisory model judgments, not measurements — treat
+  them as weak signals.
 
 ## Commands
 
@@ -186,7 +216,7 @@ job-agent llm analyze <job-uid> [--no-cache] [--model M]   # analyze one stored 
 | `base_url` | `http://127.0.0.1:11434` | must be localhost |
 | `model` | `qwen2.5:7b-instruct` | preferred model |
 | `fallback_models` | `[qwen2.5:3b-instruct, llama3.2:3b]` | used in order if `model` is not pulled |
-| `timeout_seconds` | `180` | per request; slow CPUs may need more |
+| `timeout_seconds` | `180` | per request; raise to 300–600 on slow CPUs or if `llm check`/benchmarks show timeouts |
 | `max_retries` | `2` | retries for transient errors (connection, timeout, HTTP 408/429/5xx), with exponential backoff |
 | `temperature` | `0.1` | low = more deterministic |
 | `num_ctx` | `8192` | context window (RAM grows with it) |
@@ -221,7 +251,14 @@ many jobs are analyzed during scheduled scoring runs.
 - Sponsorship statements are only what the model chose to copy; a weak model
   may miss some. Eligibility flags in scoring are computed separately by rules.
 - `fit_explanation`, `summary`, `responsibilities` and `red_flags` are model
-  prose (length-limited, not fact-checked) and must be read as suggestions.
+  prose (length-limited, not fact-checked) and must be read as suggestions;
+  live tests showed small models naming tools the posting does not contain.
+- `years_experience_required` is kept when the number appears in the posting,
+  so a model reading "0-2 years" as 2 is not corrected.
+- A request that times out is retried (bounded by `llm.max_retries`); Ollama
+  may still be working on the first request, so worst-case latency is about
+  `timeout_seconds × (max_retries + 1)` for the first job of a run (the
+  analyzer then stops calling the model for that run).
 - Reply-draft guards are pattern-based and conservative: some harmless drafts
   are rejected (you then write the message yourself or use the template).
 - The legal-question detector is keyword-based and errs on the side of

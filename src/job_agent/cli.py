@@ -388,6 +388,7 @@ def _register_module_commands() -> None:
 _MODULE_COMMANDS: list[str] = [
     "job_agent.discovery.commands",
     "job_agent.scoring.commands",
+    "job_agent.llm.commands",
     "job_agent.reporting.commands",
     "job_agent.scheduler.commands",
     "job_agent.resume.commands",

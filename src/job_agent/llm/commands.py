@@ -135,6 +135,8 @@ def benchmark_cmd(
     table.add_row("Total", fmt(result.total_ms, " ms"))
     table.add_row("Grounded skills", "n/a" if result.grounded_skill_ratio is None
                   else f"{result.grounded_skill_ratio:.0%} of extracted skills appear in the posting")
+    table.add_row("Server overhead factor", "n/a" if result.overhead_factor is None
+                  else f"{result.overhead_factor:.2f}x prompt+generation time")
     table.add_row(f"Est. job analysis (~{TYPICAL_PROMPT_TOKENS} in / {TYPICAL_OUTPUT_TOKENS} out tokens)",
                   fmt(result.est_job_analysis_seconds, " s"))
     console.print(table)

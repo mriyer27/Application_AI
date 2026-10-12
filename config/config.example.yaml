@@ -126,9 +126,9 @@ llm:
   enabled: true
   provider: ollama
   base_url: http://127.0.0.1:11434   # must be localhost (local-first policy)
-  model: qwen2.5:7b-instruct          # see docs/setup.md for hardware-based recommendations
+  model: qwen2.5:7b-instruct          # see docs/local-llm.md (`job-agent llm recommend`)
   fallback_models: [qwen2.5:3b-instruct, llama3.2:3b]
-  timeout_seconds: 180
+  timeout_seconds: 300               # CPU-only 7B models need minutes; raise to 600 if runs time out
   max_retries: 2
   temperature: 0.1
   num_ctx: 8192

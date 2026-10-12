@@ -125,7 +125,8 @@ def _check_ollama(ctx: "AppContext") -> Check:
     try:
         from job_agent.llm.client import OllamaClient  # provided by the llm module
 
-        status = OllamaClient(cfg).health()
+        with OllamaClient(cfg) as client:
+            status = client.health()
         return Check("ollama", status.status, status.detail, status.action)
     except ImportError:
         pass

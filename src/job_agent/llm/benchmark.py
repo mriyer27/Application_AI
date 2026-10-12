@@ -6,6 +6,11 @@ extraction schema, sent the same way real analyses are (structured outputs,
 reflects the model's raw reliability. ``grounded_skill_ratio`` is the share of
 extracted skills that literally appear in the posting (1.0 = no invented
 skills) -- a cheap proxy for hallucination rate.
+
+Runs that needed a retry are reported and excluded from the timing averages (a
+retried request can reuse the timed-out request's prompt cache).
+``est_job_analysis_seconds`` includes the measured server overhead
+(``overhead_factor``, e.g. schema-constrained sampling on CPU).
 """
 
 from __future__ import annotations
@@ -76,6 +81,8 @@ class BenchmarkResult:
     total_ms: float = 0.0  # wall-clock for all runs
     avg_run_ms: float | None = None
     grounded_skill_ratio: float | None = None
+    #: server time / (prompt + generation time); > 1 = overhead such as schema-constrained sampling
+    overhead_factor: float | None = None
     est_job_analysis_seconds: float | None = None
     errors: list[str] = field(default_factory=list)
 
@@ -107,6 +114,7 @@ def benchmark(client: OllamaClient, model: str, *, runs: int = 1, cold: bool = F
     fmt = BenchmarkExtraction.model_json_schema()
     prompt_rates: list[float] = []
     gen_rates: list[float] = []
+    overheads: list[float] = []
     grounded = total_skills = 0
     started_all = time.monotonic()
     for i in range(runs):
@@ -120,12 +128,20 @@ def benchmark(client: OllamaClient, model: str, *, runs: int = 1, cold: bool = F
         except JobAgentError as exc:  # e.g. rejected request: reported in the result, benchmark continues
             result.errors.append(f"run {i + 1}: {type(exc).__name__}: {exc}")
             continue
-        if i == 0:
-            result.load_ms = round(chat.load_ms, 1) if chat.load_ms is not None else None
-        if chat.prompt_tokens_per_second:
-            prompt_rates.append(chat.prompt_tokens_per_second)
-        if chat.tokens_per_second:
-            gen_rates.append(chat.tokens_per_second)
+        if chat.attempts > 1:
+            # A retried request can reuse the prompt cache of the timed-out one: its timings are not comparable.
+            result.errors.append(f"run {i + 1}: needed {chat.attempts} attempts (timeout or transient error); "
+                                 "timings excluded -- raise llm.timeout_seconds and re-run")
+        else:
+            if i == 0:
+                result.load_ms = round(chat.load_ms, 1) if chat.load_ms is not None else None
+            if chat.prompt_tokens_per_second:
+                prompt_rates.append(chat.prompt_tokens_per_second)
+            if chat.tokens_per_second:
+                gen_rates.append(chat.tokens_per_second)
+            busy = (chat.prompt_eval_ms or 0) + (chat.eval_ms or 0)
+            if chat.total_ms and busy:
+                overheads.append(max(1.0, (chat.total_ms - (chat.load_ms or 0)) / busy))
         try:
             parsed = parse_model(chat.content, BenchmarkExtraction)
         except OutputValidationError as exc:
@@ -140,8 +156,10 @@ def benchmark(client: OllamaClient, model: str, *, runs: int = 1, cold: bool = F
     result.prompt_tokens_per_s = _mean(prompt_rates)
     result.tokens_per_s = _mean(gen_rates)
     result.grounded_skill_ratio = round(grounded / total_skills, 3) if total_skills else None
+    result.overhead_factor = _mean(overheads)
     if result.prompt_tokens_per_s and result.tokens_per_s:
         result.est_job_analysis_seconds = round(
-            TYPICAL_PROMPT_TOKENS / result.prompt_tokens_per_s + TYPICAL_OUTPUT_TOKENS / result.tokens_per_s, 1
+            (TYPICAL_PROMPT_TOKENS / result.prompt_tokens_per_s + TYPICAL_OUTPUT_TOKENS / result.tokens_per_s)
+            * (result.overhead_factor or 1.0), 1
         )
     return result

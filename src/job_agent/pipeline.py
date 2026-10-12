@@ -65,6 +65,10 @@ def run_cycle(ctx: "AppContext", run: "RunInfo | None" = None, *, discover: bool
         summary["errors"].append(_record(ctx, "score", exc, run))
         summary["partial"] = True
         return summary
+    finally:
+        if analyzer is not None:
+            summary["steps"]["llm_stats"] = analyzer.stats()
+            analyzer.close()
 
     # 4. Draft documents for top new shortlisted jobs (rules-only, no LLM) --
     top_n = ctx.config.documents.auto_prepare_top_n if auto_prepare else 0
