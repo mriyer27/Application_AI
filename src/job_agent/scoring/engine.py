@@ -817,6 +817,7 @@ _FLAG_LABELS = {
     "export_control": "Export-control condition stated",
     "graduation_timing": "Graduation / start-date timing stated",
     "sponsorship_available": "Sponsorship mentioned as available",
+    "work_authorization_required": "Work-authorization requirement stated",
 }
 
 

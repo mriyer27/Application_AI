@@ -65,13 +65,29 @@ to you (CLAUDE.md rule 2).
 
 | Code | Severity | Triggered by (examples) |
 |---|---|---|
-| `no_sponsorship` | review | "will not sponsor", "unable to sponsor", "no visa sponsorship", "without sponsorship", "must be authorized to work … without", "not able to provide sponsorship" |
-| `citizenship_required` | blocker | "U.S. citizen", "US citizenship required", "must be a citizen" (EEO "regardless of citizenship" text and "not required" are ignored) |
-| `permanent_residency_required` | blocker | "green card", "permanent resident" (but not "green card sponsorship") |
-| `clearance_required` | blocker | "security clearance", "TS/SCI", "secret clearance", "clearance required" (but not "no clearance required") |
-| `export_control` | blocker | "ITAR", "EAR" (uppercase), "export control", "U.S. person" |
-| `sponsorship_available` | info | "visa sponsorship available", "we sponsor", "will sponsor" (skipped when the sentence contains a negation) |
+| `no_sponsorship` | review | "will not sponsor", "unable to sponsor / support visa applications", "no visa sponsorship", "sponsorship will not be provided", "does not qualify for sponsorship", "not eligible for sponsorship", "without (the need for) sponsorship / an H-1B visa", "must not require sponsorship", "authorized to work … for any employer", "unrestricted work authorization"; visa wording (H-1B, OPT, CPT, F-1, J-1, student visas, employment-based immigration) next to an exclusion: "OPT/CPT candidates will not be considered", "F-1 students are not eligible", "not open to candidates on student visas" |
+| `citizenship_required` | blocker | "U.S. citizen", "US citizenship required", "must be a citizen", "citizen of the United States", "citizens only", "U.S. national(s)", "citizen or national", "non-U.S. citizens need not apply" |
+| `permanent_residency_required` | blocker | "green card", "permanent resident", "LPR" (but not "green card sponsorship") |
+| `clearance_required` | blocker | "security clearance", "TS/SCI", "(top) secret clearance", "active Secret", "Top Secret", "Public Trust", "polygraph", "full scope poly", "clearable", "clearance-eligible", "eligible for a DoD clearance", "obtain clearance", "federal background investigation", "candidates with no active clearance will not be considered", "not required, but you must be able to obtain one" (but not "no clearance required" or "customs clearance") |
+| `export_control` | blocker | "ITAR", "EAR" (uppercase), "export control(led)", "export-restricted", "export regulations", "deemed export", "U.S. person", "22 CFR …" / "15 CFR …" |
+| `work_authorization_required` | info | "must be (currently) authorized / eligible to work", "authorized to work in the United States", "right to work in the US", "work authorization required". Not raised for Form I-9 / E-Verify onboarding wording, and dropped when the same sentence already raises `no_sponsorship`. Info only: it does not move a job to `needs_review`. |
+| `sponsorship_available` | info | "visa sponsorship available", "we sponsor", "will sponsor" (skipped when its clause contains a negation) |
 | `graduation_timing` | review | A graduation or start-date deadline earlier than the **expected graduation in your profile** (`education[].expected: true`, `end`): "December 2026 graduates", "graduated by August 2026", "start date in 2026", "must have completed a Master's degree" (when yours is still expected). "2027 or later", "since 2015" and similar lower bounds are ignored. Start dates are ignored for internships. |
+
+**Exceptions are clause-scoped.** A negation such as "not required" or "need
+not" only cancels a match in its own clause. Clauses are split on ";", ", but",
+"however", "although", "though", "whereas", ", and", ", while", and on a bare
+"and" once the clause already has its own predicate ("X is required and Y is not
+required"). So "U.S. citizenship is required, but prior experience is not
+required" still raises `citizenship_required`, while "U.S. citizenship preferred
+but not required" and "U.S. citizenship and security clearance are not required"
+do not. Equal-opportunity wording is ignored only when the match is an item in
+the list that follows "without regard to", "regardless of", "on the basis of",
+"discriminate" or "protected class" ("… national origin, U.S. citizenship
+status, or disability"). It does not cancel a requirement elsewhere in the
+sentence: "U.S. citizenship is required and all qualified applicants will receive
+consideration without regard to race…" is flagged. "Visa status" and
+"immigration status" (EEO wording) never count as visa terms.
 
 The patterns are heuristics. A flag can be wrong, and a statement phrased in an
 unusual way can be missed. **Always read the listing yourself.**
