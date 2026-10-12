@@ -204,7 +204,7 @@ def mark_interrupted_runs(db: Database) -> int:
     count = 0
     for row in rows:
         pid = row["host_pid"]
-        if pid and pid != os.getpid() and _pid_alive(pid):
+        if pid and pid != os.getpid() and pid_alive(pid):
             continue
         if pid == os.getpid():
             continue
@@ -214,7 +214,8 @@ def mark_interrupted_runs(db: Database) -> int:
     return count
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
+    """True if a process with this pid is currently running (cross-platform)."""
     if os.name == "nt":  # os.kill(pid, 0) would send CTRL_C_EVENT on Windows
         import ctypes
 

@@ -141,7 +141,7 @@ def last_success(db: Database, task_name: str) -> datetime | None:
 # --------------------------------------------------------------------------- #
 def pid_alive(pid: int) -> bool:
     # repo owns the cross-platform liveness check (Windows-safe; os.kill(pid, 0) is not).
-    return repo._pid_alive(pid)  # noqa: SLF001 - see foundation_change_requests: make it public
+    return repo.pid_alive(pid)
 
 
 def release_dead_task_locks(db: Database) -> list[str]:

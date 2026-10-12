@@ -325,6 +325,7 @@ def _register_module_commands() -> None:
 #: modules are listed here.
 _MODULE_COMMANDS: list[str] = [
     "job_agent.reporting.commands",
+    "job_agent.scheduler.commands",
 ]
 
 _register_module_commands()

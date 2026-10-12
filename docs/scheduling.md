@@ -158,9 +158,10 @@ interrupt a task that is already running.
   loss, logoff/shutdown on Windows): the run in progress stays marked `running`
   until the next start, which marks it `interrupted` with an *unknown outcome*
   and releases its lock. It is not retried automatically; the task runs again at
-  its next scheduled time or catch-up. All tasks are idempotent (re-running
-  discovery, scoring, email sync or the report does not duplicate data), and none
-  of them submits applications.
+  its next scheduled time or catch-up. The scheduled tasks are meant to be safe
+  to re-run (discovery deduplicates jobs, the report is regenerated per day,
+  emails are keyed by message id), and none of them submits applications or
+  sends email.
 * At every start the daemon also expires approvals past their deadline and
   refuses to run on a database that fails its integrity check (restore a backup,
   see `setup.md`).
