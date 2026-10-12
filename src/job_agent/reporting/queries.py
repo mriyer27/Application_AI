@@ -152,6 +152,8 @@ def dashboard_counts(db: Database, day_start_utc: str, day_end_utc: str) -> dict
                                f"{_before('discovered_at')}", (e,))
     c["new_jobs_today"] = _int(db, f"SELECT COUNT(*) FROM jobs WHERE duplicate_of_job_id IS NULL AND "
                                    f"{_win('discovered_at')}", (s, e))
+    c["new_relevant_today"] = _int(db, f"SELECT COUNT(*) FROM jobs WHERE duplicate_of_job_id IS NULL AND "
+                                       f"pipeline_state != 'filtered_out' AND {_win('discovered_at')}", (s, e))
     c["jobs_scored"] = _int(
         db,
         "SELECT COUNT(DISTINCT j.id) FROM jobs j JOIN job_scores s ON s.job_id = j.id AND s.is_current = 1 "

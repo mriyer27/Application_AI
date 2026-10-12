@@ -12,7 +12,8 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 #: (label, stats key) pairs printed after ``report``.
 _KEY_COUNTS = (
-    ("New jobs today", "new_jobs_today"),
+    ("New jobs today (passed filters)", "new_relevant_today"),
+    ("New jobs today (all discovered)", "new_jobs_today"),
     ("Total jobs", "total_jobs"),
     ("Shortlisted", "shortlisted"),
     ("Prepared today", "applications_prepared_today"),

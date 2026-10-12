@@ -237,7 +237,10 @@ def submission_evidence(row: dict[str, Any]) -> str:
 METRICS: tuple[tuple[str, str, str], ...] = (
     ("Total jobs discovered", "total_jobs",
      "Distinct (non-duplicate) listings discovered up to the end of the report day."),
-    ("New jobs today", "new_jobs_today", "Listings first discovered during the report day (local time)."),
+    ("New jobs today", "new_jobs_today",
+     "Listings first discovered during the report day (local time), including ones your filters removed."),
+    ("New jobs today passing filters", "new_relevant_today",
+     "New listings today that passed your search filters (not filtered out)."),
     ("Jobs scored", "jobs_scored", "Listings with a current fit score."),
     ("Shortlisted", "shortlisted", "Listings currently in the 'shortlisted' state."),
     ("Applications (total)", "applications_total", "Application records created up to the end of the report day."),

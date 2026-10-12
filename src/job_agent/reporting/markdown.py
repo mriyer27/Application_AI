@@ -183,7 +183,8 @@ def render_markdown(data: ReportData) -> str:
         "",
         f"*Generated {data.generated_at.strftime('%Y-%m-%d %H:%M')} ({data.tz_name}) · job-agent {data.app_version}*",
         "",
-        f"**Today:** {c.get('new_jobs_today', 0)} new jobs · {c.get('applications_prepared_today', 0)} prepared · "
+        f"**Today:** {c.get('new_relevant_today', 0)} new jobs passed your filters "
+        f"({c.get('new_jobs_today', 0)} discovered) · {c.get('applications_prepared_today', 0)} prepared · "
         f"{c.get('submitted_today', 0)} actually submitted · {c.get('emails_today', 0)} emails",
         "",
         f"**Totals:** {c.get('total_jobs', 0)} jobs · {c.get('jobs_scored', 0)} scored · "
