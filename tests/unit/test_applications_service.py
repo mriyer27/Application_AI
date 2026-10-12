@@ -396,3 +396,13 @@ def test_approval_view_sections(ctx, make_job):
     assert view["browser_submission_blockers"] and view["status"] == "pending"
     with pytest.raises(ApprovalError):
         service.approval_view(ctx.db, "AP-missing")
+
+
+def test_decide_records_other_approval_types_without_application_side_effects(ctx):
+    from job_agent.models import ApprovalType
+
+    uid = repo.create_approval(ctx.db, ApprovalType.SEND_FOLLOWUP, {"draft": "Hello"}, summary="Follow up",
+                               actor="system", expires_in_hours=1)
+    result = service.decide(ctx, uid, approve=True, actor="dashboard")
+    assert result.application_uid is None and result.status is None
+    assert repo.get_approval(ctx.db, uid)["status"] == "approved"

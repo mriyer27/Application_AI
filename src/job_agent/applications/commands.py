@@ -90,6 +90,32 @@ def _print_approval_view(view: dict[str, Any]) -> None:
             console.print(f"  • {_e(b)}")
 
 
+def _is_submit_approval(db: Any, approval_uid: str) -> bool:
+    from job_agent.applications.repository import NotFound
+    from job_agent.database import repo
+
+    row = repo.get_approval(db, approval_uid)
+    if row is None:
+        raise NotFound(f"approval {approval_uid} not found")
+    return row["request_type"] == "submit_application" and row["application_id"] is not None
+
+
+def _print_generic_approval(db: Any, approval_uid: str) -> dict[str, Any]:
+    """Approvals of other types (e.g. follow-ups): summary + stored payload."""
+    import json
+
+    from job_agent.cli import console
+    from job_agent.database import repo
+
+    row = repo.get_approval(db, approval_uid)
+    assert row is not None
+    console.print(f"[bold]Approval {_e(row['approval_uid'])}[/bold] ({_e(row['request_type'])})  status: "
+                  f"[cyan]{_e(row['status'])}[/cyan]  expires: {_e(row['expires_at'])}")
+    console.print(f"[bold]Summary:[/bold] {_e(row['summary'])}")
+    console.print(_e(json.dumps(repo.approval_payload(row), indent=2, ensure_ascii=False)))
+    return {"status": row["status"], "payload_hash": row["payload_hash"]}
+
+
 def _print_answers(answers: list[dict[str, Any]]) -> None:
     from job_agent.cli import console
 
@@ -177,8 +203,12 @@ def approvals_show(approval_uid: str = typer.Argument(..., help="Approval id (AP
     from job_agent.applications.service import approval_view
     from job_agent.cli import fail, get_ctx
 
+    db = get_ctx().db
     try:
-        view = approval_view(get_ctx().db, approval_uid)
+        if not _is_submit_approval(db, approval_uid):
+            _print_generic_approval(db, approval_uid)
+            return
+        view = approval_view(db, approval_uid)
     except JobAgentError as exc:
         fail(exc)
         return
@@ -196,15 +226,18 @@ def approvals_approve(
 
     ctx = get_ctx()
     try:
-        view = approval_view(ctx.db, approval_uid)
+        if not _is_submit_approval(ctx.db, approval_uid):
+            view = _print_generic_approval(ctx.db, approval_uid)
+        else:
+            view = approval_view(ctx.db, approval_uid)
+            _print_approval_view(view)
     except JobAgentError as exc:
         fail(exc)
         return
-    _print_approval_view(view)
     if view["status"] != "pending":
         console.print(f"[red]This approval is {_e(view['status'])}; only pending approvals can be decided.[/red]")
         raise typer.Exit(1)
-    legal = len(view["sections"]["legal_declarations"])
+    legal = len(view["sections"]["legal_declarations"]) if "sections" in view else 0
     prompt = ("Approve this application for submission"
               + (f", including {legal} legal declaration(s) shown above" if legal else "") + "?")
     if not typer.confirm(prompt, default=False):

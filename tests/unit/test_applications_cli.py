@@ -146,3 +146,16 @@ def test_untrusted_labels_are_not_rendered_as_markup(cli, ctx, make_job, monkeyp
     uid = service.prepare_application(ctx, info["job_uid"], browser_factory=browser).approval_uid
     shown = cli("approvals", "show", uid)
     assert "[bold red]Injected[/bold red]" in shown.output
+
+
+def test_generic_approval_show_and_approve(cli, ctx):
+    from job_agent.models import ApprovalType
+
+    uid = repo.create_approval(ctx.db, ApprovalType.SEND_FOLLOWUP, {"draft": "[red]Hi[/red]"}, summary="Follow up",
+                               actor="system", expires_in_hours=1)
+    shown = cli("approvals", "show", uid)
+    assert shown.exit_code == 0 and "send_followup" in shown.output and "[red]Hi[/red]" in shown.output
+    assert cli("approvals", "approve", uid, input="y\n").exit_code == 0
+    assert repo.get_approval(ctx.db, uid)["status"] == "approved"
+    missing = cli("approvals", "show", "AP-nope")
+    assert missing.exit_code == 1 and "not found" in missing.output

@@ -329,6 +329,7 @@ _MODULE_COMMANDS: list[str] = [
     "job_agent.reporting.commands",
     "job_agent.scheduler.commands",
     "job_agent.resume.commands",
+    "job_agent.applications.commands",
     "job_agent.email.commands",
     "job_agent.followups.commands",
     "job_agent.dashboard.commands",
