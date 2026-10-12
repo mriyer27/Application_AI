@@ -8,7 +8,9 @@ Used in two directions:
 
 Matching is deterministic, word-boundary based, and case-insensitive unless an
 entry is marked ``case_sensitive`` (for names that are also English words,
-e.g. "Excel", "Spark", "React", or the single letter "R").
+e.g. "Excel", "Spark", "React", or the single letter "R"). Validation passes
+``ignore_case=True`` so that a generated "snowflake", "oracle" or "pyspark" is
+still recognized as a tool claim (a false match there only rejects a rewording).
 """
 
 from __future__ import annotations
@@ -189,29 +191,33 @@ def _alias_pattern(alias: str) -> str:
     return rf"(?<![A-Za-z0-9_]){body}(?![A-Za-z0-9_+#&])"
 
 
-@lru_cache(maxsize=1)
-def _compiled() -> tuple[tuple[LexEntry, re.Pattern[str]], ...]:
+@lru_cache(maxsize=2)
+def _compiled(ignore_case: bool = False) -> tuple[tuple[LexEntry, re.Pattern[str]], ...]:
     out = []
     for entry in LEXICON:
         pattern = "|".join(_alias_pattern(a) for a in sorted(entry.aliases, key=len, reverse=True))
-        flags = 0 if entry.case_sensitive else re.IGNORECASE
+        flags = 0 if entry.case_sensitive and not ignore_case else re.IGNORECASE
         out.append((entry, re.compile(pattern, flags)))
     return tuple(out)
 
 
-def find_skills(text: str) -> list[str]:
-    """Canonical names of lexicon entries mentioned in ``text`` (lexicon order)."""
+def find_skills(text: str, *, ignore_case: bool = False) -> list[str]:
+    """Canonical names of lexicon entries mentioned in ``text`` (lexicon order).
+
+    ``ignore_case=True`` also matches case-sensitive entries in any case (used by
+    the validators, where over-matching is the safe direction).
+    """
     if not text:
         return []
-    return [entry.name for entry, rx in _compiled() if rx.search(text)]
+    return [entry.name for entry, rx in _compiled(ignore_case) if rx.search(text)]
 
 
-def find_skill_spans(text: str) -> list[tuple[str, str]]:
+def find_skill_spans(text: str, *, ignore_case: bool = False) -> list[tuple[str, str]]:
     """``(canonical name, matched text)`` for every lexicon entry mentioned in ``text``."""
     if not text:
         return []
     out = []
-    for entry, rx in _compiled():
+    for entry, rx in _compiled(ignore_case):
         m = rx.search(text)
         if m:
             out.append((entry.name, m.group(0)))
