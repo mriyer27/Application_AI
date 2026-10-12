@@ -620,7 +620,7 @@ def _domain(data: dict[str, Any], analysis: JobAnalysis | None) -> _Factor:
                         f"{analysis.business_relevance:.2f}, analytics {analysis.analytics_relevance:.2f}, product "
                         f"{analysis.product_relevance:.2f}) top-two mean {llm:.2f}, blended 50/50 => {score:.2f}")
         if analysis.fit_explanation.strip():
-            explanation += f". Local AI analysis: {analysis.fit_explanation.strip()}"
+            explanation += f". Local AI opinion (unverified; may be wrong): {analysis.fit_explanation.strip()}"
     explanation += "."
     strongest = [n for n, v in strengths.items() if v >= 0.9]
     pro = f"Strong {'/'.join(strongest)} focus" if score >= 0.7 and strongest else None

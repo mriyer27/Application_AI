@@ -302,7 +302,7 @@ def test_llm_analysis_blending(config, profile):
     assert factor(result, "career_interest").score == 0.9  # high coding intensity: -0.1
     domain = factor(result, "domain_relevance")
     assert domain.score == 0.9  # 0.5 * rules 1.0 + 0.5 * mean(1.0, 0.6)
-    assert "Local AI analysis: Strong analytics overlap" in domain.explanation
+    assert "Local AI opinion (unverified; may be wrong): Strong analytics overlap" in domain.explanation
     assert factor(result, "skills").score == 0.6  # Snowflake added as a requirement; still checked vs profile
     assert "Snowflake (required, from local AI analysis; no evidence in verified profile)" in \
         result.missing_qualifications
