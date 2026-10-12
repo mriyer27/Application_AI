@@ -143,7 +143,8 @@ def _print_emails(attention: bool, category: Optional[str], limit: int) -> None:
     ctx = get_ctx()
     rows = list_messages(ctx.db, attention_only=attention, category=category, limit=limit)
     if not rows:
-        console.print("No emails" + (" needing attention." if attention else " synced yet (run `job-agent gmail sync`)."))
+        console.print("No emails needing attention." if attention
+                      else "No emails synced yet (run `job-agent gmail sync`).")
         return
     table = Table(header_style="bold")
     for col in ("ID", "Received (UTC)", "From", "Subject", "Category", "Attn", "Linked to"):
@@ -245,7 +246,8 @@ def emails_associate(
     console.print(f"[green]Email {result.email_id} linked[/green] to job {result.job_id}"
                   + (f", application {result.application_id}" if result.application_id else "") + ".")
     if result.status_applied:
-        console.print(f"Status: {result.previous_status} -> [bold]{result.status_applied}[/bold] (evidence: this email)")
+        console.print(f"Status: {result.previous_status} -> [bold]{result.status_applied}[/bold] "
+                      "(evidence: this email)")
     elif apply_status and result.skipped_reason:
         console.print(f"[yellow]Status not changed:[/yellow] {_e(result.skipped_reason)}")
 

@@ -189,7 +189,8 @@ def _default_flow_factory(client_secrets: str, scopes: list[str]) -> Any:
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as exc:
-        raise HumanActionRequired(f"Gmail libraries are not installed ({exc})", human_action=_MISSING_LIBS_ACTION)
+        raise HumanActionRequired(f"Gmail libraries are not installed ({exc})",
+                                  human_action=_MISSING_LIBS_ACTION) from None
     return InstalledAppFlow.from_client_secrets_file(client_secrets, scopes=scopes)
 
 
@@ -257,7 +258,8 @@ def load_credentials(ctx: "AppContext", *, request: Any = None) -> Any:
         from google.auth.exceptions import RefreshError, TransportError
         from google.oauth2.credentials import Credentials
     except ImportError as exc:
-        raise HumanActionRequired(f"Gmail libraries are not installed ({exc})", human_action=_MISSING_LIBS_ACTION)
+        raise HumanActionRequired(f"Gmail libraries are not installed ({exc})",
+                                  human_action=_MISSING_LIBS_ACTION) from None
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(info, dict):

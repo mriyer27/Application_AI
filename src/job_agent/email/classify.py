@@ -76,7 +76,8 @@ _PRIORITY: dict[EmailCategory, int] = {
     C.APPLICATION_CONFIRMATION: 3, C.RECRUITER_MESSAGE: 2, C.FOLLOW_UP_OPPORTUNITY: 1, C.OTHER: 0,
 }
 
-_ROUND = r"(?:(?:first|second|third|final|next|onsite|on-site|virtual|video|phone|technical|initial|hiring manager)[- ](?:round[- ])?)?"
+_ROUND = (r"(?:(?:first|second|third|final|next|onsite|on-site|virtual|video|phone|technical|initial|"
+          r"hiring manager)[- ](?:round[- ])?)?")
 
 
 @dataclass(frozen=True)

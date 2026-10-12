@@ -66,8 +66,8 @@ def suggested_action(followup_type: FollowupType, ctx: dict[str, Any]) -> str:
 
 def llm_followup_draft(draft_fn: Callable[..., str], ctx: dict[str, Any]) -> str | None:
     """Call the LLM drafter and keep the result only if it passes the safety checks."""
-    text = draft_fn(employer=ctx.get("employer") or "", job_title=ctx.get("title") or "",
-                    context=f"Applied on {_date_part(ctx.get('submitted_at'))}; no response for {ctx.get('days')} days.",
+    context = f"Applied on {_date_part(ctx.get('submitted_at'))}; no response for {ctx.get('days')} days."
+    text = draft_fn(employer=ctx.get("employer") or "", job_title=ctx.get("title") or "", context=context,
                     candidate_name=ctx.get("candidate_name") or "[your name]")
     cleaned = clean_untrusted(str(text or ""), max_chars=3000)
     return cleaned if reply_is_safe(cleaned) else None

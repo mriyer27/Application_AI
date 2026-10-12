@@ -65,7 +65,7 @@ class GmailReadClient:
             from job_agent.errors import HumanActionRequired
 
             raise HumanActionRequired(f"Gmail libraries are not installed ({exc})",
-                                      human_action='.venv/bin/pip install -e ".[gmail]"')
+                                      human_action='.venv/bin/pip install -e ".[gmail]"') from None
         # An explicit timeout: httplib2's default would let a stalled connection hang the scheduler.
         http = google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout_seconds))
         service = build("gmail", "v1", http=http, cache_discovery=False)
