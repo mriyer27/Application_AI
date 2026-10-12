@@ -64,6 +64,17 @@ class TaskResult:
 #: Registry of every task the agent can run. Add new tasks here only.
 TASKS: dict[str, TaskSpec] = {
     "health": TaskSpec("health", "job_agent.health:health_task", "Run system health checks"),
+    "discover": TaskSpec("discover", "job_agent.discovery.service:discover_task",
+                         "Fetch jobs from configured public job boards"),
+    "score": TaskSpec("score", "job_agent.scoring.service:score_task", "Score and rank unscored/changed jobs"),
+    "discover_and_score": TaskSpec("discover_and_score", "job_agent.pipeline:discover_and_score_task",
+                                   "Discover, score, analyze top matches with the local LLM"),
+    "email_sync": TaskSpec("email_sync", "job_agent.email.service:email_sync_task",
+                           "Read and categorize recent Gmail messages (read-only)"),
+    "followups": TaskSpec("followups", "job_agent.followups.service:followups_task",
+                          "Review applications and messages for follow-ups; draft suggestions"),
+    "report": TaskSpec("report", "job_agent.reporting.service:report_task",
+                       "Generate today's Excel report and Markdown summary"),
 }
 
 

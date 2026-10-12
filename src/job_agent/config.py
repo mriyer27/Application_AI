@@ -113,6 +113,7 @@ class SourcesSection(_Section):
     request_timeout_seconds: float = Field(20, gt=0, le=120)
     min_request_interval_seconds: float = Field(1.0, ge=0.2, le=60)
     max_retries: int = Field(3, ge=0, le=6)
+    max_pages: int = Field(20, ge=1, le=200)  # pagination cap per source identifier
     greenhouse: GreenhouseSource = Field(default_factory=GreenhouseSource)
     lever: LeverSource = Field(default_factory=LeverSource)
     ashby: AshbySource = Field(default_factory=AshbySource)
@@ -252,6 +253,9 @@ class DashboardSection(_Section):
     #: Tailscale IP). Never bind to 0.0.0.0 on an untrusted network.
     allow_non_localhost: bool = False
     secure_cookies: bool = False  # set true when served over HTTPS (e.g. tailscale serve)
+    #: Extra Host header values accepted (DNS-rebinding protection), e.g. your
+    #: Tailscale MagicDNS name "laptop.tailnet-name.ts.net".
+    allowed_hosts: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _bind(self) -> "DashboardSection":

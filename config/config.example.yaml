@@ -94,6 +94,7 @@ sources:
   request_timeout_seconds: 20
   min_request_interval_seconds: 1.0
   max_retries: 3
+  max_pages: 20
   greenhouse:
     enabled: true
     boards: [capco, databricks, datadog, robinhood, affirm, chime, brex, betterment, oscar, flatironhealth,
@@ -176,6 +177,7 @@ dashboard:
   login_attempts_per_minute: 5
   allow_non_localhost: false        # see docs/remote-access.md before changing
   secure_cookies: false             # true when served over HTTPS (tailscale serve)
+  allowed_hosts: []                 # extra Host names, e.g. ["laptop.your-tailnet.ts.net"]
 
 scheduler:
   enabled: true

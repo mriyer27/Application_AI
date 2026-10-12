@@ -215,6 +215,19 @@ def mark_interrupted_runs(db: Database) -> int:
 
 
 def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":  # os.kill(pid, 0) would send CTRL_C_EVENT on Windows
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

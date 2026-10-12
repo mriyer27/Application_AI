@@ -49,7 +49,7 @@ job_agent = ["dashboard/templates/*.html", "dashboard/static/*", "database/sql/*
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not network and not ollama'"
 markers = [
     "network: test performs real network access (deselect with -m 'not network')",
     "browser: test launches a real local browser via Playwright",

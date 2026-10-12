@@ -380,3 +380,53 @@ class ScoreResult(_Model):
     scoring_version: str
     used_llm: bool = False
     llm_model: str | None = None
+
+
+# --------------------------------------------------------------------------- #
+# Local-LLM output contracts (validated by deterministic code before use)
+# --------------------------------------------------------------------------- #
+class CodingIntensity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+class JobAnalysis(_Model):
+    """Validated local-LLM analysis of one job description.
+
+    Produced by ``job_agent.llm.analysis.analyze_job``. Before this object is
+    returned, the llm module drops any ``required_skills``/``preferred_skills``
+    not literally present in the description and any ``sponsorship_statements``
+    that are not verbatim substrings, so consumers can trust that these come
+    from the listing (not from the model's imagination). It says nothing about
+    whether the *candidate* has a skill -- that is decided deterministically
+    against the verified profile.
+    """
+
+    summary: str = Field(max_length=800)
+    role_family: str = Field(max_length=80)  # e.g. "business analysis", "data analytics", "software engineering"
+    seniority: str = Field(max_length=40)  # e.g. "entry", "mid", "senior", "unknown"
+    years_experience_required: int | None = Field(default=None, ge=0, le=40)
+    required_skills: list[str] = Field(default_factory=list, max_length=40)
+    preferred_skills: list[str] = Field(default_factory=list, max_length=40)
+    responsibilities: list[str] = Field(default_factory=list, max_length=20)
+    coding_intensity: CodingIntensity = CodingIntensity.UNKNOWN
+    ai_relevance: float = Field(0.0, ge=0, le=1)
+    business_relevance: float = Field(0.0, ge=0, le=1)
+    analytics_relevance: float = Field(0.0, ge=0, le=1)
+    product_relevance: float = Field(0.0, ge=0, le=1)
+    sponsorship_statements: list[str] = Field(default_factory=list, max_length=10)  # verbatim excerpts
+    red_flags: list[str] = Field(default_factory=list, max_length=10)
+    fit_explanation: str = Field("", max_length=1500)
+    model: str = ""
+    prompt_version: str = ""
+
+
+class EmailClassification(_Model):
+    category: EmailCategory
+    confidence: float = Field(ge=0, le=1)
+    summary: str = Field("", max_length=300)
+    employer_guess: str | None = Field(default=None, max_length=120)  # untrusted; used only as a matching hint
+    requires_attention: bool = False
+    classifier: str = "rules"  # "rules" | "llm:<model>"
