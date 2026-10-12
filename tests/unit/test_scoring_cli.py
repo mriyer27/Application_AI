@@ -66,9 +66,12 @@ def test_score_then_jobs_table(cli, db, seeded):
     assert "Acme Analytics" in out and "Business Analyst" in out and "New York, NY" in out
     assert "$95,000-$120,000/year" in out and "no_sponsorship" in out and "needs_review" in out
 
-    weak_only = cli("jobs", "--category", "weak_match")
-    assert "J-test00002" in weak_only.output and "J-test00001" not in weak_only.output
-    assert "J-test00001" in cli("jobs", "--top", "1").output
+    # both seeded listings say "We will not sponsor visas" -> needs_review, never strong_match
+    review = cli("jobs", "--category", "needs_review")
+    assert "J-test00001" in review.output and "J-test00002" in review.output
+    assert "No scored jobs match" in cli("jobs", "--category", "strong_match").output
+    top_one = cli("jobs", "--top", "1").output
+    assert "J-test00001" in top_one and "J-test00002" not in top_one
 
 
 def test_score_explicit_job_and_unknown_job(cli, db, seeded):
