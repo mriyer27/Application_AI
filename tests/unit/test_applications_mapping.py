@@ -245,3 +245,236 @@ def test_user_answers_preserved_and_legal_stays_flagged(profile):
 def test_hidden_custom_widget_is_not_filled(profile):
     m = map_field(FormField("e", "Email", "email", required=True, visible=False), _inputs(profile))
     assert m.fill_value is None and m.requires_review and "hidden" in m.review_reason
+
+
+# --------------------------------------------------------------------------- #
+# Legal-question detection and verified-answer matching (review findings C4)
+# --------------------------------------------------------------------------- #
+REVIEW_LEGAL_LABELS = [
+    "Will you now or in the future require us to support an H-1B?",
+    "Are you legally able to work in the U.S.?",
+    "Do you need a visa?",
+    "Are you a U.S. person under ITAR?",
+    "Are you able to legally work in the United States?",
+    "Are you legally allowed to work in the United States?",
+    "Are you lawfully permitted to work in the US?",
+    "Can you work in the United States without restrictions?",
+    "Do you currently have unrestricted work rights in the U.S.?",
+    "Will you now or in the future need an employer to file an employment-based petition on your behalf?",
+    "Are you currently on OPT?",
+    "Are you an F-1 student?",
+    "Do you hold an EAD card?",
+    "Do you hold an active Secret or TS/SCI?",
+    "Are you a U.S. national?",
+    "Can you provide proof of identity and employment eligibility (Form I-9)?",
+    "Are you a protected individual as defined in 8 U.S.C. 1324b(a)(3)?",
+    "Will you require a change of status or transfer to begin employment?",
+]
+
+
+def _with_answers(profile, *answers):
+    from job_agent.profile import VerifiedAnswer
+
+    extra = [VerifiedAnswer(**a) for a in answers]
+    return profile.model_copy(update={"verified_answers": [*profile.verified_answers, *extra]})
+
+
+@pytest.mark.parametrize("label", REVIEW_LEGAL_LABELS)
+@pytest.mark.parametrize("ftype", ["radio", "text", "textarea"])
+def test_every_legal_wording_is_flagged_and_never_filled(profile, label, ftype):
+    fld = FormField("q", label, ftype, required=True, options=opt("Yes", "No") if ftype == "radio" else ())
+    m = map_field(fld, _inputs(profile))
+    assert m.category is C.LEGAL and m.is_legal and m.requires_review and m.fill_value is None
+    assert classify_field(label, "q", ftype) is C.LEGAL
+
+
+def test_non_legal_verified_answer_never_fills_combined_legal_question(profile):
+    prof = _with_answers(profile, {"id": "relocate", "question_patterns": ["willing to relocate"], "answer": "Yes"})
+    fld = FormField("q", "Are you willing to relocate, and will you require visa sponsorship now or in the future?",
+                    "radio", required=True, options=opt("Yes", "No"))
+    m = map_field(fld, _inputs(prof))
+    assert m.category is C.LEGAL and m.is_legal and m.requires_review and m.fill_value is None
+    assert "relocate" in m.review_reason and "not marked is_legal_declaration" in m.review_reason
+    # the same answer still fills the plain relocation question
+    plain = map_field(FormField("r", "Are you willing to relocate?", "radio", options=opt("Yes", "No")),
+                      _inputs(prof))
+    assert plain.fill_value == "Yes" and not plain.is_legal
+
+
+def test_non_legal_verified_answer_never_fills_legal_work_question(profile):
+    prof = _with_answers(profile, {"id": "us_based", "question_patterns": ["work in the united states"],
+                                   "answer": "Yes"})
+    fld = FormField("q", "Are you able to legally work in the United States?", "radio", required=True,
+                    options=opt("Yes", "No"))
+    m = map_field(fld, _inputs(prof))
+    assert m.is_legal and m.requires_review and m.fill_value is None and m.source is None
+
+
+def test_legal_verified_answer_does_not_answer_neighbouring_questions(profile):
+    prof = _with_answers(
+        profile,
+        {"id": "sponsor", "question_patterns": ["require visa sponsorship"], "answer": "No",
+         "is_legal_declaration": True},
+        {"id": "auth", "question_patterns": ["authorized to work"], "answer": "Yes", "is_legal_declaration": True},
+    )
+    inp = _inputs(prof)
+    for label in (
+        "Are you willing to relocate, and will you require visa sponsorship now or in the future?",
+        "Did you ever require visa sponsorship at a previous employer?",
+        "If you require visa sponsorship, which visa type?",
+        "Will you not require visa sponsorship?",
+        "Are you authorized to work in Canada?",
+        "Are you authorized to work in the country where this job is located?",
+        "Are you authorized to work in the US and will you require sponsorship?",
+        "Are you not authorized to work in the United States?",
+    ):
+        m = map_field(FormField("q", label, "radio", required=True, options=opt("Yes", "No")), inp)
+        assert m.is_legal and m.requires_review and m.fill_value is None, label
+    # the questions the answers were saved for still work (and stay flagged for your approval)
+    for label, expected, source in (
+        ("Will you now or in the future require visa sponsorship?", "No", "verified_answer:sponsor"),
+        ("Will you now or in the future require visa sponsorship for employment visa status (e.g. H-1B visa "
+         "status)?", "No", "verified_answer:sponsor"),
+        ("Are you legally authorized to work in the United States?", "Yes", "verified_answer:auth"),
+    ):
+        m = map_field(FormField("q", label, "radio", required=True, options=opt("Yes", "No")), inp)
+        assert (m.fill_value, m.source, m.is_legal, m.requires_review) == (expected, source, True, True), label
+
+
+def test_legal_wording_in_name_placeholder_or_options_makes_the_field_legal(profile):
+    prof = _with_answers(profile, {"id": "anything", "question_patterns": ["please answer"], "answer": "Yes"})
+    inp = _inputs(prof)
+    by_key = map_field(FormField("visa_sponsorship", "Please answer", "text"), inp)
+    by_placeholder = map_field(FormField("q1", "Please answer", "text", placeholder="Do you require sponsorship?"),
+                               inp)
+    by_options = map_field(FormField("q2", "Please answer", "radio",
+                                     options=opt("I am a U.S. citizen", "I will require sponsorship")), inp)
+    for m in (by_key, by_placeholder, by_options):
+        assert m.category is C.LEGAL and m.is_legal and m.requires_review and m.fill_value is None
+
+
+def test_llm_drafter_never_called_for_legal_questions(profile):
+    fields = [FormField("w", "Can you work in the United States without restrictions?", "textarea", required=True),
+              FormField("s", "Describe your eligibility to work here", "textarea"),
+              FormField("why", "Why do you want to work here?", "textarea")]
+    mapped = map_fields(fields, _inputs(profile))
+    # even an (inconsistent) open-ended row with a legal label is never drafted
+    from dataclasses import replace
+    mapped.append(replace(map_field(FormField("x", "Tell us about yourself", "textarea"), _inputs(profile)),
+                          field=FormField("x", "Do you hold a green card? Tell us more.", "textarea")))
+    calls = []
+
+    def drafter(question):
+        calls.append(question)
+        return SuggestedAnswer("Yes, I can work without restrictions.", ("agency_regression",))
+
+    drafted = apply_drafts(mapped, drafter, max_drafts=5)
+    assert calls == ["Why do you want to work here?"]
+    assert all(m.answer is None for m in drafted[:2]) and drafted[3].answer is None
+
+
+def test_non_legal_matching_uses_whole_words_and_respects_negation(ctx):
+    update_profile(ctx, lambda d: d["verified_answers"].extend([
+        {"id": "start", "question_patterns": ["when can you start"], "answer": "June 2027"},
+        {"id": "startup", "question_patterns": ["start"], "answer": "Yes"},
+    ]))
+    inp = _inputs(ctx.profile)
+    assert map_field(FormField("su", "Do you have startup experience?", "text"), inp).fill_value is None
+    negated = map_field(FormField("n", "If you cannot start in June, when can you start?", "text"), inp)
+    assert negated.fill_value is None and negated.requires_review
+    hired = map_field(FormField("h", "If hired, when can you start?", "text"), inp)
+    assert hired.requires_review  # "start" and "when can you start" both match -> you choose
+    update_profile(ctx, lambda d: d["verified_answers"].pop())
+    hired = map_field(FormField("h", "If hired, when can you start?", "text"), _inputs(ctx.profile))
+    assert hired.fill_value == "June 2027" and hired.source == "verified_answer:start"
+
+
+# --------------------------------------------------------------------------- #
+# Documents must be approved before they are used as answers (review finding SEC)
+# --------------------------------------------------------------------------- #
+def _unapproved(id_: int, fmt: str, doc_type: str = "resume", status: str = "needs_review") -> DocumentRef:
+    return DocumentRef(id=id_, job_id=1, doc_type=doc_type, version=1, format=fmt, file_name=f"{doc_type}.{fmt}",
+                       relative_path=f"x/{doc_type}_{id_}.{fmt}", sha256="0" * 64, status=status)
+
+
+def test_unapproved_cover_letter_text_is_not_used_as_a_verified_answer(profile):
+    inp = _inputs(profile, cover=[_unapproved(5, "pdf", "cover_letter")], cover_letter_text="Dear team, I led ...",
+                  cover_letter_text_doc=_unapproved(6, "md", "cover_letter"))
+    text = map_field(FormField("clt", "Cover letter", "textarea"), inp)
+    assert text.fill_value is None and text.requires_review and text.source is None
+    assert "approve the cover letter first (job-agent documents approve 6)" in text.review_reason
+    no_doc = map_field(FormField("clt", "Cover letter", "textarea"),
+                       _inputs(profile, cover_letter_text="Dear team"))
+    assert no_doc.fill_value is None and no_doc.requires_review
+
+
+def test_unapproved_cover_letter_file_is_not_attached(profile):
+    inp = _inputs(profile, cover=[_unapproved(5, "pdf", "cover_letter", status="draft")])
+    m = map_field(FormField("cl", "Cover letter", "file", is_file=True), inp)
+    assert m.fill_value is None and m.document is None and m.requires_review
+    assert "approve the cover letter first (job-agent documents approve 5)" in m.review_reason
+
+
+def test_unapproved_resume_is_attached_but_needs_review(profile):
+    inp = _inputs(profile, resume=[_unapproved(1, "pdf"), _unapproved(2, "docx")])
+    m = map_field(FormField("r", "Resume", "file", is_file=True, required=True), inp)
+    assert m.fill_value == "resume.pdf" and m.source == "document:1" and m.requires_review
+    assert "job-agent documents approve 1" in m.review_reason
+    approved = map_field(FormField("r", "Resume", "file", is_file=True), _inputs(profile))
+    assert approved.fill_value and not approved.requires_review
+
+
+# --------------------------------------------------------------------------- #
+# Through prepare_application with the in-memory fake browser
+# --------------------------------------------------------------------------- #
+def _prepare(ctx, make_job, fields, *, mutate_docs=None):
+    from job_agent.applications import service
+    from job_agent.database import repo
+    from test_applications_support import fake_for, setup_application
+
+    info = setup_application(ctx, make_job)
+    if mutate_docs:
+        ctx.db.execute(mutate_docs)
+    fake = fake_for(fields=fields)
+    prep = service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    return fake, repo.approval_payload(repo.get_approval(ctx.db, prep.approval_uid))
+
+
+def test_prepare_never_answers_legal_questions_from_non_legal_answers(ctx, make_job):
+    from job_agent.applications.payload import submission_blockers
+
+    update_profile(ctx, lambda d: d["verified_answers"].extend([
+        {"id": "relocate", "question_patterns": ["willing to relocate"], "answer": "Yes"},
+        {"id": "us_work", "question_patterns": ["work in the united states"], "answer": "Yes"},
+    ]))
+    fields = [
+        FormField("first_name", "First name", "text", required=True, locator="#first_name"),
+        FormField("resume", "Resume", "file", required=True, is_file=True, accept=".pdf", locator="#resume"),
+        FormField("relo_spons", "Are you willing to relocate, and will you require visa sponsorship now or in the "
+                                "future?", "radio", required=True, options=opt("Yes", "No"), locator="#a"),
+        FormField("legal_work", "Are you able to legally work in the United States?", "radio", required=True,
+                  options=opt("Yes", "No"), locator="#b"),
+    ]
+    fake, payload = _prepare(ctx, make_job, fields)
+    assert "relo_spons" not in fake.filled and "legal_work" not in fake.filled
+    legal = {d["field_key"]: d for d in payload["legal_declarations"]}
+    assert set(legal) == {"relo_spons", "legal_work"}
+    assert all(d["answer"] is None and not d["verified"] for d in legal.values())
+    blockers = submission_blockers(payload)
+    assert any("relo_spons" in b for b in blockers) and any("legal_work" in b for b in blockers)
+
+
+def test_prepare_with_unapproved_documents(ctx, make_job):
+    fields = [
+        FormField("first_name", "First name", "text", required=True, locator="#first_name"),
+        FormField("resume", "Resume", "file", required=True, is_file=True, accept=".pdf,.docx", locator="#resume"),
+        FormField("cl", "Cover letter", "textarea", locator="#cl"),
+        FormField("clf", "Cover letter", "file", is_file=True, accept=".md,.pdf", locator="#clf"),
+    ]
+    fake, payload = _prepare(ctx, make_job, fields, mutate_docs="UPDATE document_versions SET status = 'needs_review'")
+    assert "resume" in fake.uploaded  # preparation is still possible ...
+    assert "cl" not in fake.filled and "clf" not in fake.uploaded  # ... but an unapproved cover letter is never used
+    review = {d["field_key"]: d["reason"] for d in payload["requires_review"]}
+    assert "documents approve" in review["resume"]
+    assert review["cl"].startswith("approve the cover letter first (job-agent documents approve ")
+    assert review["clf"].startswith("approve the cover letter first (job-agent documents approve ")

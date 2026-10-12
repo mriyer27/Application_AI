@@ -145,7 +145,8 @@ _OPEN_ENDED = re.compile(
 #: Anything else -- another clause, a condition, a past tense, another country -- means the
 #: pattern does not answer the question.
 _LEGAL_FILLER = frozenset("""
-a an the are you your yourself do does will would could can shall should be is am have has need now or and in
+a an the are you your yourself do does will would could can shall should be is am have has need needs require
+requires now or and in
 of for to at on by with this that any please explain answer indicate select specify confirm currently presently
 present future time point some work working employment employed employer job position role company us u s usa
 united states america american legally lawfully visa status required

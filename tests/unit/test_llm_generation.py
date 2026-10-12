@@ -220,3 +220,101 @@ def test_helpers():
     assert generation.unverified_numbers("Saved 45% in 2 weeks", [FACT]) == ["2", "45%"]
     assert generation.is_legal_question("Are you eligible to work in the US?")
     assert not generation.is_legal_question("How did you hear about us?")
+
+
+# --------------------------------------------------------------------------- #
+# Legal questions and unverified claims (review findings C4 / C7)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question", [
+    "Can you work in the United States without restrictions?",
+    "Are you lawfully permitted to work in the US?",
+    "Do you currently have unrestricted work rights in the U.S.?",
+    "Will you now or in the future need an employer to file an employment-based petition on your behalf?",
+    "Are you an F-1 student?",
+    "Do you hold an EAD card?",
+    "Do you hold an active Secret or TS/SCI?",
+    "Are you a U.S. national?",
+    "Are you a protected individual as defined in 8 U.S.C. 1324b(a)(3)?",
+    "Will you require a change of status or transfer to begin employment?",
+    "Are you subject to a non-compete agreement?",
+    "Do you have relatives employed by this company?",
+])
+def test_draft_answer_refuses_every_legal_wording(fake, cfg, profile, question):
+    assert generation.is_legal_question(question)
+    with pytest.raises(LegalQuestionRefused):
+        draft_answer(fake.client(cfg), question=question, facts=profile.all_facts())
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("answer, reason", [
+    ("As a U.S. citizen I can start quickly.", "legal"),
+    ("I used Snowflake to automate the agency's reporting.", "tools"),
+    ("I led the analytics team at the agency.", "leadership"),
+])
+def test_draft_answer_rejects_legal_statements_and_unverified_claims(fake, cfg, profile, answer, reason):
+    fake.queue({"answer": answer, "fact_ids": ["agency_dashboards"], "confidence": "medium"})
+    with pytest.raises(LLMInvalidOutput, match=reason):
+        draft_answer(fake.client(cfg), question="Tell us about a project.", facts=profile.all_facts())
+
+
+PROBE_REPLY = (
+    "Hi [recruiter name],\n\nThank you for reaching out. Yes, I am authorized to work in the United States for "
+    "any employer and am eligible to work without restriction. I have three years of Snowflake and dbt "
+    "experience and led a team of five analysts. I am generally available [your availability].\n\n"
+    "Best regards,\nTest Candidate")
+
+
+def test_draft_email_reply_rejects_work_authorization_and_unverified_claims(fake, cfg):
+    fake.queue({"reply": PROBE_REPLY})
+    with pytest.raises(LLMInvalidOutput) as info:
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="Data Analyst role",
+                          body="Are you authorized to work in the US?", candidate_name="Test Candidate")
+    message = str(info.value)
+    assert "work-authorization" in message and "tools/skills" in message and "leadership" in message
+
+
+@pytest.mark.parametrize("statement", [
+    "I am eligible to work for any employer.",
+    "I will not need any employer support.",
+    "I am authorized to work in the United States.",
+    "I can start without sponsorship.",
+])
+def test_draft_email_reply_rejects_each_work_authorization_statement(fake, cfg, statement):
+    fake.queue({"reply": f"Hi [name],\n\nThank you. {statement}\n\nBest regards,\nTest Candidate"})
+    with pytest.raises(LLMInvalidOutput, match="work-authorization"):
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                          candidate_name="Test Candidate")
+
+
+def test_draft_email_reply_claims_checked_against_given_facts(fake, cfg, profile):
+    claim = "Hi [name],\n\nI converted nine legacy SAS programs to Python.\n\nBest regards,\nTest Candidate"
+    fake.queue({"reply": claim}, {"reply": claim}, {"reply": claim.replace("Python", "Snowflake")})
+    with pytest.raises(LLMInvalidOutput, match="cannot be checked"):  # facts unknown: claim rejected
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                          candidate_name="Test Candidate")
+    text = draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                             candidate_name="Test Candidate", facts=profile.all_facts(),
+                             profile_skills=profile.skills)
+    assert "nine legacy SAS programs" in text
+    with pytest.raises(LLMInvalidOutput, match="snowflake"):
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                          candidate_name="Test Candidate", facts=profile.all_facts(),
+                          profile_skills=profile.skills)
+
+
+def test_draft_followup_rejects_probe_but_keeps_application_dates(fake, cfg):
+    fake.queue({"message": PROBE_REPLY},
+               {"message": "Dear Hiring Team,\n\nI applied for the Data Analyst II position at Acme on 2026-09-30 "
+                           "and wanted to follow up on my application.\n\nBest regards,\nTest Candidate"})
+    with pytest.raises(LLMInvalidOutput, match="work-authorization"):
+        draft_followup(fake.client(cfg), employer="Acme", job_title="Data Analyst II",
+                       context="Applied on 2026-09-30; no response for 12 days.", candidate_name="Test Candidate")
+    text = draft_followup(fake.client(cfg), employer="Acme", job_title="Data Analyst II",
+                          context="Applied on 2026-09-30; no response for 12 days.", candidate_name="Test Candidate")
+    assert "2026-09-30" in text
+
+
+def test_unsafe_draft_problems_reports_claims():
+    problems = generation.unsafe_draft_problems(PROBE_REPLY)
+    assert any("work-authorization" in p for p in problems)
+    assert generation.unsafe_draft_problems("Hi [name], thank you for reaching out. Best, T") == []
