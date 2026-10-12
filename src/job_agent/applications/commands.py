@@ -22,6 +22,10 @@ applications_app = typer.Typer(help="Track applications: list, show, submit, mar
                                invoke_without_command=True)
 
 
+#: Columns holding ids you copy into other commands: never wrapped.
+_ID_COLUMNS = frozenset({"Approval", "Application", "Job", "#", "Key"})
+
+
 def _e(value: Any) -> str:
     return escape("" if value is None else str(value))
 
@@ -158,7 +162,7 @@ def approvals_root(ctx: typer.Context) -> None:
         return
     t = Table(title="Pending approvals", header_style="bold")
     for col in ("Approval", "Type", "Application", "Employer / role", "Requested (UTC)", "Expires (UTC)", "Summary"):
-        t.add_column(col, overflow="fold")
+        t.add_column(col, overflow="fold", no_wrap=col in _ID_COLUMNS)
     for r in rows:
         who = f"{r.get('employer') or ''} — {r.get('title') or ''}" if r.get("employer") else ""
         t.add_row(_e(r["approval_uid"]), _e(r["request_type"]), _e(r.get("application_uid")), _e(who),
@@ -230,7 +234,8 @@ def approvals_reject(
     except JobAgentError as exc:
         fail(exc)
         return
-    console.print(f"[yellow]Rejected {_e(approval_uid)}.[/yellow] Application is now {_e(result.status.value)}.")
+    console.print(f"[yellow]Rejected {_e(approval_uid)}.[/yellow]"
+                  + (f" Application is now {_e(result.status.value)}." if result.status else ""))
     console.print(f"[bold]Next:[/bold] {_e(result.next_action)}")
 
 
@@ -268,7 +273,7 @@ def _print_list(status: str | None) -> None:
         return
     t = Table(title="Applications", header_style="bold")
     for col in ("Application", "Job", "Employer", "Role", "Status", "Next action", "Last activity (UTC)"):
-        t.add_column(col, overflow="fold")
+        t.add_column(col, overflow="fold", no_wrap=col in _ID_COLUMNS)
     for r in rows:
         t.add_row(_e(r["application_uid"]), _e(r["job_uid"]), _e(r["employer"]), _e(r["title"]), _e(r["status"]),
                   _e(r["next_action"]), _e(r["last_activity_at"]))
@@ -326,7 +331,7 @@ def applications_show(application_uid: str = typer.Argument(..., help="Applicati
     if d["approvals"]:
         t = Table(title="Approvals", header_style="bold")
         for col in ("Approval", "Status", "Requested", "Decided by", "Note"):
-            t.add_column(col, overflow="fold")
+            t.add_column(col, overflow="fold", no_wrap=col in _ID_COLUMNS)
         for ap in d["approvals"]:
             t.add_row(_e(ap["approval_uid"]), _e(ap["status"]), _e(ap["requested_at"]), _e(ap["decided_by"]),
                       _e(ap["decision_note"]))

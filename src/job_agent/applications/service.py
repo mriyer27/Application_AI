@@ -129,8 +129,8 @@ class SubmissionResult:
 class DecisionResult:
     approval_uid: str
     approved: bool
-    application_uid: str
-    status: PipelineState
+    application_uid: str | None  # None for non-application approvals (e.g. follow-ups)
+    status: PipelineState | None
     next_action: str
 
 
@@ -221,15 +221,16 @@ def _make_drafter(ctx: "AppContext") -> tuple[Drafter | None, Callable[[], None]
         return None, noop
     if client is None:
         return None, noop
-    from job_agent.security.untrusted import wrap_untrusted
+    from job_agent.security.untrusted import clean_untrusted
 
     facts = ctx.profile.all_facts()
     valid_ids = {f.id for f in facts}
 
     def drafter(question: str) -> SuggestedAnswer | None:
+        # The label comes from the employer's page (untrusted). draft_answer wraps it with
+        # security.untrusted.wrap_untrusted itself and refuses legal/eligibility questions.
         try:
-            result = draft_answer(client, question=wrap_untrusted(question, label="APPLICATION_QUESTION",
-                                                                  max_chars=1500), facts=facts)
+            result = draft_answer(client, question=clean_untrusted(question, max_chars=1500), facts=facts)
         except JobAgentError as exc:
             repo.record_error(ctx.db, component="applications:draft", error=exc)
             return None
@@ -541,9 +542,20 @@ def _submit_approval_row(db: Database, approval_uid: str) -> "sqlite3.Row":
 
 def decide(ctx: "AppContext", approval_uid: str, *, approve: bool, actor: str, note: str | None = None,
            expected_payload_hash: str | None = None) -> DecisionResult:
-    """Record your decision on a submission approval (actor: cli | dashboard | user)."""
+    """Record your decision on an approval (actor: cli | dashboard | user).
+
+    Submission approvals also update the application (reject -> documents_ready;
+    approve -> next action for manual or browser submission). Other approval
+    types (e.g. follow-ups) are only recorded via ``repo.decide_approval``.
+    """
     db = ctx.db
-    row = _submit_approval_row(db, approval_uid)
+    row = repo.get_approval(db, approval_uid)
+    if row is None:
+        raise ApprovalError(f"approval {approval_uid} not found")
+    if row["request_type"] != ApprovalType.SUBMIT_APPLICATION.value or row["application_id"] is None:
+        repo.decide_approval(db, approval_uid, approve=approve, actor=actor, note=note,
+                             expected_payload_hash=expected_payload_hash)
+        return DecisionResult(approval_uid, approve, None, None, "Decision recorded.")
     repo.decide_approval(db, approval_uid, approve=approve, actor=actor, note=note,
                          expected_payload_hash=expected_payload_hash)
     app_id = int(row["application_id"])

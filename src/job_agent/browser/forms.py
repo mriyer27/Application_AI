@@ -359,13 +359,14 @@ def build_fields(raw: list[dict[str, Any]]) -> list[FormField]:
     for i, r in enumerate(raw):
         name = (r.get("name") or "").strip() or None
         element_id = (r.get("id") or "").strip() or None
-        label = clean_label(str(r.get("label") or "")) or (name or element_id or f"Field {i + 1}")
+        raw_label = clean_label(str(r.get("label") or ""))
+        label = raw_label or (name or element_id or f"Field {i + 1}")
         if name:
             base = name
         elif element_id:
             base = element_id
         else:
-            slug = _SLUG_RE.sub("-", label.lower()).strip("-")[:48]
+            slug = _SLUG_RE.sub("-", raw_label.lower()).strip("-")[:48]
             base = f"label-{slug}" if slug else f"field-{i + 1}"
         key, n = base, 2
         while key in used:

@@ -13,7 +13,7 @@ fact that nothing is ever submitted without your approval.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
