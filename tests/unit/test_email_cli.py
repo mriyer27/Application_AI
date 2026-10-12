@@ -54,10 +54,17 @@ def test_gmail_status_disabled_is_not_connected(cli):
     assert "NOT CONNECTED" in result.output and "disabled" in result.output
 
 
-def test_gmail_sync_disabled_fails_with_next_step(cli):
+def test_gmail_sync_disabled_fails_with_next_step(cli, caplog):
+    from job_agent import cli as cli_module
+
     result = cli("gmail", "sync")
     assert result.exit_code == 1
     assert "disabled" in result.output and "gmail-setup.md" in result.output
+    # a plain message: no traceback, and no failed task run / error row for a setting you chose
+    assert "Traceback" not in result.output and "Traceback" not in caplog.text
+    db = cli_module.state._ctx.db
+    assert db.scalar("SELECT COUNT(*) FROM agent_runs") == 0
+    assert db.scalar("SELECT COUNT(*) FROM errors") == 0
 
 
 def test_gmail_sync_then_emails_commands(cli, home, monkeypatch, ctx, make_job):
@@ -143,3 +150,25 @@ def test_gmail_auth_and_revoke(cli, home, monkeypatch):
     assert revoked.exit_code == 0 and "Local token deleted" in revoked.output
     assert "myaccount.google.com/permissions" in revoked.output
     assert not (secrets / "gmail_token.json").exists()
+
+
+def test_emails_show_explains_why_status_was_not_changed(cli, home, monkeypatch, ctx, make_job):
+    from test_email_fakes import build_message, spec
+
+    _enable_gmail(home)
+    job_id = make_job(employer="Acme Analytics", employer_normalized="acme analytics",
+                      job_url="https://careers.acmeanalytics.com/jobs/7")
+    make_application(ctx.db, job_id, "submitted", submitted_at="2026-10-01T00:00:00+00:00")
+    forged = spec("s-injection-1")
+    forged.update(id="s-forged-1", threadId="t-forged-1", subject="Offer letter - Business Analyst",
+                  text="We are pleased to extend you an offer for the Business Analyst position.",
+                  headers={"Authentication-Results": "mx.google.com; spf=fail smtp.mailfrom=evil.example; "
+                                                     "dkim=none; dmarc=fail"})
+    _patch_service(monkeypatch, fake_service().__class__([build_message(forged)]))
+    assert cli("gmail", "sync").exit_code == 0
+    email_id = ctx.db.scalar("SELECT id FROM email_messages WHERE gmail_message_id = 's-forged-1'")
+    shown = cli("emails", "show", str(email_id))
+    assert shown.exit_code == 0
+    assert "Status not changed automatically" in shown.output
+    assert "sender not verified by Gmail (dmarc=fail)" in shown.output
+    assert "--apply-status" in shown.output

@@ -16,7 +16,9 @@ job-agent documents reject 43 [--note "..."]
 ```
 
 `prepare` prints the generated files, **each résumé bullet with its fact
-id(s)**, every validation issue, and the next step.
+id(s)**, every validation issue, and the next step. Text that comes from a
+listing or the LLM (job title, employer, rewordings, rejection reasons) is
+printed literally — Rich markup such as `[red]` in it is escaped.
 
 ## How truthfulness is enforced
 
@@ -39,25 +41,56 @@ All of this is deterministic code (`job_agent.resume`), not prompting.
 2. **Claim validation** (`resume/validation.py: validate_claim`). Any text that
    is not a verbatim fact (an LLM rewording, an LLM cover-letter sentence) must
    pass all of these against its source fact(s), or it is rejected:
-   - every number/percentage/amount appears in the source with the same unit;
-     spelled-out quantities ("doubled", "dozens") too; hedges such as
-     "approximately 30%" must be kept;
-   - no lexicon tool/skill that is not in the source fact (text or its `skills`
-     list). For résumé bullets even a skill from your skills list is refused if
-     that fact does not mention it (stricter than "in profile.skills");
-   - no leadership/ownership verbs (led, managed, owned, spearheaded, directed,
-     headed, supervised, architected, founded, oversaw, ...) unless the source uses them;
+   - **numbers**: every number/percentage/amount appears in the source with the
+     same unit (%, $, k/m/b, x), and a bare number counts the same thing — "9
+     legacy SAS programs" cannot become "9 categories", and "25" cannot be
+     borrowed from "25%". Spelled-out quantities ("doubled", "dozens") and
+     multipliers ("fivefold", "3-fold") must be in the source too;
+   - **qualifiers**: each number keeps the source's qualifier *class* — none,
+     approximate ("approximately", "about", "roughly", "~"), lower bound
+     ("over", "more than", "at least", "12+") or upper bound ("up to", "less
+     than"). "approximately 30%" may become "about 30%", but not "30%", "more
+     than 30%" or "up to 30%"; "12 categories" may not become "over 12";
+   - **tools/skills**: no lexicon tool/skill that is not in the source fact (text
+     or its `skills` list), matched **in any letter case** ("snowflake",
+     "oracle", "pyspark", "git" count). For résumé bullets even a skill from your
+     skills list is refused if that fact does not mention it;
+   - **role**: no leadership verbs (led, managed, owned, spearheaded, directed,
+     headed, supervised, architected, founded, oversaw, ...) and no
+     build/ownership verbs (built, developed, designed, created, launched,
+     deployed, implemented, drove, delivered, ...) unless the source uses them —
+     "Supported" / "Worked on" never becomes "Developed" / "Built";
+   - **inflation**: no "single-handedly", "solely", "alone", "responsible for",
+     "end-to-end", scope words ("company-wide", "statewide", "enterprise-wide",
+     "across the entire agency") or intensifiers ("significantly",
+     "dramatically") that the source does not contain;
+   - **new wording**: every content word must come from the fact text, the
+     fact's `skills`/`keywords`, `profile.skills`, verified entry context (cover
+     letters only, see below) or a small connective list ("using", "including",
+     "also", "based", "percent", ...). Reordering and trimming pass; additions
+     ("executive dashboards", "revenue-critical") do not;
    - no organization or proper names that are not in the source (including the
      job's employer and your other employers);
    - no certification/degree terms that are not in the source or your profile;
-   - no links, e-mail addresses, placeholders or work-authorization wording;
+     no "hold" / "earned" / "completed" / "graduated" / "have a" next to a degree
+     marked `expected: true`; dates next to degree/graduation wording must be the
+     profile's verbatim education dates (`selection.education_dates`);
+   - no links, e-mail addresses, placeholders or **work-authorization wording**,
+     matched broadly: visa, sponsorship, "eligible / authorized / permitted /
+     able to work", "employer support", "without restriction", OPT/CPT/EAD,
+     F-1, H-1B, green card, permanent resident, citizen(ship), clearance,
+     export control;
    - at least 50% of the content words come from the source; length bounds.
 3. **Document validation** (`validate_resume`, `validate_cover_letter`): every
    bullet maps to existing fact ids and re-validates; header fields equal
    `profile.personal`; education/experience fields and dates equal the profile;
    skills ⊆ `profile.skills`; and **placeholder text** (`<...>`) in any profile
    field that ends up in the document produces a `review` issue naming the field
-   (e.g. `personal.full_name`) — the document is then `needs_review`.
+   (e.g. `personal.full_name`) — the document is then `needs_review`. For cover
+   letters, the opening, motivation and closing paragraphs must equal the
+   deterministic template, the body must be exactly the fact-traced claims, and
+   every body claim is re-validated against its facts. The job title and employer
+   are **never** a trusted source for a number, skill, leadership word or name.
 
 ### Optional local-LLM rewording
 
@@ -87,8 +120,9 @@ Instruction-like listing text is reported as an `info` issue.
 Deterministic template (`resume/cover_letter.py`):
 
 - "Dear Hiring Team,"
-- opening naming the exact job title and employer, and your degree program with
-  its (expected) graduation date from the profile;
+- opening naming the job title and employer (only if they are title-like, see
+  below), and your degree program with its (expected) graduation date from the
+  profile;
 - 2-3 body sentences, each restating one verified fact and naming a keyword the
   listing literally mentions ("Your listing mentions SQL. In my Student Intern
   role at …, I …");
@@ -96,12 +130,39 @@ Deterministic template (`resume/cover_letter.py`):
   the listing also mentions — nothing about the company is invented;
 - a closing, "Sincerely," and your profile name.
 
+The job title and employer come from the untrusted listing. They are put into
+the letter only if they look like a plain title / organization name: no
+sentence punctuation (`. ! ? ; :` — except abbreviations such as "Sr." or
+"Inc."), no first-person words (I, me, my, we, our; a trailing roman numeral as
+in "Analyst I" is fine), no instruction-like text, at most 12 words. Otherwise
+the letter says "the advertised position" / "your organization" and a `review`
+issue (`job_title_not_used` / `employer_not_used`) asks you to check the
+listing. A title such as "Analyst. I led a team of 40 engineers … Hire me" is
+therefore never pasted into the letter.
+
 With the LLM enabled, `job_agent.llm.generation.draft_cover_letter` may supply
-a draft. It is checked sentence by sentence (numbers, skills, leadership,
-credentials, proficiency words such as "expert", names, and claims about the
-employer that are not in the listing such as "industry-leading" or "founded in
-…"); any failure means the template letter is used. **Cover letters are always
-`needs_review`.**
+a draft, but **only its body is used**: the opening (title, employer, degree and
+verbatim expected-graduation date), the motivation sentence and the closing are
+always the template. Every sentence of the draft is either
+
+- claim-free letter boilerplate ("I am writing to apply for …", "Thank you for
+  your time.") — dropped, because the template provides that wording; a
+  "boilerplate" sentence that contains a number, tool, name, degree, leadership
+  or inflation word, or any other content word is treated as a claim; or
+- a **claim**: it must restate fact(s) the draft lists in `fact_ids_used` and pass
+  `validate_claim` against exactly those facts, with only the verified entry
+  context (e.g. "Student Intern", "Example State Agency", "internship") and
+  words such as "role", "also", "additionally" allowed around the fact.
+  **Every first-person sentence (I / my / me) is a claim.** "I was referred by a
+  current employee", "I met your team at a career fair", "I coordinated with
+  cross-functional teams" or "I hold a Master of Science … and will graduate in
+  June 2025" cite no fact (or contradict the profile) and are rejected.
+  Claims about the employer that the listing does not support
+  ("industry-leading", "founded in …") and proficiency words ("expert",
+  "hands-on") are rejected too.
+
+Any rejected sentence means the whole template letter is used (an `info` issue
+lists the reasons). **Cover letters are always `needs_review`.**
 
 ## Traceability
 
@@ -159,10 +220,22 @@ viewing on a phone.
 ## Limitations (always review before use)
 
 - The validators are **heuristics**. They are tuned to reject rather than
-  accept, so good rewordings are sometimes refused (you get the verbatim fact).
-  They can also miss things: a lower-case tool name that is not in the lexicon,
-  a subtle change of meaning that keeps the same words and numbers ("reduced"
-  → "eliminated"), or awkward grammar. Read every line.
+  accept, so good rewordings are sometimes refused (you get the verbatim fact),
+  and an LLM cover letter is accepted only when every sentence is a close
+  restatement of a cited fact (in practice the template letter is used often).
+  They can also miss things: a tool that is not in the lexicon (it is still
+  caught as a new word unless it is in your skills list), a change of meaning
+  that only reuses the fact's own words ("reduced" → "eliminated" is caught as
+  a new word, but swapping which metric a percentage belongs to within one fact
+  is not), the order of two numbers within one fact, or awkward grammar. Read
+  every line.
+- Work-authorization wording is matched broadly. A verified fact or summary
+  that happens to contain such a phrase (e.g. "able to work", "citizen",
+  "sponsors") makes the document `needs_review`; check it and approve if it is
+  not about your status.
+- Job titles that are not title-like (e.g. "Data Analyst: Remote", or more than
+  12 words) are replaced by "the advertised position"; edit the letter if the
+  real title is fine.
 - Keyword extraction is lexical (no synonyms beyond the lexicon's aliases);
   relevance ranking is simple word overlap.
 - Layout is deliberately plain and there is no page-length control; a long

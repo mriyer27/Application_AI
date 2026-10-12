@@ -77,7 +77,7 @@ _PRONOUN_I = re.compile(r"(?<![A-Za-z'’])I(?![A-Za-z'’])")
 def _slot(text: str | None, *, max_len: int) -> str | None:
     """A title-like single line, or None when the text could carry a sentence / claim / instruction."""
     cleaned = normalize_space(clean_untrusted(text or "", max_chars=max_len * 4))
-    cleaned = re.sub(r"[<>{}\[\]\\`]", "", cleaned).strip(" ,-–—|/")
+    cleaned = normalize_space(re.sub(r"[<>{}\[\]\\`]", "", cleaned)).strip(" ,-–—|/")
     if not cleaned or len(cleaned) > max_len:
         return None
     if re.search(r"[!?;:…\"“”]", cleaned) or validation._LINK.search(cleaned):

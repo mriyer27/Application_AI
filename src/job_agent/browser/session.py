@@ -24,8 +24,10 @@ every frame in it and of any window it opens, before the request is sent:
   was typed into it;
 * security challenges / login walls raise ``ChallengeDetected`` (never bypassed).
 
-Not covered (Chromium does not route them): DNS prefetches and WebRTC; the
-pages this tool opens are the employer's own application pages.
+Not covered, because Chromium does not route them through Playwright:
+speculation-rules prefetch/prerender, WebSockets opened inside Web Workers,
+DNS prefetches and WebRTC. Closing those needs network-level enforcement (a
+filtering proxy); SharedWorkers are disabled outright (``CHROMIUM_ARGS``).
 
 At most ``max_concurrent`` sessions run per process (a semaphore). The Playwright
 sync API must not be used from inside an asyncio event loop; call it from a
@@ -254,15 +256,21 @@ def find_installed_chromium() -> Path | None:
     return max(found)[1] if found else None
 
 
+#: SharedWorker requests are not routed by Playwright (dedicated workers are), so
+#: the API is removed from every page. (Playwright sets no --disable-blink-features.)
+CHROMIUM_ARGS: tuple[str, ...] = ("--disable-blink-features=SharedWorker",)
+
+
 def launch_chromium(pw: "Playwright", *, headless: bool) -> "Browser":
     from playwright.sync_api import Error as PlaywrightError
 
     explicit = os.environ.get("JOB_AGENT_CHROMIUM_PATH")
+    args = list(CHROMIUM_ARGS)
     try:
         if explicit:
-            return pw.chromium.launch(headless=headless, executable_path=explicit)
+            return pw.chromium.launch(headless=headless, executable_path=explicit, args=args)
         try:
-            return pw.chromium.launch(headless=headless)
+            return pw.chromium.launch(headless=headless, args=args)
         except PlaywrightError as exc:
             if "Executable doesn't exist" not in str(exc):
                 raise
@@ -270,7 +278,7 @@ def launch_chromium(pw: "Playwright", *, headless: bool) -> "Browser":
             if fallback is None:
                 raise
             log.warning("bundled Chromium missing; using installed %s", fallback)
-            return pw.chromium.launch(headless=headless, executable_path=str(fallback))
+            return pw.chromium.launch(headless=headless, executable_path=str(fallback), args=args)
     except PlaywrightError as exc:
         raise BrowserUnavailable(
             f"could not launch Chromium: {forms.first_line(exc)}",
@@ -316,6 +324,7 @@ class _Guard:
     posts: list[str] = field(default_factory=list)
     websockets: list[str] = field(default_factory=list)
     dialogs: list[str] = field(default_factory=list)
+    _open_sockets: list["WebSocketRoute"] = field(default_factory=list, repr=False)
 
     # -- state ----------------------------------------------------------- #
     def lock(self) -> None:
@@ -393,13 +402,20 @@ class _Guard:
             log.debug("route: %s", exc)
 
     def on_websocket(self, ws: "WebSocketRoute") -> None:
-        # Never connected to the server: the page's socket is closed right away.
+        # Not calling ws.connect_to_server() means no connection to the server is
+        # ever made. Closing the page side from inside this callback would
+        # deadlock the sync dispatcher, so it is done later (close_sockets).
         self.websockets.append(_clip(ws.url))
         self.blocked.append(("WEBSOCKET", _clip(ws.url), "WebSockets are never allowed"))
-        try:
-            ws.close(code=1008, reason="blocked by job-agent")
-        except Exception as exc:  # noqa: BLE001 - already closed
-            log.debug("websocket close: %s", exc)
+        self._open_sockets.append(ws)
+
+    def close_sockets(self) -> None:
+        while self._open_sockets:
+            ws = self._open_sockets.pop()
+            try:
+                ws.close(code=1008, reason="blocked by job-agent")
+            except Exception as exc:  # noqa: BLE001 - page already gone
+                log.debug("websocket close: %s", exc)
 
     def on_request(self, request: "Request") -> None:
         # Redirect hops are not routed; observe them here.
@@ -493,6 +509,7 @@ class PlaywrightApplicationPage:
         self._guard.disarm()
 
     def check_navigation(self) -> None:
+        self._guard.close_sockets()
         self._guard.raise_if_violated()
         current = self._page.url
         problem = self._guard.policy.navigation_problem(current)
@@ -502,6 +519,7 @@ class PlaywrightApplicationPage:
     def wait(self, seconds: float) -> None:
         # Never time.sleep(): Playwright's sync dispatcher must keep running.
         self._page.wait_for_timeout(seconds * 1000)
+        self._guard.close_sockets()
 
     @property
     def submitted_posts(self) -> list[str]:

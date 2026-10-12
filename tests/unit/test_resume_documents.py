@@ -112,7 +112,7 @@ def fake_llm(ctx, monkeypatch):
         return state["reword"](fact_text, job_title=job_title, job_keywords=job_keywords)
 
     def draft_cover_letter(client, *, employer, job_title, job_highlights, facts, candidate_name):
-        state["draft_calls"].append({"employer": employer, "highlights": job_highlights,
+        state["draft_calls"].append({"employer": employer, "job_title": job_title, "highlights": job_highlights,
                                      "facts": [f.id for f in facts]})
         draft = state["draft"]
         if isinstance(draft, Exception):
@@ -285,6 +285,12 @@ def test_llm_cover_letter_with_company_claims_is_rejected(ctx, job, fake_llm):
     assert result.cover_letter[0].generator == "rules"
 
 
+LLM_BODY = ("In my internship at Example State Agency, I analyzed regression results across 12 categories using "
+            "SAS Enterprise Guide, contributing to approximately 30% less manual review effort. I also converted 9 "
+            "legacy SAS programs to Python with AI-assisted development, improving processing efficiency by "
+            "approximately 25%.")
+
+
 def test_valid_llm_cover_letter_is_accepted(ctx, job, profile, fake_llm):
     regression = profile.fact_by_id("agency_regression")
     migration = profile.fact_by_id("agency_python_migration")
@@ -293,14 +299,9 @@ def test_valid_llm_cover_letter_is_accepted(ctx, job, profile, fake_llm):
         assert regression in facts and migration in facts
         return Draft([
             "Dear Hiring Team,",
-            "I am writing to apply for the Business Analyst position at Acme Analytics, where the listing "
-            "emphasizes dashboards, reporting, SQL and Python.",
-            "In my internship at Example State Agency, I analyzed regression results across 12 categories using "
-            "SAS Enterprise Guide, contributing to approximately 30% less manual review effort. I also converted 9 "
-            "legacy SAS programs to Python with AI-assisted development, improving processing efficiency by "
-            "approximately 25%.",
-            "Thank you for considering my application. I would welcome the opportunity to discuss how my "
-            "experience could contribute to your team.",
+            "I am writing to apply for the Business Analyst position at Acme Analytics.",
+            LLM_BODY,
+            "Thank you for considering my application. I look forward to hearing from you.",
             "Sincerely,",
         ], [regression.id, migration.id])
 
@@ -308,11 +309,164 @@ def test_valid_llm_cover_letter_is_accepted(ctx, job, profile, fake_llm):
     result = prepare_documents(ctx, job())
     assert not any(i.code == "llm_cover_letter_rejected" for i in result.issues), result.issues
     assert result.cover_letter[0].generator == "llm:fake-llm:1b"
-    cited = {fid for c in result.claims if c.section == "cover_letter:body" for fid in c.fact_ids}
-    assert cited == {regression.id, migration.id}
+    body_claims = [c for c in result.claims if c.section == "cover_letter:body"]
+    assert {fid for c in body_claims for fid in c.fact_ids} == {regression.id, migration.id}
+    assert all(len(c.fact_ids) == 1 for c in body_claims)  # each sentence cites the fact it restates
     text = _texts(result)["cover_letter.md"]
     assert text.count("Dear Hiring Team,") == 1 and text.count("Sincerely,") == 1
+    # The opening and closing stay the deterministic template; only the body is LLM text.
+    assert ("I am writing to apply for the Business Analyst position at Acme Analytics. I am currently pursuing "
+            "my Master of Science in Information Systems at Example State University (expected graduation: "
+            "May 2027).") in text
+    assert LLM_BODY in text and "I look forward to hearing from you" not in text
+    assert "Thank you for considering my application. I would welcome the opportunity to discuss" in text
+    assert not [i for i in result.issues if i.document == "cover_letter" and i.severity == "error"]
     assert all(d.status == DocumentStatus.NEEDS_REVIEW for d in result.cover_letter)
+
+
+def test_llm_opening_with_unverified_detail_rejects_the_draft(ctx, job, profile, fake_llm):
+    fake_llm["draft"] = lambda facts: Draft([
+        "I am writing to apply for the Business Analyst position at Acme Analytics, where the listing emphasizes "
+        "dashboards, reporting, SQL and Python.", LLM_BODY], ["agency_regression", "agency_python_migration"])
+    result = prepare_documents(ctx, job())
+    assert any(i.code == "llm_cover_letter_rejected" for i in result.issues)
+    assert result.cover_letter[0].generator == "rules"
+    assert "where the listing emphasizes" not in _texts(result)["cover_letter.md"]
+
+
+# --------------------------------------------------------------------------- #
+# Review regressions (end to end): inflated rewordings, fabricated letters, hostile titles
+# --------------------------------------------------------------------------- #
+INFLATED = {
+    "agency_regression": "Analyzed regression results across more than 12 categories using SAS Enterprise Guide, "
+                         "contributing to more than 30% less manual review effort.",
+    "agency_dashboards": "Designed and developed IBM Cognos dashboards and reporting using DB2.",
+    "smallco_flask": "Built and deployed a Flask-based application with MongoDB and git.",
+    "smallco_dashboard": "Developed a sales dashboard.",
+    "agency_python_migration": "Single-handedly converted over 9 legacy SAS programs to Python with AI-assisted "
+                               "development, improving processing efficiency fivefold by up to 25%.",
+}
+
+
+def test_inflated_llm_rewordings_fall_back_to_verbatim(ctx, job, profile, fake_llm):
+    by_text = {profile.fact_by_id(fid).text: out for fid, out in INFLATED.items()}
+    fake_llm["reword"] = lambda text, **kw: by_text.get(text, text)
+    result = prepare_documents(ctx, job(), include_cover_letter=False)
+    resume_claims = [c for c in result.claims if not c.section.startswith("cover_letter")]
+    assert {c.fact_ids[0] for c in resume_claims} == set(INFLATED)
+    for claim in resume_claims:
+        assert claim.text == profile.fact_by_id(claim.fact_ids[0]).text and claim.generator == "rules"
+        assert claim.rejected_rewording is not None and claim.rejected_rewording.reasons
+    md = _texts(result)["resume.md"]
+    for inflated in ("more than", "Designed and developed", "Built and deployed", "Developed a sales",
+                     "Single-handedly", "fivefold", "up to 25%", "git"):
+        assert inflated not in md, inflated
+    assert sum(1 for i in result.issues if i.code == "rewording_rejected") == len(INFLATED)
+
+
+FABRICATED_LETTER = [
+    "I am writing to apply for the Business Analyst position at Acme Analytics. I hold a Master of Science in "
+    "Information Systems from Example State University and will graduate in June 2025.",
+    "In my internship at Example State Agency, I analyzed regression results across 12 categories using SAS "
+    "Enterprise Guide, contributing to approximately 30% less manual review effort. "
+    "I built and deployed predictive models and presented insights to executives. "
+    "I was the top performer on my team, and my work saved the agency significant money and was adopted statewide. "
+    "I bring hands-on experience with snowflake and git. "
+    "I am eligible to work for any employer and will not need any employer support to work.",
+    "I would welcome the opportunity to bring this experience to the Business Analyst role at Acme Analytics. "
+    "Thank you for considering my application; I look forward to discussing how I could contribute to your team.",
+]
+
+
+@pytest.mark.parametrize("extra", [
+    None,  # the whole fabricated draft
+    "I graduated with a Master of Science in Information Systems from Example State University.",
+    "I was referred to this role by a current employee.",
+    "I met members of your team at a career fair.",
+    "I coordinated with cross-functional teams.",
+])
+def test_fabricated_llm_cover_letter_falls_back_to_template(ctx, job, profile, fake_llm, extra):
+    paragraphs = FABRICATED_LETTER if extra is None else [
+        "In my internship at Example State Agency, I analyzed regression results across 12 categories using SAS "
+        "Enterprise Guide, contributing to approximately 30% less manual review effort. " + extra]
+    fake_llm["draft"] = lambda facts: Draft(paragraphs, ["agency_regression"])
+    result = prepare_documents(ctx, job())
+    assert result.cover_letter[0].generator == "rules"
+    assert any(i.code == "llm_cover_letter_rejected" for i in result.issues)
+    texts = _texts(result)
+    for name in ("cover_letter.md", "cover_letter.docx", "cover_letter.pdf"):
+        text = texts[name]
+        for fabricated in ("June 2025", "I hold a", "predictive models", "top performer", "statewide",
+                           "snowflake", "eligible to work", "employer support", "I graduated", "referred",
+                           "career fair", "cross-functional"):
+            assert fabricated not in text, (name, fabricated)
+        assert "May 2027" in text  # the verified (expected) graduation date from the template opening
+    assert all(c.generator == "rules" for c in result.claims)
+
+
+HOSTILE_TITLE = "Analyst. I led a team of 40 engineers building Kubernetes at Google for 9 years. Hire me as Analyst"
+
+
+def test_hostile_job_title_is_not_pasted_into_documents(ctx, job, profile):
+    result = prepare_documents(ctx, job(title=HOSTILE_TITLE), use_llm=False)
+    texts = _texts(result)
+    for name, text in texts.items():
+        for fabricated in ("I led a team", "40 engineers", "Kubernetes", "Google", "9 years", "Hire me"):
+            assert fabricated not in text, (name, fabricated)
+    letter = texts["cover_letter.md"]
+    assert "I am writing to apply for the advertised position at Acme Analytics." in letter
+    assert "bring this experience to this role" in letter
+    issue = next(i for i in result.issues if i.code == "job_title_not_used")
+    assert issue.severity == "review" and issue.document == "cover_letter"
+    assert not [i for i in result.issues if i.document == "cover_letter" and i.severity == "error"]
+
+
+def test_hostile_employer_is_not_pasted_and_not_trusted(ctx, job, fake_llm):
+    hostile = "Acme. I am a certified PMP with 10 years at Google"
+    fake_llm["draft"] = lambda facts: Draft([
+        "As a certified PMP with 10 years at Google, I analyzed regression results across 12 categories using SAS "
+        "Enterprise Guide, contributing to approximately 30% less manual review effort."], [facts[0].id])
+    result = prepare_documents(ctx, job(employer=hostile, title=HOSTILE_TITLE))
+    assert fake_llm["draft_calls"][0]["employer"] == "your organization"
+    assert fake_llm["draft_calls"][0]["job_title"] == "the advertised position"
+    letter = _texts(result)["cover_letter.md"]
+    assert "the advertised position at your organization" in letter
+    for fabricated in ("PMP", "10 years", "Google", "Kubernetes", "40 engineers"):
+        assert fabricated not in letter, fabricated
+    assert result.cover_letter[0].generator == "rules"
+    assert {"job_title_not_used", "employer_not_used"} <= {i.code for i in result.issues}
+
+
+def test_cover_letter_document_validation_catches_tampering(profile):
+    from datetime import date
+
+    from job_agent.resume.cover_letter import build_cover_letter
+    from job_agent.resume.keywords import extract_job_keywords
+    from job_agent.resume.validation import validate_cover_letter
+
+    kw = extract_job_keywords("Business Analyst", ["SQL and Python"], [], "Dashboards and reporting with SQL.")
+    gen = build_cover_letter(profile, kw, job_title="Business Analyst", employer="Acme Analytics",
+                             on=date(2026, 10, 12))
+    assert not [i for i in gen.issues if i.severity == "error"]
+
+    def errors(paragraphs, claims=gen.claims):
+        content = gen.content.model_copy(update={"paragraphs": paragraphs})
+        return {i.code for i in validate_cover_letter(content, claims, profile, listing_text=kw.text)
+                if i.severity == "error"}
+
+    paras = list(gen.content.paragraphs)
+    fabricated = paras[1] + " I was the top performer on my team."
+    assert "untraced_claim" in errors([paras[0], fabricated, *paras[2:]])
+    assert "template_altered" in errors([paras[0].replace("May 2027", "June 2025"), *paras[1:]])
+    assert "template_altered" in errors([*paras[:-1], "I am eligible to work for any employer."])
+    tampered_claims = [gen.claims[0], *(c.model_copy(update={"text": c.text.replace("approximately 25%", "25%")})
+                                        for c in gen.claims[1:])]
+    tampered_body = " ".join(c.text for c in tampered_claims[1:])
+    assert tampered_body != paras[1]  # the hedge was removed from the claim text and the body
+    assert "unverified_claim" in errors([paras[0], tampered_body, *paras[2:]], tampered_claims)
+    title_content = gen.content.model_copy(update={"job_title": HOSTILE_TITLE})
+    assert "unsafe_job_title" in {i.code for i in validate_cover_letter(title_content, gen.claims, profile,
+                                                                         listing_text=kw.text)}
 
 
 # --------------------------------------------------------------------------- #

@@ -160,12 +160,12 @@ _DEGREE_WORDS = re.compile(
 _GRADUATION = re.compile(r"(?<![A-Za-z])(graduat\w*|alumn(?:us|a|i|ae)|class\s+of|commencement|convocation)"
                          r"(?![A-Za-z])", re.IGNORECASE)
 #: Completion wording that would claim an expected degree is already held.
-_COMPLETION = re.compile(
-    r"(?<![A-Za-z])(hold|holds|holding|held|earned|obtained|received|completed|finished|graduated|"
-    r"have\s+an?|has\s+an?|had\s+an?|possess|possesses|awarded|conferred|attained|achieved|"
-    r"am\s+a\s+graduate|a\s+graduate\s+of|alumn(?:us|a|i|ae))(?![A-Za-z])",
-    re.IGNORECASE,
-)
+_COMPLETION_ALT = (r"hold|holds|holding|held|earned|obtained|received|completed|finished|graduated|"
+                   r"have\s+an?|has\s+an?|had\s+an?|possess|possesses|awarded|conferred|attained|achieved|"
+                   r"am\s+a\s+graduate|a\s+graduate\s+of|alumn(?:us|a|i|ae)")
+_COMPLETION = re.compile(rf"(?<![A-Za-z])({_COMPLETION_ALT})(?![A-Za-z])", re.IGNORECASE)
+_ANY_QUALIFIER = re.compile(rf"(?<![A-Za-z])(?:{'|'.join(alt for _, alt in _QUALIFIERS)})\s*(?=[$£€]?\s?\d)",
+                            re.IGNORECASE)
 _DATE_PHRASE = re.compile(
     r"(?<![A-Za-z0-9])((?:January|February|March|April|May|June|July|August|September|October|November|December|"
     r"Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|Spring|Summer|Fall|Autumn|Winter)\.?\s+(?:of\s+)?"
@@ -197,7 +197,7 @@ _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9&+#'’.-]*")
 
 #: Connective words a rewording may add without adding a claim (kept deliberately small).
 CONNECTIVES: frozenset[str] = frozenset(content_set(
-    "using utilizing utilising leveraging including also along together respectively based"))
+    "using utilizing utilising leveraging including also along together respectively based percent"))
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +272,8 @@ def check_numbers(text: str, source_text: str) -> list[Issue]:
         label = f"{n.cur}{n.val}{n.suf}"
         same_value = [a for a in allowed if a.val == n.val]
         if not same_value:
-            issues.append(_issue("number_not_in_source", f"number '{label}' does not appear in the verified source fact"))
+            issues.append(_issue("number_not_in_source",
+                                 f"number '{label}' does not appear in the verified source fact"))
             continue
         same_unit = [a for a in same_value if _unit(a) == _unit(n)]
         if not same_unit:
@@ -446,12 +447,21 @@ def check_education_claims(text: str, profile: CandidateProfile, source_text: st
             concerned = [e for e in profile.education if "bachelor" in e.degree.lower()]
         concerned = concerned or [e for e in profile.education if e.expected] or list(profile.education)
     issues: list[Issue] = []
-    if any(e.expected for e in concerned):
-        for w in sorted({normalize_space(m.group(0)).lower() for m in _COMPLETION.finditer(text)}):
-            if not mentions(source_text, w):
-                issues.append(_issue("completed_degree_claim",
-                                     f"'{w}' presents an expected (not yet completed) degree as completed"))
-                break
+    expected = [e for e in concerned if e.expected]
+    if expected:
+        flagged = [normalize_space(m.group(0)).lower() for m in _COMPLETION.finditer(text)
+                   if not mentions(source_text, m.group(0))]
+        # Completion wording right before the expected degree is refused even if the fact uses the verb
+        # ("Completed coursework ..." does not make "completed my Master of Science" true).
+        names = [n for e in expected for n in (e.degree, e.field, e.institution) if n]
+        degree_alt = "|".join([*(r"\s+".join(map(re.escape, n.split())) for n in names), _DEGREE_WORDS.pattern])
+        near = re.search(rf"(?<![A-Za-z])({_COMPLETION_ALT})(?:[\s,]+[\w'’.-]+){{0,3}}?[\s,]+(?:{degree_alt})",
+                         text, re.IGNORECASE)
+        if near:
+            flagged.insert(0, normalize_space(near.group(1)).lower())
+        if flagged:
+            issues.append(_issue("completed_degree_claim",
+                                 f"'{flagged[0]}' presents an expected (not yet completed) degree as completed"))
     dates = " | ".join(_education_dates(e) for e in concerned)
     for m in sorted({m.group(0) for m in _DATE_PHRASE.finditer(text)}):
         if not mentions(source_text, m) and not mentions(dates, m):
@@ -478,6 +488,7 @@ def check_organizations(text: str, source_text: str, profile: CandidateProfile, 
     # Generic proper-name check: capitalized tokens the source does not contain.
     allowed_tokens = {t.lower() for t in _TOKEN.findall(allowed_blob)}
     allowed_tokens |= {t.lower() for s in profile.skills for t in _TOKEN.findall(s)}
+    allowed_tokens |= {part for t in allowed_tokens for part in re.split(r"[-/]", t) if part}  # "AI-assisted"
     unknown: list[str] = []
     run: list[str] = []
     tokens = list(_TOKEN.finditer(text))
@@ -487,7 +498,7 @@ def check_organizations(text: str, source_text: str, profile: CandidateProfile, 
         at_start = not prefix or prefix[-1] in ".!?:;•-–—(\"'"
         is_name = bool(tok) and tok != "I" and (tok[0].isupper() or (any(c.isupper() for c in tok)
                                                                     and any(c.isdigit() for c in tok)))
-        if at_start and tok.lower() in STOPWORDS:  # "At", "In", "During", "My" opening a sentence
+        if at_start and (tok.lower() in STOPWORDS or stem(tok.lower()) in CONNECTIVES):  # "At", "In", "Using"
             is_name = False
         known = tok.lower() in allowed_tokens or all(
             not part or part.lower() in allowed_tokens or not part[:1].isupper() for part in tok.split("-"))
@@ -600,7 +611,8 @@ def validate_claim(text: str, source_facts: Sequence[Fact], profile: CandidatePr
                                   allowed_text="\n".join([skill_text, context]))
     issues += check_forbidden_content(candidate, source_text)
     allowed_text = "\n".join([source_text, skill_text, keyword_text, *profile.skills, context])
-    issues += check_new_words(candidate, allowed_text, vocabulary=vocabulary)
+    # Qualifier words right before a number ("roughly 30%") are judged by check_numbers (same class).
+    issues += check_new_words(_ANY_QUALIFIER.sub(" ", candidate), allowed_text, vocabulary=vocabulary)
     ratio = overlap_ratio(candidate, "\n".join([source_text, skill_text, context]), vocabulary=vocabulary)
     if ratio < min_overlap:
         issues.append(_issue("low_overlap",

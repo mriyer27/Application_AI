@@ -172,34 +172,81 @@ Messages labelled SENT or DRAFT, and messages from your own profile address,
 are recorded (so they are not downloaded again) but never classified or acted
 on. The query also adds `-in:sent -in:drafts -in:chats`.
 
-## 10. What email can change
+## 10. What email can change (and what needs you)
 
 Email content is untrusted. It can never send anything, accept an interview,
 negotiate, reply or approve. The **only** effect it can have is a
 deterministic, evidence-based status update, and only when **all** of these hold:
 
-1. the **rules** classifier (not the local AI) labelled it with confidence ≥ 0.8,
-2. it is linked to an existing application with confidence ≥ 0.8 and the match
-   is unambiguous (same thread, sender domain = employer, or ATS sender + employer name),
-3. no prompt-injection phrases were found,
-4. the application state machine allows the move.
+1. the **rules** classifier (not the local AI) labelled it with confidence ≥ 0.8.
+   An offer must be about employment (a bank's "your offer is ready" is not),
+   and "we must rescind your offer" / "unable to extend an offer" count as a
+   rejection, never as an offer. Mixed offer + rejection wording is never
+   confident enough.
+2. **Gmail verified the sender**: the topmost `Authentication-Results` header,
+   written by Gmail's own servers (`mx.google.com`), shows `dmarc=pass` or a
+   `dkim=pass` for the From domain. SPF alone doesn't count, and headers the
+   sender wrote into the message (including `ARC-Authentication-Results`) are
+   ignored. A forged `From:` therefore changes nothing.
+3. it is **not bulk or promotional mail** (no `List-Unsubscribe` / `List-Id` /
+   `Precedence: bulk` header, no "unsubscribe", "manage preferences",
+   "pre-approved", "% off"… in the text).
+4. no prompt-injection phrases were found.
+5. it is linked to one of your applications with confidence ≥ 0.8. Only these
+   links reach that level:
+   - the **same Gmail thread** as a message that is already linked,
+   - the sender's domain is **exactly the domain of the job posting / application
+     URL** (`talent@mail.acme.com` for `careers.acme.com/jobs/1`),
+   - a sender domain **you linked to this employer before** with
+     `job-agent emails associate` (only that exact domain; ATS and free-mail
+     domains never become "trusted"),
+   - an **ATS / scheduling / assessment platform** (Greenhouse, Lever, Workday,
+     Calendly, HackerRank, …) naming the employer's **full name** in the
+     subject or sender.
 
-| Category | Status |
+   These never reach it: a domain merely *spelled* like the employer
+   (`acme-analytics.xyz`, `acmeanalytics.top`), a prefix or first word
+   (`better.com` for Betterment, `capital.com` for Capital One), the employer's
+   name typed into a subject by any sender, or the name inside a longer company
+   name ("Mercury Insurance" is not "Mercury").
+6. the role fits: if the email names a **different job title** ("your Senior
+   Data Engineer application" for your Business Analyst application), it is
+   not applied. If you have **several applications at the same employer**, the
+   email must name this application's role.
+7. the state machine allows the move **for an automatic update**:
+
+| Category | Status (automatic) |
 |---|---|
-| application confirmation | `confirmation_received` (only from `submission_attempted` / `submitted` / `needs_manual_action`; this is how an unknown submission outcome gets resolved) |
+| application confirmation | `confirmation_received`, only from `submission_attempted` / `submitted` |
 | rejection | `rejected` |
 | interview invitation, scheduling request | `interview_requested` |
 | assessment | `assessment_received` |
 | offer | `offer_received` |
 
-Every change is recorded with `{"type": "email", gmail_message_id, subject,
-received_at, category}` as evidence (actor `email`). Anything that doesn't meet
-these conditions is only flagged **needs attention**. You confirm it with:
+An email **never** changes, by itself:
+
+- an application in `needs_manual_action`: an unknown submission outcome, or an
+  application that was never submitted (e.g. stopped at a CAPTCHA). A
+  confirmation email for it is flagged for you, because only you know whether
+  you finished the application yourself;
+- an application with no record of a submission;
+- a correction between outcomes (e.g. `rejected` → `interview_requested`); only
+  you can make those (`job-agent applications set-status`).
+
+Every automatic change is recorded with `{"type": "email", gmail_message_id,
+subject, received_at, category}` as evidence (actor `email`). Everything else
+is only flagged **needs attention**, and `job-agent emails show <id>` lists why
+it was not applied automatically (e.g. *sender not verified by Gmail
+(dmarc=fail)*, *the email names a different role: Senior Data Engineer*,
+*email never resolves an unknown submission outcome automatically*). The
+message itself is always stored, so it is not downloaded again. You decide:
 
 ```bash
 job-agent emails --attention
 job-agent emails show 12
-job-agent emails associate 12 A-1a2b3c4d5e --apply-status   # or a job uid J-...
+job-agent emails associate 12 A-1a2b3c4d5e --apply-status   # link it and apply the status it implies
+job-agent emails associate 12 A-1a2b3c4d5e                  # just link it (also trusts that sender domain)
+job-agent applications set-status A-1a2b3c4d5e rejected     # correct a status yourself
 job-agent emails handled 12                                  # e.g. you replied yourself
 ```
 
@@ -208,6 +255,8 @@ job-agent emails handled 12                                  # e.g. you replied 
 | Symptom | Cause / fix |
 |---|---|
 | `Gmail integration is disabled` | Set `gmail.enabled: true`. |
+| `token does not record which scopes it carries` | The token file has no `scopes` / `granted_scopes`, so it can't be verified as read-only. Run `job-agent gmail revoke`, then `job-agent gmail auth`. |
+| A genuine employer email was not applied automatically | See the reasons in `job-agent emails show <id>`. Most common: the job was found on an ATS or job board, so the employer's own mail domain is not known yet. Link one email with `job-agent emails associate <id> <A-...>`; later mail from that exact domain is then applied automatically. |
 | `OAuth client file not found` | Save the Desktop-app JSON to `data/secrets/gmail_credentials.json` (step 4). |
 | `not a valid Desktop-app client` | You downloaded a "Web application" client; create a **Desktop app** client. |
 | `Error 403: access_denied` in the browser | Add your address under **Test users** (step 3). |
@@ -228,6 +277,18 @@ job-agent emails handled 12                                  # e.g. you replied 
 - Matching an email to a job relies on the sender domain, the employer name in
   subject/sender/body, the Gmail thread and the job title. Recruiters writing
   from personal addresses, or staffing agencies, usually need manual linking.
+  The matching is deliberately strict: genuine mail from an employer domain that
+  is not the job posting's domain needs one confirmation from you first, and
+  job titles are only recognised in common phrasings ("the X position",
+  "your X application", "Position: X").
+- Sender verification relies on Gmail's `Authentication-Results` header. Mail
+  from domains without DKIM/DMARC, or a message that has no such header, is
+  never applied automatically. In `gmail.metadata` mode that header is not
+  requested, so nothing is applied automatically there.
+- An ATS sender is trusted for the employer it names. Someone with their own
+  account on the same ATS could send mail naming your employer; such a message
+  would still need to pass the role checks, and you can always correct a
+  status with `job-agent applications set-status`.
 - Interview times are not extracted from emails; no calendar integration.
 - Your replies are not detected (sent mail is excluded), so "recruiter reply"
   follow-ups stay open until you mark them done or mark the email handled.

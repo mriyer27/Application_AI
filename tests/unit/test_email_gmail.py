@@ -327,3 +327,41 @@ def test_token_path_outside_home_is_refused(ctx):
     ctx.config.gmail.token_path = "/tmp/../etc/gmail_token.json"
     with pytest.raises(PermanentError):
         auth.token_file(ctx.config)
+
+
+@pytest.mark.parametrize("drop", [("scopes", "granted_scopes"), ("granted_scopes",)])
+def test_token_without_recorded_scopes_is_refused_or_checked(ctx, monkeypatch, drop):
+    """A token file that does not say which scopes it carries cannot be verified read-only: refuse it."""
+    enable_gmail(ctx)
+    path = auth.token_file(ctx.config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(_creds().to_json())
+    data["granted_scopes"] = [READONLY]
+    for key in drop:
+        data.pop(key, None)
+    path.write_text(json.dumps(data))
+    svc = fake_service("m-confirm-1")
+    monkeypatch.setattr(GmailReadClient, "from_credentials", classmethod(lambda cls, creds, **kw: cls(svc, **kw)))
+    if "scopes" in drop:
+        with pytest.raises(AuthorizationRequired, match="cannot be verified as read-only") as info:
+            sync_gmail(ctx)
+        assert "gmail auth" in info.value.human_action
+        assert "scopes" in repo.get_state(ctx.db, auth.STATE_AUTH_ERROR)
+        assert svc.list_calls == []  # nothing was requested with the unverified token
+        with pytest.raises(AuthorizationRequired, match="not contacting Google"):
+            sync_gmail(ctx)  # fail fast until you re-authorize
+    else:  # the "scopes" key alone is still checked and enough
+        assert sync_gmail(ctx).new == 1
+
+
+def test_token_with_empty_scope_lists_is_refused(ctx, monkeypatch):
+    enable_gmail(ctx)
+    path = auth.token_file(ctx.config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.loads(_creds().to_json())
+    data.update(scopes=[], granted_scopes=[])
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(GmailReadClient, "from_credentials",
+                        classmethod(lambda cls, creds, **kw: cls(fake_service("m-confirm-1"), **kw)))
+    with pytest.raises(AuthorizationRequired):
+        sync_gmail(ctx)

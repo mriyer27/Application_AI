@@ -54,6 +54,13 @@ SIMILAR_DOMAIN_SCORE = 0.5
 #: a platform sender naming the employer, or the thread). Anyone can write an employer's name in a subject.
 UNVERIFIED_CAP = 0.7
 
+#: Hosts where anyone can publish a job page or form: their domain says nothing about the employer.
+_SHARED_HOSTS: frozenset[str] = frozenset({
+    "google.com", "forms.gle", "office.com", "microsoft.com", "live.com", "typeform.com", "jotform.com",
+    "wufoo.com", "airtable.com", "notion.site", "notion.so", "github.io", "gitlab.io", "webflow.io", "wixsite.com",
+    "squarespace.com", "wordpress.com", "medium.com", "craigslist.org", "ycombinator.com", "bit.ly",
+})
+
 _LEGAL_SUFFIXES = {
     "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company", "plc", "gmbh", "ag",
     "sa", "lp", "llp", "pllc", "holdings", "group", "the",
@@ -180,6 +187,8 @@ def names_employer(text: str | None, employer: str | None, *, title: str | None 
 
     "Mercury" is *not* named by "Mercury Insurance" (another capitalized word
     follows), but is by "Mercury Careers", "Mercury's team" or "Mercury." .
+    Once a text names the longer company, its other bare mentions ("the Mercury
+    team") are taken to mean that company too.
     """
     tokens = normalize_employer(employer).split()
     if not tokens or len("".join(tokens)) < 3:
@@ -191,17 +200,17 @@ def names_employer(text: str | None, employer: str | None, *, title: str | None 
     title_norm = normalize_text(title)
     pattern = re.compile(r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9\n]{1,3}".join(re.escape(t) for t in tokens)
                          + r"(?![A-Za-z0-9])", re.I)
+    named = False
     for match in pattern.finditer(hay):
         rest = hay[match.end():]
         follower = re.match(r"(?:[ \t]+|-)([A-Z][A-Za-z0-9]*)", rest)
-        if follower is None:
-            return True  # end of text, punctuation, possessive, line break
-        word = follower.group(1).lower()
-        if word in allowed:
-            return True
-        if title_norm and normalize_text(rest[:len(title_norm) + 20]).startswith(title_norm):
-            return True  # "Acme Analytics Business Analyst - application received"
-    return False
+        if follower is None or follower.group(1).lower() in allowed:
+            named = True  # end of text, punctuation, possessive, line break, "Careers", "Inc", ...
+        elif title_norm and normalize_text(rest[:len(title_norm) + 20]).startswith(title_norm):
+            named = True  # "Acme Analytics Business Analyst - application received"
+        else:
+            return False  # "Mercury Insurance": a longer company name
+    return named
 
 
 def _platform_identity(from_domain: str | None, local_part: str, compact: str) -> str | None:
@@ -348,7 +357,7 @@ def _employer_score(target: dict[str, Any], *, from_domain: str | None, from_nam
     # 1. The sender's own domain (never an ATS / free-mail / job-board domain).
     if sender_reg and not platform and not is_generic_sender(from_domain):
         job_domains = {d for d in (_host_domain(target.get("job_url")), _host_domain(target.get("application_url")))
-                       if d and not is_platform_sender(d) and not is_generic_sender(d)
+                       if d and not is_platform_sender(d) and not is_generic_sender(d) and d not in _SHARED_HOSTS
                        and not any(d == a or d.endswith("." + a) for a in ATS_DOMAINS)}
         if sender_reg in job_domains:
             return 0.9, "domain", [f"sender domain {sender_reg} is the job posting's website"]
@@ -392,7 +401,7 @@ def _confirmed_domains(db: Database) -> dict[str, set[str]]:
             continue
         reg = registrable_domain(domain)
         employer = normalize_employer(row["employer"])
-        if reg and employer:
+        if reg and employer and reg not in _SHARED_HOSTS:
             out.setdefault(employer, set()).add(reg)
     return out
 
@@ -460,7 +469,7 @@ def find_candidates(db: Database, *, thread_id: str, from_address: str | None, f
                                                  local_part=local_part, subject=subject, body=body,
                                                  confirmed_domains=confirmed)
         if guess and guess == normalize_employer(target["employer"]) and score < 0.55:
-            score, method, reasons = 0.55, "employer_name", ["employer suggested by the local AI (unverified)"]
+            score, method, reasons = 0.55, "llm_guess", ["employer suggested by the local AI (unverified)"]
         if score <= 0:
             continue
         c = AssociationCandidate(job_id=int(target["job_id"]), application_id=target["application_id"],

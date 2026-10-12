@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from job_agent.email import classify as email_classify
+from job_agent.email import parse as email_parse
 from job_agent.email.classify import (
     RULES_CONFIDENT,
     classify_rules,
@@ -89,6 +91,67 @@ def test_from_and_domain_helpers():
 def test_html_to_text_and_extract_body_empty():
     assert html_to_text("<div>a<br>b</div><script>evil()</script>") == "a\nb"
     assert extract_body(None, 100) == ""
+
+
+# ------------------------------------------------- sender authentication ---- #
+def _auth(*values, from_domain="acmeanalytics.com"):
+    payload = {"headers": [{"name": "Authentication-Results", "value": v} for v in values]}
+    return email_parse.sender_auth(payload, from_domain)
+
+
+GMAIL_PASS = ("mx.google.com; dkim=pass header.i=@acmeanalytics.com header.s=s1 header.b=Ab12; spf=pass "
+              "(google.com: domain of hr@acmeanalytics.com designates 192.0.2.1 as permitted sender) "
+              "smtp.mailfrom=hr@acmeanalytics.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) "
+              "header.from=acmeanalytics.com")
+
+
+def test_sender_auth_dmarc_pass_from_gmail():
+    result = _auth(GMAIL_PASS)
+    assert result.authenticated and result.method == "dmarc" and result.label == "verified (dmarc)"
+
+
+def test_sender_auth_aligned_dkim_without_dmarc_policy():
+    result = _auth("mx.google.com; dkim=pass header.i=@mail.acmeanalytics.com; spf=neutral; dmarc=none")
+    assert result.authenticated and result.method == "dkim"
+    assert _auth("mx.google.com; dkim=pass header.d=acmeanalytics.com", from_domain="talent.acmeanalytics.com"
+                 ).authenticated
+
+
+@pytest.mark.parametrize("value,reason", [
+    ("mx.google.com; spf=fail smtp.mailfrom=evil.example; dkim=none; dmarc=fail", "dmarc=fail"),
+    ("mx.google.com; spf=pass smtp.mailfrom=acmeanalytics.com; dkim=none", "no DKIM/DMARC pass"),
+    ("mx.google.com; dkim=pass header.i=@evil.example; dmarc=none", "no DKIM/DMARC pass"),
+    ("mx.google.com; dkim=pass header.i=@acmeanalytics.com; dmarc=fail header.from=acmeanalytics.com", "dmarc=fail"),
+    ("mx.evil.example; dkim=pass header.i=@acmeanalytics.com; dmarc=pass header.from=acmeanalytics.com",
+     "not written by Gmail"),
+    ("mx.google.com (comment; dmarc=pass header.from=acmeanalytics.com); dkim=neutral", "no DKIM/DMARC pass"),
+])
+def test_sender_auth_failures(value, reason):
+    result = _auth(value)
+    assert not result.authenticated and reason in result.reason and result.label.startswith("not verified")
+
+
+def test_sender_auth_uses_only_the_topmost_gmail_header():
+    # Gmail prepends its own verdict; a forged "pass" below it (sent with the message) is ignored.
+    assert not _auth("mx.google.com; dkim=none; dmarc=fail header.from=acmeanalytics.com", GMAIL_PASS).authenticated
+    # A forged header on top that is not Gmail's also means "not verified" (no fallback further down).
+    assert not _auth("mx.evil.example; dmarc=pass header.from=acmeanalytics.com", GMAIL_PASS).authenticated
+
+
+def test_sender_auth_ignores_arc_results_and_missing_headers():
+    payload = {"headers": [{"name": "ARC-Authentication-Results",
+                            "value": "i=1; mx.google.com; dmarc=pass header.from=acmeanalytics.com"}]}
+    assert not email_parse.sender_auth(payload, "acmeanalytics.com").authenticated
+    assert not email_parse.sender_auth({"headers": []}, "acmeanalytics.com").authenticated
+    assert not _auth(GMAIL_PASS, from_domain=None).authenticated
+
+
+def test_parse_message_carries_sender_auth():
+    p = _parsed("m-offer-1")
+    assert p.auth.authenticated and p.auth.dmarc == "pass"
+    s = spec("m-offer-1")
+    s["headers"] = {}
+    assert not parse_message(build_message(s), body_char_limit=4000).auth.authenticated
 
 
 # -------------------------------------------------------------- classify ---- #
@@ -197,3 +260,52 @@ def test_safe_llm_reply_is_used():
 
     text, source = suggest_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="T", llm_draft=good_llm)
     assert source == "llm" and "[your availability]" in text
+
+
+# ------------------------------------------------- offers, negations, marketing ---- #
+def _classify(subject, body, domain="acme.com"):
+    return classify_rules(subject=subject, body=body, from_address=f"x@{domain}", from_domain=domain)
+
+
+def test_marketing_your_offer_is_not_an_employment_offer():
+    result = _classify("Test, your offer is ready",
+                       "Good news: your offer is waiting. You're pre-approved for a new card with no annual fee. "
+                       "To stop receiving these messages, unsubscribe here.", domain="notification.capitalone.com")
+    assert result.category != EmailCategory.OFFER
+    assert _classify("Special for you", "We're excited to present you an offer: 20% off.").category \
+        != EmailCategory.OFFER
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Update on your offer", "Unfortunately, we must rescind your offer for the Business Analyst position."),
+    ("Your application", "We are unable to extend an offer of employment at this time."),
+    ("Your application", "We are not able to offer you the Business Analyst position."),
+    ("Business Analyst", "The offer of employment has been withdrawn for the Business Analyst role."),
+])
+def test_negated_offers_are_rejections(subject, body):
+    result = _classify(subject, body)
+    assert result.category == EmailCategory.REJECTION, result
+
+
+@pytest.mark.parametrize("clause", [
+    "We reserve the right to rescind this offer if the background check is not completed.",
+    "If you decide not to move forward with the offer, please let us know.",
+])
+def test_conditional_rescind_clause_keeps_a_genuine_offer(clause):
+    result = _classify("Offer letter - Business Analyst",
+                       "We are pleased to extend you an offer for the Business Analyst position. " + clause)
+    assert result.category == EmailCategory.OFFER and result.confidence >= RULES_CONFIDENT
+
+
+def test_contradictory_offer_and_rejection_is_never_confident():
+    result = _classify("Your applications",
+                       "We are pleased to extend you an offer for the Data Analyst position. Unfortunately we are "
+                       "unable to extend an offer for the Business Analyst role.")
+    assert result.confidence < RULES_CONFIDENT
+
+
+def test_is_promotional():
+    assert email_classify.is_promotional(subject="Hi", body="Manage your email preferences or unsubscribe.")
+    assert email_classify.is_promotional(subject="Get 20% off", body="")
+    assert not email_classify.is_promotional(subject="Offer letter - Business Analyst",
+                                             body="We are pleased to extend you an offer for the position.")

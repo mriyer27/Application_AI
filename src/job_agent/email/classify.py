@@ -192,8 +192,10 @@ _OFFER_NEGATED = re.compile(
     r"(?:rescinded|revoked|retracted|withdrawn|cancell?ed)\b",
     re.I,
 )
-#: Words right before a negation that make it conditional ("we reserve the right to rescind this offer if ...").
-_CONDITIONAL_BEFORE = re.compile(r"\b(?:right to|may|might|could|would|can|if|unless|should|in case)\s*$", re.I)
+#: A conditional earlier in the same clause ("we reserve the right to rescind this offer if ...",
+#: "if you decide not to move forward with the offer").
+_CONDITIONAL_BEFORE = re.compile(
+    r"\b(?:right to|may|might|could|would|can|if|unless|should|in case|whether)\b[^.!?;:\n]*$", re.I)
 #: An offer email must be about employment, not a shop's or bank's "offer".
 _EMPLOYMENT_CONTEXT = re.compile(
     r"\b(?:position|role|employment|salary|compensation|start(?:ing)? date|base pay|annual base|offer letter|"
@@ -249,7 +251,7 @@ def is_promotional(*, subject: str, body: str) -> bool:
 def offer_negated(text: str) -> bool:
     """An offer that is declined, rescinded or not extended (conditional clauses do not count)."""
     for match in _OFFER_NEGATED.finditer(text):
-        if not _CONDITIONAL_BEFORE.search(text[max(0, match.start() - 30):match.start()]):
+        if not _CONDITIONAL_BEFORE.search(text[max(0, match.start() - 60):match.start()]):
             return True
     return False
 
@@ -278,8 +280,10 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
     both = f"{subj}\n{text}"
     conflict = False
     if offer_negated(subj) or offer_negated(text):
-        conflict = scores[C.OFFER] >= 4.0  # "pleased to extend an offer" next to "unable to extend an offer"
-        scores[C.OFFER] = 0.0
+        if scores[C.OFFER] >= 4.0:
+            conflict = True  # "pleased to extend an offer" next to "unable to extend an offer": ask the user
+        else:
+            scores[C.OFFER] = 0.0
         scores[C.REJECTION] += 3.5
     elif scores[C.OFFER] > 0 and not _EMPLOYMENT_CONTEXT.search(both):
         scores[C.OFFER] = 0.0  # "an offer" with nothing about a job: marketing, not an employment offer

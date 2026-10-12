@@ -12,16 +12,9 @@ import pytest
 
 from job_agent.database import repo
 from job_agent.database.connection import from_json
+from job_agent.email import associate
 from job_agent.email import status as email_status
-from job_agent.email.associate import (
-    AUTO_THRESHOLD,
-    UNVERIFIED_CAP,
-    find_candidates,
-    mentioned_titles,
-    names_employer,
-    title_status,
-    titles_match,
-)
+from job_agent.email.associate import AUTO_THRESHOLD, find_candidates
 from job_agent.email.service import associate_email, sync_gmail
 from job_agent.errors import InvalidTransition
 from job_agent.models import EmailCategory, PipelineState
@@ -29,6 +22,7 @@ from test_email_fakes import FakeGmailService, build_message, enable_gmail, make
 from test_email_sync import _submitted_via_approval
 
 S = PipelineState
+UNVERIFIED_CAP = 0.7  # associate.UNVERIFIED_CAP
 SUBMITTED_AT = "2026-10-01T00:00:00+00:00"
 
 
@@ -201,6 +195,15 @@ def test_platform_domain_confirmation_is_not_a_trusted_employer_domain(gctx, mak
     assert all(c.method != "confirmed_domain" for c in cands)
 
 
+def test_job_on_a_shared_host_does_not_trust_that_hosts_mail(gctx, make_job):
+    """A job posted as a Google Form must not make every google.com sender 'the employer'."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://docs.google.com/forms/d/e/abc/viewform"),
+                           "submitted", submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("m-goog", "Google Careers <careers-noreply@google.com>", *REJECT))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+
+
 def test_exact_job_domain_still_updates(gctx, make_job):
     db = gctx.db
     app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
@@ -261,16 +264,21 @@ def test_matching_role_still_updates_single_application(gctx, make_job):
 
 
 def test_title_helpers():
-    assert mentioned_titles("Update on your Senior Data Engineer application", "") == ["Senior Data Engineer"]
-    assert mentioned_titles("Thank You For Your Interest In The Business Analyst Role", "") == ["Business Analyst"]
-    assert mentioned_titles("Update on your Acme application", "Thank you for applying.") == []
-    assert mentioned_titles("Complete your Workday application", "") == []
-    assert titles_match("Business Analyst", "Business Analyst (Remote)")
-    assert titles_match("Data Analyst II", "Data Analyst")
-    assert not titles_match("Senior Data Engineer", "Data Engineer")
-    assert title_status("Data Engineer", "Acme", [], subject="x", body="the senior data engineer role")[0] == "none"
-    assert title_status("Data Engineer", "Acme", [], subject="x", body="the data engineer role")[0] == "match"
-    assert title_status("Business Analyst", "Acme", ["Marketing Coordinator"], subject="", body="")[0] == "mismatch"
+    titles = associate.mentioned_titles
+    assert titles("Update on your Senior Data Engineer application", "") == ["Senior Data Engineer"]
+    assert titles("Thank You For Your Interest In The Business Analyst Role", "") == ["Business Analyst"]
+    assert titles("Update on your Acme application", "Thank you for applying.") == []
+    assert titles("Complete your Workday application", "") == []
+    assert associate.titles_match("Business Analyst", "Business Analyst (Remote)")
+    assert associate.titles_match("Data Analyst II", "Data Analyst")
+    assert not associate.titles_match("Senior Data Engineer", "Data Engineer")
+
+    def status(title, body, mentioned=()):
+        return associate.title_status(title, "Acme", list(mentioned), subject="x", body=body)[0]
+
+    assert status("Data Engineer", "the senior data engineer role") == "none"
+    assert status("Data Engineer", "the data engineer role") == "match"
+    assert status("Business Analyst", "", ["Marketing Coordinator"]) == "mismatch"
 
 
 # --------------------------------------------------------------------------- #
@@ -431,6 +439,18 @@ def test_genuine_offer_still_applies(gctx, make_job):
 # --------------------------------------------------------------------------- #
 # 5. A shared word is not the employer
 # --------------------------------------------------------------------------- #
+def test_longer_company_name_from_its_own_domain_is_not_the_employer(gctx, make_job):
+    db = gctx.db
+    job = make_job(employer="Mercury", employer_normalized="mercury", title="Data Analyst",
+                   title_normalized="data analyst", job_url="https://jobs.ashbyhq.com/mercury/1")
+    app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("m5c", "Careers <careers@mercuryinsurance.com>", "Your application",
+                          "Thank you for your interest in Mercury Insurance. Unfortunately, we will not be moving "
+                          "forward with your application.\n\nThe Mercury Talent Team"))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+    assert assocs(db, "m5c") == []
+
+
 def test_longer_company_name_is_not_the_employer(gctx, make_job):
     db = gctx.db
     job = make_job(employer="Mercury", employer_normalized="mercury", title="Data Analyst",
@@ -456,17 +476,19 @@ def test_platform_mail_naming_the_full_employer_still_links(gctx, make_job):
 
 
 def test_names_employer_rules():
-    assert not names_employer("Mercury Insurance Careers", "Mercury")
-    assert not names_employer("Your application with Mercury Insurance", "Mercury")
-    assert not names_employer("MERCURY INSURANCE", "Mercury")
-    assert names_employer("Thank you for applying to Mercury.", "Mercury")
-    assert names_employer("Mercury Careers", "Mercury")
-    assert names_employer("Mercury's recruiting team", "Mercury")
-    assert names_employer("Acme Analytics Hiring Team", "Acme Analytics, Inc.")
-    assert names_employer("Your Application To Acme Analytics Was Received", "Acme Analytics")
-    assert names_employer("Acme Analytics Business Analyst update", "Acme Analytics", title="Business Analyst")
-    assert not names_employer("Acme Analytics Group", "Acme Analytics")
-    assert names_employer("Acme Group careers", "Acme Group")
+    assert not associate.names_employer("Mercury Insurance Careers", "Mercury")
+    assert not associate.names_employer("Your application with Mercury Insurance", "Mercury")
+    assert not associate.names_employer("MERCURY INSURANCE", "Mercury")
+    assert not associate.names_employer("Thanks for applying to Mercury Insurance.\n\nThe Mercury team", "Mercury")
+    assert associate.names_employer("Thank you for applying to Mercury.", "Mercury")
+    assert associate.names_employer("Mercury Careers", "Mercury")
+    assert associate.names_employer("Mercury's recruiting team", "Mercury")
+    assert associate.names_employer("Acme Analytics Hiring Team", "Acme Analytics, Inc.")
+    assert associate.names_employer("Your Application To Acme Analytics Was Received", "Acme Analytics")
+    assert associate.names_employer("Acme Analytics Business Analyst update", "Acme Analytics",
+                                    title="Business Analyst")
+    assert not associate.names_employer("Acme Analytics Group", "Acme Analytics")
+    assert associate.names_employer("Acme Group careers", "Acme Group")
 
 
 # --------------------------------------------------------------------------- #
@@ -527,3 +549,7 @@ def test_verified_sender_offer_applies(gctx, make_job):
                            "interview_requested", submitted_at=SUBMITTED_AT)
     res = sync(gctx, mail("m9", "Acme HR <hr@acmeanalytics.com>", *OFFER))
     assert res.status_updates == 1 and app_status(db, app) == "offer_received"
+
+
+def test_unverified_cap_constant_matches():
+    assert associate.UNVERIFIED_CAP == UNVERIFIED_CAP < AUTO_THRESHOLD

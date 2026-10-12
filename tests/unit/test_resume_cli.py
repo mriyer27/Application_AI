@@ -73,3 +73,36 @@ def test_documents_list_approve_reject(cli, job_uid, db):
     rejected = cli("documents", "reject", str(letter))
     assert rejected.exit_code == 0 and "rejected" in rejected.output
     assert cli("documents", "approve", "4242").exit_code == 1
+
+
+MARKUP = "[bold red]Hire me[/bold red] [/] [link=https://evil.example]x[/link]"
+
+
+def test_documents_list_prints_listing_text_literally(cli, make_job):
+    make_job(job_uid="J-cli0000002", title=f"Data Analyst {MARKUP}", employer="Acme [/] Analytics")
+    cli("prepare", "J-cli0000002", "--no-llm")
+    listing = cli("documents", "list", "J-cli0000002")
+    assert listing.exit_code == 0, listing.output
+    assert "Acme [/] Analytics" in listing.output
+    assert "[bold red]Hire me[/bold red]" in listing.output  # shown as text, not applied as markup
+
+
+def test_prepare_prints_llm_and_listing_text_literally(cli, job_uid, monkeypatch):
+    from job_agent.resume import service
+    from job_agent.resume.models import Claim, Issue
+
+    real = service.prepare_documents
+
+    def patched(*args, **kwargs):
+        result = real(*args, **kwargs)
+        result.claims.append(Claim(text=f"Reworded {MARKUP}", fact_ids=["agency_regression"],
+                                   generator="llm:[/]", section="experience:[x]"))
+        result.issues.append(Issue(code="rewording_rejected", severity="info", document="resume",
+                                   message=f"LLM rewording rejected ('{MARKUP}')"))
+        return result
+
+    monkeypatch.setattr(service, "prepare_documents", patched)
+    result = cli("prepare", job_uid, "--no-llm")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "[bold red]Hire me[/bold red]" in out and "llm:[/]" in out and "experience:[x]" in out
