@@ -256,12 +256,33 @@ def last_successful_run(db: Database, task_name: str | None = None) -> sqlite3.R
 # --------------------------------------------------------------------------- #
 # Task locks (cross-process overlap prevention)
 # --------------------------------------------------------------------------- #
+def _lock_owner_dead(owner: str | None) -> bool:
+    """True if a lock owner ``host:pid:task`` names a process on THIS host that no longer runs."""
+    if not owner:
+        return False
+    import socket
+
+    host, _, rest = owner.partition(":")
+    pid_text = rest.partition(":")[0]
+    if host != socket.gethostname() or not pid_text.isdigit():
+        return False
+    pid = int(pid_text)
+    return pid != os.getpid() and not pid_alive(pid)
+
+
 def acquire_task_lock(db: Database, task_name: str, owner: str, ttl_minutes: int) -> bool:
+    """Take the task lock. Free, expired, or held by a dead process on this host = available."""
     now = utcnow()
     with db.transaction():
         db.execute(
             "INSERT OR IGNORE INTO scheduled_tasks (task_name, updated_at) VALUES (?, ?)", (task_name, to_iso(now))
         )
+        held = db.query_one("SELECT lock_owner FROM scheduled_tasks WHERE task_name = ?", (task_name,))
+        if held and held["lock_owner"] and _lock_owner_dead(held["lock_owner"]):
+            db.execute("UPDATE scheduled_tasks SET lock_owner = NULL, lock_expires_at = NULL WHERE task_name = ? "
+                       "AND lock_owner = ?", (task_name, held["lock_owner"]))
+            audit(db, actor="system", action="task_lock_released", entity_type="task", entity_id=task_name,
+                  outcome="success", details={"reason": "owner process no longer running"})
         cur = db.execute(
             "UPDATE scheduled_tasks SET lock_owner = ?, lock_acquired_at = ?, lock_expires_at = ?, updated_at = ? "
             "WHERE task_name = ? AND (lock_owner IS NULL OR lock_expires_at IS NULL OR lock_expires_at < ?)",
@@ -596,6 +617,47 @@ def consume_approval(db: Database, approval_uid: str, *, application_id: int | N
             raise ApprovalError(f"approval {approval_uid} is {row['status']}; it must be approved and unused")
         audit(db, actor=actor, action="approval_consumed", entity_type="approval", entity_id=approval_uid,
               outcome="success", details={"application_id": application_id, "followup_id": followup_id})
+
+
+def cancel_live_approvals(db: Database, *, application_id: int, actor: str, reason: str) -> int:
+    """Withdraw pending AND approved-but-unused approvals for an application (e.g. you applied manually)."""
+    with db.transaction():
+        rows = db.query_all("SELECT approval_uid, status FROM approval_requests WHERE application_id = ? "
+                            "AND status IN ('pending','approved')", (application_id,))
+        for row in rows:
+            db.execute("UPDATE approval_requests SET status = ?, decided_at = COALESCE(decided_at, ?), "
+                       "decision_note = ? WHERE approval_uid = ? AND status IN ('pending','approved')",
+                       (ApprovalStatus.SUPERSEDED.value, utcnow_iso(), reason[:300], row["approval_uid"]))
+            audit(db, actor=actor, action="approval_cancelled", entity_type="approval", entity_id=row["approval_uid"],
+                  outcome="success", details={"previous_status": row["status"], "reason": reason})
+        return len(rows)
+
+
+def recover_stuck_submissions(db: Database, *, older_than_minutes: int = 15) -> list[int]:
+    """Applications left in SUBMISSION_ATTEMPTED by a killed process become NEEDS_MANUAL_ACTION.
+
+    The submission may or may not have happened, so this records an unknown
+    outcome for the human and never retries anything.
+    """
+    from job_agent.errors import UnknownOutcome
+
+    cutoff = to_iso(utcnow() - timedelta(minutes=older_than_minutes))
+    rows = db.query_all("SELECT id, application_uid FROM applications WHERE status = ? AND status_updated_at < ?",
+                        (PipelineState.SUBMISSION_ATTEMPTED.value, cutoff))
+    recovered = []
+    for row in rows:
+        with db.transaction():
+            transition_application(
+                db, int(row["id"]), PipelineState.NEEDS_MANUAL_ACTION, actor="system",
+                details={"reason": "process stopped during submission; outcome unknown", "unknown_outcome": True},
+                next_action="Outcome unknown: check your email / the employer portal, then run "
+                            f"`job-agent applications mark-submitted {row['application_uid']}` or "
+                            f"`job-agent applications set-status {row['application_uid']} ...`",
+                expected_current=PipelineState.SUBMISSION_ATTEMPTED)
+            record_error(db, component="applications", application_id=int(row["id"]),
+                         error=UnknownOutcome("submission interrupted before its outcome was recorded"))
+        recovered.append(int(row["id"]))
+    return recovered
 
 
 def approval_payload(row: sqlite3.Row) -> dict[str, Any]:

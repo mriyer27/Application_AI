@@ -188,7 +188,8 @@ ALLOWED_TRANSITIONS: dict[PipelineState, frozenset[PipelineState]] = {
     _S.REJECTED: frozenset({_S.CLOSED}),
     _S.WITHDRAWN: frozenset({_S.CLOSED}),
     _S.FAILED: frozenset(
-        {_S.DOCUMENTS_PENDING, _S.DOCUMENTS_READY, _S.IN_PROGRESS, _S.NEEDS_MANUAL_ACTION, _S.WITHDRAWN, _S.CLOSED}
+        {_S.DOCUMENTS_PENDING, _S.DOCUMENTS_READY, _S.IN_PROGRESS, _S.NEEDS_MANUAL_ACTION, _S.WITHDRAWN, _S.CLOSED,
+         _S.SUBMITTED}  # SUBMITTED: you applied manually after a failed attempt (actor must be "user")
     ),
     _S.NEEDS_MANUAL_ACTION: frozenset(
         {
@@ -228,6 +229,7 @@ USER_ONLY_WITHOUT_EVIDENCE: frozenset[tuple[PipelineState, PipelineState]] = fro
         (_S.DOCUMENTS_READY, _S.SUBMITTED),
         (_S.AWAITING_APPROVAL, _S.SUBMITTED),
         (_S.NEEDS_MANUAL_ACTION, _S.SUBMITTED),
+        (_S.FAILED, _S.SUBMITTED),
     }
 )
 

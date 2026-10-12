@@ -324,3 +324,47 @@ def test_approval_payload_shown_is_exactly_what_is_hashed(db, make_job):
     row = repo.get_approval(db, uid)
     shown = repo.approval_payload(row)
     assert shown == payload and repo.payload_hash(shown) == row["payload_hash"]
+
+
+# ---------------- final verification round ---------------- #
+def test_lock_held_by_dead_local_process_is_taken_over(db):
+    import socket
+
+    dead_owner = f"{socket.gethostname()}:999999:discover"
+    assert repo.acquire_task_lock(db, "discover", dead_owner, 90)
+    assert repo.acquire_task_lock(db, "discover", "me:1:discover", 90)  # owner pid 999999 is not running
+    other_host = "some-other-host:123:report"
+    assert repo.acquire_task_lock(db, "report", other_host, 90)
+    assert not repo.acquire_task_lock(db, "report", "me:1:report", 90)  # can't judge another host's pid
+
+
+def test_stuck_submission_becomes_unknown_outcome(db, make_job):
+    app_id, uid, payload = _ready_for_approval(db, make_job)
+    repo.decide_approval(db, uid, approve=True, actor="user")
+    repo.transition_application(db, app_id, S.SUBMISSION_ATTEMPTED, actor="browser", approval_uid=uid,
+                                approved_payload=payload)
+    db.execute("UPDATE applications SET status_updated_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (app_id,))
+    assert repo.recover_stuck_submissions(db) == [app_id]
+    row = repo.get_application(db, app_id)
+    assert row["status"] == "needs_manual_action" and "Outcome unknown" in row["next_action"]
+    assert db.scalar("SELECT error_kind FROM errors WHERE application_id = ?", (app_id,)) == "unknown_outcome"
+    assert repo.recover_stuck_submissions(db) == []  # idempotent
+
+
+def test_cancel_live_approvals_includes_approved_unused(db, make_job):
+    app_id, uid, payload = _ready_for_approval(db, make_job)
+    repo.decide_approval(db, uid, approve=True, actor="user")
+    assert repo.cancel_live_approvals(db, application_id=app_id, actor="user", reason="applied manually") == 1
+    assert repo.get_approval(db, uid)["status"] == "superseded"
+    with pytest.raises(ApprovalError):
+        repo.consume_approval(db, uid, application_id=app_id, actor="browser", current_payload=payload)
+
+
+def test_user_can_record_manual_submission_after_failed_attempt(db, make_job):
+    app_id = repo.create_application(db, make_job(), actor="system")
+    repo.transition_application(db, app_id, S.FAILED, actor="system")
+    with pytest.raises(InvalidTransition):
+        repo.transition_application(db, app_id, S.SUBMITTED, actor="system", evidence={"type": "page", "url": "u",
+                                                                                         "matched_text": "t"})
+    repo.transition_application(db, app_id, S.SUBMITTED, actor="user")
+    assert repo.get_application(db, app_id)["status"] == "submitted"
