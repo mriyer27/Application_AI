@@ -32,17 +32,31 @@ complete step-by-step guide for your Windows laptop and your phone.
 
 ## Quick start
 
-```bash
-python -m venv .venv
-.venv/bin/pip install -e ".[all]"          # Windows: .\.venv\Scripts\pip install -e ".[all]"
-.venv/bin/job-agent init                   # creates your local config, profile, .env, database
-.venv/bin/job-agent doctor                 # health checks with next steps
-.venv/bin/job-agent run-once               # discover + score (+ local AI) + draft documents
-.venv/bin/job-agent jobs --top 20
+Requirements: Python **3.13** (3.11–3.13 supported), Git, ~1 GB disk; optional
+[Ollama](https://ollama.com) (+ ~5 GB for the recommended model; 16 GB RAM is
+comfortable) and Chromium (downloaded by Playwright) for form preparation.
+
+**Windows (PowerShell)** — see [docs/getting-started.md](docs/getting-started.md) for every step:
+
+```powershell
+cd $HOME
+git clone https://github.com/mriyer27/Application_AI.git
+cd Application_AI
+git checkout claude/youthful-clarke-j1nkah     # the code is on this branch until it is merged into main
+py -3.13 -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[all]"
+.\.venv\Scripts\python -m playwright install chromium
+.\.venv\Scripts\job-agent init                # local config, profile, .env, database
+.\.venv\Scripts\job-agent doctor              # health checks with next steps
+.\.venv\Scripts\job-agent run-once            # discover + score (+ local AI) + draft documents
+.\.venv\Scripts\job-agent jobs --top 20
 ```
 
-Full instructions, including Ollama, Gmail, the dashboard, phone access and
-auto-start: **[docs/getting-started.md](docs/getting-started.md)**.
+**macOS / Linux:** the same with `python3.13 -m venv .venv` and `.venv/bin/...`.
+
+> Tested on Linux (≈1,000 automated tests, live runs against real job boards
+> and a real local model). The Windows-specific scripts and paths were written
+> and syntax-checked for Windows but have not yet been run on a Windows PC.
 
 ## Commands
 
@@ -123,6 +137,8 @@ Examples with placeholders: `config/config.example.yaml`,
 - **Not 24/7:** nothing runs while the laptop is asleep, off or offline;
   missed daily tasks run once when the daemon is running again.
 - **Single user, single machine.** The dashboard keeps sessions in memory.
+- **This repository is public.** Your profile, config, `.env`, database,
+  documents and reports are git-ignored and never committed — keep it that way.
 
 ## Development
 

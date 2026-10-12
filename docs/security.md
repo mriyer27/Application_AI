@@ -14,10 +14,15 @@ No cloud LLM API is used or supported.
 
 ## Secrets
 
-- Secrets live only in environment variables or `.env` (git-ignored, created
-  with mode 0600): dashboard username, scrypt password hash, session secret.
+- Secrets live only in environment variables or `.env` (git-ignored; created
+  with mode 0600 on macOS/Linux): dashboard username, scrypt password hash,
+  session secret.
 - The YAML config rejects secret-looking keys. The Gmail OAuth client file and
   token live in `data/secrets/` (git-ignored, directory mode 0700, token 0600).
+- On macOS/Linux new files are created private to you (umask 077; database
+  0600; data/logs/reports/documents 0700) and `doctor` checks this. On Windows,
+  file privacy comes from your user profile's permissions: keep the project in
+  your user folder and **outside OneDrive/Dropbox-synced folders**.
 - Logs, audit details, error messages and reports pass through redaction
   (bearer tokens, OAuth tokens, `password=`/`token=` pairs, private keys,
   password hashes; emails/phone numbers masked in logs).

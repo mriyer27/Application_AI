@@ -10,7 +10,9 @@
       * "run as soon as possible after a scheduled start is missed" (StartWhenAvailable),
       * no run-time limit (the default 72 h limit would stop the daemon),
       * keeps running on battery,
-      * never a second copy (MultipleInstances IgnoreNew; job-agent also refuses duplicates itself).
+      * never a second copy (MultipleInstances IgnoreNew; job-agent also refuses duplicates itself),
+      * self-healing: an extra trigger every 30 minutes starts it again if it has stopped (while it
+        runs, IgnoreNew makes those triggers no-ops).
     It runs with your normal (non-administrator) rights and only while you are logged on.
     Nothing is started now unless you pass -StartNow. Remove it with uninstall-task.ps1.
 
@@ -59,7 +61,7 @@ $UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 function New-JobAgentAction([string]$Command) {
     if ($ShowWindow) {
-        return New-ScheduledTaskAction -Execute $Exe -Argument $Command -WorkingDirectory $RepoDir
+        return New-ScheduledTaskAction -Execute "`"$Exe`"" -Argument $Command -WorkingDirectory $RepoDir
     }
     # Hidden: a PowerShell host without a window runs job-agent.exe and passes its exit code on.
     $exeQuoted = $Exe.Replace("'", "''")
@@ -71,6 +73,15 @@ function New-JobAgentAction([string]$Command) {
 
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $UserId
 $Trigger.Delay = "PT1M"  # let the network (and the Ollama app) start first
+$Triggers = @($Trigger)
+try {
+    # Restart within 30 minutes if the process ever stops while you stay logged on.
+    $Repeat = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(10)) `
+        -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $Triggers += $Repeat
+} catch {
+    Write-Warning "Could not create the 30-minute self-healing trigger ($($_.Exception.Message)); the task will start at logon only."
+}
 
 $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
@@ -88,7 +99,7 @@ function Register-JobAgentTask([string]$Name, [string]$Command, [string]$Descrip
     if ($existing -and -not $Force) {
         throw "Task '$TaskPath$Name' already exists. Re-run with -Force to replace it, or run uninstall-task.ps1."
     }
-    $task = New-ScheduledTask -Action (New-JobAgentAction $Command) -Trigger $Trigger -Settings $Settings `
+    $task = New-ScheduledTask -Action (New-JobAgentAction $Command) -Trigger $Triggers -Settings $Settings `
         -Principal $Principal -Description $Description
     Register-ScheduledTask -TaskPath $TaskPath -TaskName $Name -InputObject $task -Force | Out-Null
     Write-Host "Registered '$TaskPath$Name': '$Exe $Command' at logon for $UserId"

@@ -82,9 +82,9 @@ script sets up a systemd service), or download a release archive from
 Structured outputs need **Ollama ≥ 0.5.0**; `job-agent llm check` warns if
 your version is older. This module was verified against Ollama 0.12.6.
 
-## Which model for the target laptop (HP Pavilion Aero 13, Ryzen 7 5800U, 16 GB, integrated Radeon)
+## Which model for a 16 GB laptop without a dedicated GPU (e.g. Ryzen 7 5800U class)
 
-Ollama does not use the 5800U's integrated Radeon graphics by default, so plan
+Ollama does not use integrated laptop graphics (e.g. Radeon Vega) by default, so plan
 for **CPU-only inference**. `job-agent llm recommend` detects your hardware and
 prints this table for your machine.
 
@@ -132,17 +132,17 @@ the CPU with other work:
 Server-side time was 20–120 % higher than "load + prompt + generation" for
 these schema-constrained requests (JSON-schema sampling costs CPU time); the
 benchmark reports this as the *overhead factor* and includes it in its
-estimate. With the default `llm.timeout_seconds: 180`, a **cold** 7B request
+estimate. With the old default `llm.timeout_seconds: 180`, a **cold** 7B request
 on this container timed out (and was retried); on slow machines raise the
 timeout to 300–600 s.
 
-The Ryzen 7 5800U has 8 real cores, higher clocks and fast LPDDR4x memory, so
-expect it to be noticeably faster than this container — but these are
-estimates, not measurements on that laptop: very roughly 4–8 tokens/s
+A modern 8-core laptop CPU (e.g. Ryzen 7 5800U) has higher clocks and faster
+memory than the 4-vCPU container these numbers were measured in, so expect it
+to be noticeably faster — but these are estimates, not measurements: very roughly 4–8 tokens/s
 generation and 30–60 tokens/s prompt processing for the 7B model, i.e. about
 1–3 minutes per job analysis. This is why only the top
 `scoring.max_llm_jobs_per_run` (default 10) jobs are analyzed per run, why
-analyses are cached, and why `llm.timeout_seconds` defaults to 180 s.
+analyses are cached, and why `llm.timeout_seconds` defaults to 300 s.
 **Measure on your own machine** before changing models or buying hardware:
 
 ```bash
@@ -216,7 +216,7 @@ job-agent llm analyze <job-uid> [--no-cache] [--model M]   # analyze one stored 
 | `base_url` | `http://127.0.0.1:11434` | must be localhost |
 | `model` | `qwen2.5:7b-instruct` | preferred model |
 | `fallback_models` | `[qwen2.5:3b-instruct, llama3.2:3b]` | used in order if `model` is not pulled |
-| `timeout_seconds` | `180` | per request; raise to 300–600 on slow CPUs or if `llm check`/benchmarks show timeouts |
+| `timeout_seconds` | `300` | per request; raise to 600 on slow CPUs or if `llm check`/benchmarks show timeouts |
 | `max_retries` | `2` | retries for transient errors (connection, timeout, HTTP 408/429/5xx), with exponential backoff |
 | `temperature` | `0.1` | low = more deterministic |
 | `num_ctx` | `8192` | context window (RAM grows with it) |

@@ -16,8 +16,8 @@ redacted). Add `-v` to any command to see info-level logs on the console.
 |---|---|
 | `job-agent` is not recognized (Windows) | Activate the venv: `.\.venv\Scripts\Activate.ps1`, or call `.\.venv\Scripts\job-agent.exe` directly. |
 | `Activate.ps1 cannot be loaded because running scripts is disabled` | Run once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. |
-| `py` / `python` not found | Reinstall Python and tick **Add python.exe to PATH**. |
-| `pip install` fails building a package | Upgrade pip first: `python -m pip install --upgrade pip`, then retry. Use Python 3.11–3.13. |
+| `py` / `python` not found | Install Python 3.13 with the python.org *Windows installer (64-bit)*; the `py` launcher comes with it. Then use `py -3.13`. |
+| `pip install` fails building a package | Use Python **3.13** (`py -3.13 -m venv .venv`); very new Python releases may lack prebuilt wheels for some dependencies. Upgrade pip first: `.\.venv\Scripts\python -m pip install --upgrade pip`. |
 | `no configuration found` | Run `job-agent init` from the project folder, or set `JOB_AGENT_HOME` to it. |
 | `doctor` says "using example config" | `job-agent init` creates `config/config.yaml`; edit that file, not the example. |
 
@@ -76,7 +76,7 @@ redacted). Add `-v` to any command to see info-level logs on the console.
 | Symptom | Fix |
 |---|---|
 | `dashboard login not configured` | `job-agent dashboard set-password`. |
-| 400 "Invalid host" on the phone | Add your Tailscale name (from `tailscale serve status`) to `dashboard.allowed_hosts` and restart the dashboard. |
+| 400 "Bad Request: unexpected Host header" on the phone | Add your Tailscale name (from `tailscale serve status`) to `dashboard.allowed_hosts` and restart the dashboard. |
 | Login works on the laptop but not via Tailscale (cookie not kept) | Set `dashboard.secure_cookies: true` when using `tailscale serve` (HTTPS). Use `false` for plain `http://127.0.0.1`. |
 | 429 Too Many Requests at login | Rate limit after repeated failures; wait a minute. |
 | Phone can't reach it at all | Laptop asleep/off, Tailscale disconnected on either device, or the dashboard isn't running. |
@@ -89,7 +89,7 @@ redacted). Add `-v` to any command to see info-level logs on the console.
 | `another daemon is already running` (exit 3) | Only one daemon per project. Stop the other one (Task Scheduler / `systemctl --user stop job-agent`). |
 | Tasks show `skipped` | Automation is paused (`job-agent resume`) or the same task was already running. |
 | A run stayed `running` | The process was killed. The next daemon start marks it `interrupted`; nothing consequential is retried automatically. |
-| Schedules ignore my config change | The daemon reads config at start — restart it. `job-agent schedule` shows `restart needed`. |
+| Schedules ignore my config change | The daemon reads config at start — restart it. `job-agent schedule` says "The config changed since the daemon started; restart it to apply." On Windows: `Stop-ScheduledTask -TaskPath '\job-agent\' -TaskName 'job-agent daemon'` then `Start-ScheduledTask ...`. |
 | Nothing ran overnight | The laptop was asleep. Missed daily tasks run once after the daemon is running again. See `docs/scheduling.md` for power settings. |
 
 ## Database
@@ -106,3 +106,22 @@ redacted). Add `-v` to any command to see info-level logs on the console.
 Run `job-agent doctor` and `job-agent status`, check the end of
 `logs/job_agent.log`, and look at the Activity Log sheet of today's report.
 Never paste `.env`, `data/secrets/*` or your database into an issue or chat.
+
+## Windows specifics
+
+| Symptom | Fix |
+|---|---|
+| Files locked / "access denied" / strange sync conflicts | The project is inside a OneDrive-synced folder (often `Documents`). Move it to `C:\Users\<you>\Application_AI`. Windows Security "Controlled folder access" can also block writes — allow `python.exe`. |
+| Task Scheduler shows *Last Run Result* `0x3` | A daemon was already running (e.g. you started `job-agent daemon` by hand). Only one may run; stop the manual one. |
+| Dashboard not reachable after a reboot | Install the startup task with `-WithDashboard` (`scripts\windows\install-task.ps1 -WithDashboard -Force`). |
+| `unknown timezone 'America/New_York'` | Time-zone data is missing: `.\.venv\Scripts\python -m pip install tzdata`. |
+| `pip` tries to compile packages / needs a C compiler | You are on a very new Python. Recreate the venv with `py -3.13 -m venv .venv`. |
+
+## More dashboard cases
+
+| Symptom | Fix |
+|---|---|
+| `gmail sync` says Gmail is disabled | A manual sync also needs `gmail.enabled: true`; `scheduler.tasks.email_sync.enabled` only controls the 30-minute schedule. |
+| Port 8765 already in use | Set `dashboard.port` (e.g. 8766) and re-run `tailscale serve --bg 8766`. |
+| `allowed_hosts` entry rejected by `config-check` | Use the bare host name, e.g. `my-laptop.tail1234.ts.net` (a full `https://…` URL is reduced to its host automatically; paths or user names are rejected). |
+| `doctor` says Chromium does not start | `.\.venv\Scripts\python -m playwright install chromium`. |

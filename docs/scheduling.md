@@ -279,7 +279,7 @@ Backups contain your application history; keep them private.
     timeouts → set "When plugged in, put my device to sleep after" to *Never* (or
     a long time). Control Panel → Power Options → "Choose what closing the lid
     does" → *Do nothing* when plugged in, if you keep it closed. Laptops with
-    Modern Standby (common on thin laptops like the HP Pavilion Aero 13) may keep
+    Modern Standby (common on thin laptops) may keep
     the network partly alive while "asleep", but do not count on scheduled runs
     happening then.
   * macOS: System Settings → Battery → Options → "Prevent automatic sleeping on

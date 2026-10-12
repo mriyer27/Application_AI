@@ -1,23 +1,26 @@
 # Setup
 
-Target machine: a laptop such as an HP Pavilion Aero 13 (Ryzen 7 5800U, 16 GB
-RAM, integrated graphics, no dedicated GPU). No GPU, cloud server or paid API is
+Target machine: a typical laptop with 16 GB RAM and no dedicated GPU (e.g. a
+Ryzen 7 5800U-class Windows 11 laptop). No GPU, cloud server or paid API is
 required.
 
 ## 1. Prerequisites
 
-- Python 3.11+ (3.12/3.13 recommended) — <https://www.python.org/downloads/>
+- Python **3.13** recommended (3.11–3.13 supported) — on Windows use the python.org *Windows installer (64-bit)*; very new releases may lack prebuilt packages for some dependencies
 - Git
 - Optional but recommended: [Ollama](https://ollama.com/download) for local AI (see `local-llm.md`)
 
 ## 2. Install
 
-**Windows (PowerShell)**
+**Windows (PowerShell)** — put the project in your user folder, not in a
+OneDrive-synced `Documents` folder:
 
 ```powershell
+cd $HOME
 git clone https://github.com/mriyer27/Application_AI.git
 cd Application_AI
-py -3 -m venv .venv
+git checkout claude/youthful-clarke-j1nkah   # until this branch is merged into main
+py -3.13 -m venv .venv
 .\.venv\Scripts\python -m pip install --upgrade pip
 .\.venv\Scripts\python -m pip install -e ".[all]"
 .\.venv\Scripts\python -m playwright install chromium   # only needed for application form preparation
@@ -29,7 +32,8 @@ py -3 -m venv .venv
 ```bash
 git clone https://github.com/mriyer27/Application_AI.git
 cd Application_AI
-python3 -m venv .venv
+git checkout claude/youthful-clarke-j1nkah   # until this branch is merged into main
+python3.13 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -e ".[all]"
 .venv/bin/python -m playwright install chromium

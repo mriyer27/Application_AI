@@ -184,8 +184,8 @@ Greenhouse/Lever/Ashby board, or review their listings yourself.
 ## Limitations
 
 * Only Greenhouse, Lever and Ashby. Employer names for Lever and Ashby are the
-  board identifier title-cased (the APIs do not return a company name), e.g.
-  `flatironhealth` → "Flatironhealth".
+  board identifier title-cased when the API gives no company name (Ashby's
+  `organizationName` is used when present), e.g. Lever `palantir` → "Palantir".
 * Filters run when a listing is first stored or materially changes; unchanged
   listings are not re-filtered after you change `search.*` settings, and a
   listing that ages past `max_posting_age_days` keeps its state.

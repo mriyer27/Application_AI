@@ -10,7 +10,8 @@
 
     Daily at 22:05 with Task Scheduler (current user, runs only when logged on):
       $a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"C:\path\to\Application_AI\scripts\backup-db.ps1`""
-      Register-ScheduledTask -TaskPath "\job-agent\" -TaskName "job-agent backup" -Action $a -Trigger (New-ScheduledTaskTrigger -Daily -At 22:05) -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+      Register-ScheduledTask -TaskPath "\job-agent\" -TaskName "job-agent backup" -Action $a -Trigger (New-ScheduledTaskTrigger -Daily -At 22:05) -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries)
+    (uninstall-task.ps1 removes it too.)
 
 .PARAMETER RepoDir
     The job-agent checkout. Default: the parent of this script's directory.
@@ -37,6 +38,7 @@ if (-not (Test-Path -LiteralPath $Exe)) {
 }
 
 $env:JOB_AGENT_HOME = $RepoDir
+$code = 1  # reported if job-agent could not be started at all
 Push-Location -LiteralPath $RepoDir
 try {
     if ($Dest) {
