@@ -139,6 +139,7 @@ documents:
   generate_cover_letter: true
   max_bullets_per_role: 5
   use_llm_rewording: true     # rewording is validated against verified facts
+  auto_prepare_top_n: 3       # after scheduled runs, draft documents for top new shortlisted jobs (no LLM)
 
 applications:
   require_approval: true            # cannot be disabled

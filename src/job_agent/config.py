@@ -190,6 +190,9 @@ class DocumentsSection(_Section):
     generate_cover_letter: bool = True
     max_bullets_per_role: int = Field(5, ge=1, le=10)
     use_llm_rewording: bool = True
+    #: After each scheduled discovery run, generate (rules-based, verbatim-fact)
+    #: documents for up to N newly shortlisted jobs that have none yet. 0 = off.
+    auto_prepare_top_n: int = Field(3, ge=0, le=20)
 
 
 class ApplicationsSection(_Section):
