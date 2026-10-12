@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from job_agent import __version__
 from job_agent.database import repo
 from job_agent.reporting import queries as q
-from job_agent.utils.time import to_iso, utcnow
+from job_agent.utils.time import utcnow
 
 if TYPE_CHECKING:  # pragma: no cover
     from job_agent.context import AppContext
@@ -76,7 +76,8 @@ class ReportData:
     config_rows: list[tuple[str, Any]]
     config_hash: str
     using_example_config: bool
-    truncated: dict[str, int] = field(default_factory=dict)
+    #: sheet/section -> {"total": n, "shown": m} for lists that hit their row cap
+    truncated: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def emails_in(self, categories: tuple[str, ...]) -> list[dict[str, Any]]:
         return [e for e in self.emails if e.get("category") in categories]
@@ -107,7 +108,7 @@ def collect_report_data(ctx: "AppContext", report_date: date) -> ReportData:
     db = ctx.db
     tz_name = cfg.app.timezone
     start, end = q.local_day_bounds(report_date, tz_name)
-    horizon = to_iso(datetime.fromisoformat(start) + timedelta(days=DEADLINE_HORIZON_DAYS))
+    horizon, _ = q.local_day_bounds(report_date + timedelta(days=DEADLINE_HORIZON_DAYS), tz_name)
     top_n = cfg.reporting.top_matches
 
     jobs, jobs_total = q.all_jobs(db, end, MAX_JOB_ROWS)
@@ -118,10 +119,9 @@ def collect_report_data(ctx: "AppContext", report_date: date) -> ReportData:
     errs, errs_total = q.human_action_errors(db)
     activity, activity_total = q.activity_log(db, start, end, MAX_ACTIVITY_ROWS)
 
-    truncated = {name: total for name, total, shown in (
+    truncated = {name: {"total": total, "shown": shown} for name, total, shown in (
         ("All Jobs", jobs_total, len(jobs)), ("Applications", apps_total, len(apps)),
         ("Follow-ups", fups_total, len(fups)), ("Activity Log", activity_total, len(activity)),
-        ("New opportunities", new_total, len(new)),
     ) if total > shown}
 
     return ReportData(
@@ -153,7 +153,7 @@ def collect_report_data(ctx: "AppContext", report_date: date) -> ReportData:
         assessment_milestones=q.milestones(db, q.ASSESSMENT_STATES, start, end),
         rejection_milestones=q.milestones(db, q.REJECTION_STATES, start, end),
         offer_milestones=q.milestones(db, q.OFFER_STATES, start, end),
-        deadlines=q.deadlines(db, start, horizon),  # type: ignore[arg-type]
+        deadlines=q.deadlines(db, start, horizon),
         approvals=q.pending_approvals(db),
         failures=q.failures(db, start, end),
         followups=fups,

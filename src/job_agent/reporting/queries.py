@@ -358,7 +358,7 @@ _APP_COLUMNS = (
 
 
 def _doc_names_sql(doc_type: str, id_column: str) -> str:
-    if doc_type not in {"resume", "cover_letter"} or id_column not in {"resume_document_id", "cover_letter_document_id"}:
+    if (doc_type, id_column) not in {("resume", "resume_document_id"), ("cover_letter", "cover_letter_document_id")}:
         raise ValueError("bad document column")
     return (
         f"COALESCE((SELECT d.file_name FROM document_versions d WHERE d.id = a.{id_column}), "
@@ -426,12 +426,13 @@ def confirmations(db: Database, day_start_utc: str, day_end_utc: str) -> list[di
 
 
 def milestones(db: Database, states: Sequence[str], day_start_utc: str, day_end_utc: str) -> list[dict[str, Any]]:
-    """Applications that reached one of ``states`` within the window."""
+    """Applications that reached one of ``states`` within the window: one row per application,
+    showing the latest such milestone (SQLite returns the bare columns of the ``MAX`` row)."""
     rows = db.query_all(
-        f"SELECT m.application_id, m.status AS milestone, MIN(m.at) AS at, j.employer, j.title, j.job_url "
-        f"FROM ({_milestones_sql(states)}) m JOIN applications a ON a.id = m.application_id "
-        f"JOIN jobs j ON j.id = a.job_id WHERE {_win('m.at')} GROUP BY m.application_id, m.status "
-        "ORDER BY MIN(m.at)",
+        f"SELECT m.application_id, m.status AS milestone, m.at AS at, MAX(julianday(m.at)) AS _jd, "
+        f"j.employer, j.title, j.job_url FROM ({_milestones_sql(states)}) m "
+        f"JOIN applications a ON a.id = m.application_id JOIN jobs j ON j.id = a.job_id "
+        f"WHERE {_win('m.at')} GROUP BY m.application_id ORDER BY _jd, m.application_id",
         (day_start_utc, day_end_utc),
     )
     return _rows(rows)
@@ -515,7 +516,8 @@ def deadlines(db: Database, day_start_utc: str, horizon_utc: str, limit: int = 1
     """Open deadline-type follow-ups due before the horizon, and closing dates of jobs you care about."""
     open_f = f"f.status NOT IN ({_lit(OPEN_FOLLOWUP_EXCLUDED)})"
     rows = db.query_all(
-        f"SELECT * FROM (SELECT 'followup' AS kind, f.followup_type AS what, f.due_at AS at, j.employer, j.title, j.job_url "
+        "SELECT * FROM (SELECT 'followup' AS kind, f.followup_type AS what, f.due_at AS at, j.employer, j.title, "
+        "j.job_url "
         "FROM followups f LEFT JOIN applications a ON a.id = f.application_id "
         "LEFT JOIN jobs j ON j.id = COALESCE(a.job_id, f.job_id) "
         f"WHERE {open_f} AND f.followup_type IN ('deadline', 'assessment_due', 'interview_upcoming') "
@@ -547,7 +549,8 @@ def failures(db: Database, day_start_utc: str, day_end_utc: str, limit: int = 20
     """Errors recorded in the window plus failed/interrupted runs that have no error row."""
     params = (day_start_utc, day_end_utc)
     rows = db.query_all(
-        "SELECT * FROM (SELECT 'error' AS source, e.occurred_at AS at, e.component AS component, e.task_name AS task_name, "
+        "SELECT * FROM (SELECT 'error' AS source, e.occurred_at AS at, e.component AS component, "
+        "e.task_name AS task_name, "
         "e.error_kind AS kind, e.message AS message, e.human_action AS human_action, e.resolved AS resolved "
         f"FROM errors e WHERE {_win('e.occurred_at')} "
         "UNION ALL "

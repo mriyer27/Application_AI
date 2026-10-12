@@ -323,7 +323,9 @@ def _register_module_commands() -> None:
 
 #: Modules whose ``commands.register(app)`` adds CLI commands. Only implemented
 #: modules are listed here.
-_MODULE_COMMANDS: list[str] = []
+_MODULE_COMMANDS: list[str] = [
+    "job_agent.reporting.commands",
+]
 
 _register_module_commands()
 

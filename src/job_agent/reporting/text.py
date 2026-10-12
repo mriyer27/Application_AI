@@ -7,7 +7,6 @@ spreadsheet formulas, Markdown/HTML, control characters or secrets.
 
 from __future__ import annotations
 
-import html
 import re
 from datetime import date, datetime
 from typing import Any, Iterable
@@ -87,40 +86,51 @@ def clean_inline(value: Any, *, max_len: int = 300) -> str:
     return text
 
 
-def redacted(value: Any, *, max_len: int = 500) -> str:
-    """Secrets and PII removed (for error messages, audit details, email text)."""
-    return clean_inline(redact_text(str(value), pii=True) if value else "", max_len=max_len)
+def redacted(value: Any, *, max_len: int = 500, pii: bool = True) -> str:
+    """Secrets (and by default PII) removed -- for error messages, audit details, email text."""
+    return clean_inline(redact_text(str(value), pii=pii) if value else "", max_len=max_len)
 
 
 # --------------------------------------------------------------------------- #
 # Markdown
 # --------------------------------------------------------------------------- #
-_MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()#|~!])")
+# Backslash, code spans, emphasis, link/image brackets. "_" only at a word
+# boundary (intraword underscores never form emphasis, e.g. file names).
+_MD_SPECIAL = re.compile(r"([\\`*\[\]]|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9]))")
 _MD_LEADING = re.compile(r"^(\d+)([.)])")
 
 
 def md_escape(value: Any, *, max_len: int = 200) -> str:
     """Escape untrusted text for inline use in Markdown.
 
-    HTML is entity-escaped (so no raw tags reach a renderer), Markdown
-    punctuation that could create links, emphasis, code, tables or headings is
-    backslash-escaped, newlines are collapsed so text cannot start a new block.
+    ``<``/``>`` become entities (no raw HTML or autolinks can reach a
+    renderer); backslash, backticks, ``*``, word-boundary ``_`` and ``[``/``]``
+    are backslash-escaped (no code spans, emphasis, links or images); a leading
+    block marker (``#``, ``>``, ``+``, ``-``, ``=``, ``1.``) is escaped and
+    newlines are collapsed, so the text can never start a heading, list, quote
+    or new block.
     """
     text = clean_inline(value, max_len=max_len)
-    text = html.escape(text, quote=False)
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
     text = _MD_SPECIAL.sub(r"\\\1", text)
+    # Also break "](" so simpler renderers (e.g. the dashboard's) cannot form a link either.
+    text = text.replace("](", "]\\(")
     text = _MD_LEADING.sub(r"\1\\\2", text)
-    if text[:1] in {"+", "-", "=", ">"}:
+    if text[:1] in {"#", "+", "-", "="}:  # an entity-escaped ">" cannot start a quote
         text = "\\" + text
     return text
 
 
-def md_url(value: Any) -> str:
-    """An autolink for a safe http(s) URL, or an empty string."""
+def md_url(value: Any, label: str = "Open posting") -> str:
+    """A ``[label](url)`` link for a safe http(s) URL, or an empty string.
+
+    ``label`` must be trusted text (it is not escaped). URLs containing
+    brackets, parentheses or quotes are dropped rather than escaped.
+    """
     url = safe_http_url(value)
-    if url is None or any(c in url for c in "()[]"):
+    if url is None or any(c in url for c in "()[]'*"):
         return ""
-    return f"<{url}>"
+    return f"[{label}]({url})"
 
 
 # --------------------------------------------------------------------------- #
