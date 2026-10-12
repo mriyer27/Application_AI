@@ -12,6 +12,7 @@ a time; create one per thread / per request.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -63,6 +64,13 @@ class Database:
                                             check_same_thread=False)
         except sqlite3.Error as exc:
             raise DatabaseError(f"cannot open database {path}: {exc}") from exc
+        if not readonly and isinstance(self.path, Path) and os.name == "posix":
+            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+                try:
+                    if candidate.exists():
+                        os.chmod(candidate, 0o600)  # holds your application history
+                except OSError:
+                    pass
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")

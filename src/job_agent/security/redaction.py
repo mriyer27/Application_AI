@@ -15,8 +15,16 @@ _SENSITIVE_KEY_RE = re.compile(
 )
 
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Authorization headers / bearer tokens
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]{8,}=*"), r"\1 " + REDACTED),
+    # Authorization headers (any scheme), then token-shaped bearer/basic credentials.
+    # Token-shaped = 16+ chars containing a digit or token punctuation, so prose like
+    # "basic conversational Spanish" is left alone.
+    (re.compile(r"(?i)(\bauthorization\s*[:=]\s*)(?:(bearer|basic|token)\s+)?[^\s,;]+"), r"\1" + REDACTED),
+    (re.compile(r"(?i)\b(bearer|basic)\s+(?=[A-Za-z0-9\-._~+/]*[0-9\-._~+/])[A-Za-z0-9\-._~+/]{16,}=*"),
+     r"\1 " + REDACTED),
+    # OAuth authorization codes in URLs, JWTs, Google API keys
+    (re.compile(r"([?&]code=)[^&\s]+"), r"\1" + REDACTED),
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"), REDACTED),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{30,}"), REDACTED),
     # Google OAuth tokens
     (re.compile(r"\bya29\.[A-Za-z0-9\-_]{10,}"), REDACTED),
     (re.compile(r"\b1//[A-Za-z0-9\-_]{20,}"), REDACTED),
@@ -90,6 +98,13 @@ class RedactingFilter(logging.Filter):
             message = str(record.msg)
         record.msg = redact_text(message, pii=self.pii)
         record.args = None
+        # Formatters fill exc_text only *after* filters run, so format the
+        # traceback here; otherwise the first handler would write it raw.
+        if record.exc_info and not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text:
             record.exc_text = redact_text(record.exc_text, pii=self.pii)
+            record.exc_info = None  # never let a later formatter re-render the raw traceback
+        if record.stack_info:
+            record.stack_info = redact_text(record.stack_info, pii=self.pii)
         return True

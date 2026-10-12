@@ -863,3 +863,21 @@ def test_default_factory_loads_environment_once_and_forks(home, monkeypatch, no_
         second.close()
     finally:
         app.state.task_runner.shutdown(wait_for_tasks=True)
+
+
+# ---------------- security review: pre-auth body limits ---------------- #
+def test_unauthenticated_large_or_multipart_bodies_rejected_before_parsing(client):
+    big = b"a=" + b"x" * (70 * 1024)
+    r = client.post("/login", content=big, headers={"content-type": "application/x-www-form-urlencoded"})
+    assert r.status_code == 413
+    r = client.post("/controls/pause", files={"f": ("x.bin", b"0" * 1024)})
+    assert r.status_code == 415
+    r = client.post("/login", content=b"x" * (70 * 1024),
+                    headers={"content-type": "application/x-www-form-urlencoded", "transfer-encoding": "chunked"})
+    assert r.status_code in {400, 413}
+
+
+def test_normal_login_form_still_works(client):
+    page = client.get("/login")
+    assert page.status_code == 200
+    assert login(client).status_code in {200, 303}

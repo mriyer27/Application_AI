@@ -116,3 +116,36 @@ def test_explicit_config_path_and_env(home, monkeypatch):
     monkeypatch.setenv("JOB_AGENT_CONFIG", str(home / "nope.yaml"))
     with pytest.raises(ConfigError):
         load_config(home=home)
+
+
+@pytest.mark.parametrize("entry, host", [("https://hp-aero.tail1234.ts.net", "hp-aero.tail1234.ts.net"),
+                                         ("hp-aero.tail1234.ts.net:443", "hp-aero.tail1234.ts.net"),
+                                         ("HP-Aero.Tail1234.ts.net.", "hp-aero.tail1234.ts.net")])
+def test_allowed_hosts_are_reduced_to_host_names(tmp_path, entry, host):
+    data = _example()
+    data["dashboard"]["allowed_hosts"] = [entry]
+    assert parse_config(data, home=tmp_path).dashboard.allowed_hosts == [host]
+
+
+@pytest.mark.parametrize("bad", ["https://user:pw@host.ts.net", "https://host.ts.net/some/path", ""])
+def test_allowed_hosts_rejects_non_hosts(tmp_path, bad):
+    data = _example()
+    data["dashboard"]["allowed_hosts"] = [bad]
+    with pytest.raises(ConfigError, match="allowed_hosts"):
+        parse_config(data, home=tmp_path)
+
+
+def test_runtime_files_are_private(config):
+    import os
+    import stat
+
+    from job_agent.config import ensure_directories
+    from job_agent.database import Database
+
+    if os.name != "posix":
+        pytest.skip("POSIX permissions")
+    ensure_directories(config)
+    Database(config.db_path).close()
+    for d in (config.data_dir, config.logs_dir, config.reports_dir, config.documents_dir):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
+    assert stat.S_IMODE(config.db_path.stat().st_mode) == 0o600

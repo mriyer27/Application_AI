@@ -257,8 +257,25 @@ class DashboardSection(_Section):
     allow_non_localhost: bool = False
     secure_cookies: bool = False  # set true when served over HTTPS (e.g. tailscale serve)
     #: Extra Host header values accepted (DNS-rebinding protection), e.g. your
-    #: Tailscale MagicDNS name "laptop.tailnet-name.ts.net".
+    #: Tailscale MagicDNS name "laptop.tailnet-name.ts.net". URLs are reduced to
+    #: their host name ("https://laptop.x.ts.net/" -> "laptop.x.ts.net").
     allowed_hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _bare_hosts(cls, v: list[str]) -> list[str]:
+        from urllib.parse import urlsplit
+
+        hosts = []
+        for raw in v:
+            text = raw.strip()
+            parsed = urlsplit(text if "//" in text else f"//{text}")
+            host = (parsed.hostname or "").strip(".").lower()
+            if not host or parsed.username or parsed.password or (parsed.path not in {"", "/"}):
+                raise ValueError(f"dashboard.allowed_hosts entry {raw!r} must be a host name like "
+                                 "'laptop.tailnet-name.ts.net'")
+            hosts.append(host)
+        return hosts
 
     @model_validator(mode="after")
     def _bind(self) -> "DashboardSection":
@@ -509,16 +526,29 @@ def load_config(path: str | Path | None = None, *, home: Path | None = None) -> 
     return parse_config(data, home=home, source_path=cfg_path, using_example=using_example)
 
 
+PRIVATE_UMASK = 0o077
+
+
+def restrict_new_files() -> None:
+    """New files/dirs are private to the current user (POSIX). Windows relies on profile ACLs."""
+    if os.name == "posix":
+        os.umask(PRIVATE_UMASK)
+
+
 def ensure_directories(cfg: AppConfig) -> list[Path]:
-    """Create runtime directories (data, reports, documents, logs, secrets)."""
+    """Create runtime directories (data, reports, documents, logs, secrets), private to you."""
+    restrict_new_files()
     created = []
     for d in (cfg.data_dir, cfg.reports_dir, cfg.documents_dir, cfg.logs_dir, cfg.secrets_dir,
               cfg.db_path.parent):
         if not d.exists():
             d.mkdir(parents=True, exist_ok=True)
             created.append(d)
-    try:
-        os.chmod(cfg.secrets_dir, 0o700)
-    except OSError:  # pragma: no cover - e.g. Windows
-        pass
+    if os.name == "posix":
+        for d in {cfg.data_dir, cfg.reports_dir, cfg.documents_dir, cfg.logs_dir, cfg.secrets_dir,
+                  cfg.db_path.parent}:
+            try:
+                os.chmod(d, 0o700)
+            except OSError:  # e.g. a directory owned by someone else; doctor reports it
+                pass
     return created

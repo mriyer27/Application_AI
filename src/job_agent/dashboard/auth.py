@@ -246,6 +246,36 @@ def is_loopback(host: str) -> bool:
 # --------------------------------------------------------------------------- #
 # ASGI middleware: Host check + security headers
 # --------------------------------------------------------------------------- #
+#: Largest request body accepted (forms are tiny; this stops pre-auth disk/memory filling).
+MAX_BODY_BYTES = 64 * 1024
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+def _limited_receive(receive: Receive, limit: int) -> Receive:
+    seen = 0
+
+    async def wrapped() -> Message:
+        nonlocal seen
+        message = await receive()
+        if message["type"] == "http.request":
+            seen += len(message.get("body", b""))
+            if seen > limit:
+                raise _BodyTooLarge()
+        return message
+
+    return wrapped
+
+
+async def _plain(send: Send, status: int, body: bytes) -> None:
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                            (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
 class SecurityMiddleware:
     """Rejects unexpected Host headers (400) and adds security headers to every response."""
 
@@ -289,8 +319,25 @@ class SecurityMiddleware:
             })
             await send({"type": "http.response.body", "body": body})
             return
+        # Bodies are parsed before authentication runs, so cap them here: the
+        # dashboard only ever receives small url-encoded forms (no uploads).
+        if scope.get("method", "GET") not in {"GET", "HEAD", "OPTIONS"}:
+            headers = Headers(scope=scope)
+            ctype = headers.get("content-type", "").split(";")[0].strip().lower()
+            if ctype.startswith("multipart/"):
+                await _plain(send_with_headers, 415, b"Unsupported Media Type")
+                return
+            length = headers.get("content-length")
+            if length is not None and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
+                await _plain(send_with_headers, 413, b"Request Entity Too Large")
+                return
+            receive = _limited_receive(receive, MAX_BODY_BYTES)
         try:
             await self.app(scope, receive, send_with_headers)
+        except _BodyTooLarge:
+            if not started:
+                await _plain(send_with_headers, 413, b"Request Entity Too Large")
+            return
         except Exception:
             if not started:  # still send a generic 500 that carries the security headers
                 body = b"Internal Server Error"

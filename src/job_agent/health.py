@@ -171,14 +171,43 @@ def _check_gmail(ctx: "AppContext") -> Check:
     return Check("gmail", WARN, "token present but no successful sync yet", "Run `job-agent gmail sync`.")
 
 
-def _check_browser(ctx: "AppContext") -> Check:
+def _check_browser(ctx: "AppContext", *, deep: bool = False) -> Check:
     if importlib.util.find_spec("playwright") is None:
         return Check("browser", INFO, "Playwright not installed; application form preparation unavailable",
                      'pip install -e ".[browser]" && python -m playwright install chromium')
-    return Check("browser", OK, "Playwright installed"
-                 + ("; browser submission disabled (approved applications are submitted by you)"
-                    if not ctx.config.applications.browser_submission_enabled else
-                    "; browser submission enabled for approved applications only"))
+    mode = ("; browser submission disabled (approved applications are submitted by you)"
+            if not ctx.config.applications.browser_submission_enabled else
+            "; browser submission enabled for approved applications only")
+    if deep:
+        try:
+            from job_agent.browser.session import chromium_launchable
+
+            ok, detail = chromium_launchable(headless=True)
+        except ImportError as exc:
+            return Check("browser", WARN, f"browser module unavailable: {exc}")
+        if not ok:
+            return Check("browser", WARN, f"Chromium does not start: {detail}",
+                         "python -m playwright install chromium")
+        return Check("browser", OK, "Chromium starts" + mode)
+    return Check("browser", OK, "Playwright installed" + mode)
+
+
+def _check_permissions(ctx: "AppContext") -> Check:
+    if os.name != "posix":
+        return Check("permissions", INFO, "Windows: keep the project inside your user folder and outside "
+                     "OneDrive-synced folders (data, documents and reports are private to your account)")
+    cfg = ctx.config
+    loose = []
+    for path in (cfg.data_dir, cfg.logs_dir, cfg.reports_dir, cfg.documents_dir, cfg.db_path, cfg.home / ".env"):
+        try:
+            if path.exists() and path.stat().st_mode & 0o077:
+                loose.append(str(path.relative_to(cfg.home)) if path.is_relative_to(cfg.home) else str(path))
+        except OSError:
+            continue
+    if loose:
+        return Check("permissions", WARN, f"readable by other users: {', '.join(loose)}",
+                     "chmod -R go-rwx " + " ".join(loose))
+    return Check("permissions", OK, "data, logs, reports, documents and .env are private to you")
 
 
 def _check_scheduler(ctx: "AppContext") -> list[Check]:
@@ -226,17 +255,19 @@ def _check_hardware(ctx: "AppContext") -> Check:
         return Check("hardware", INFO, f"{cpus} logical CPUs")
 
 
-def run_checks(ctx: "AppContext") -> list[Check]:
+def run_checks(ctx: "AppContext", *, deep: bool = False) -> list[Check]:
+    """``deep`` (used by ``job-agent doctor``) also launches Chromium (~1 s)."""
     checks: list[Check] = []
     runners: list[Callable[["AppContext"], Check | list[Check]]] = [
-        _check_config, _check_dirs, _check_database, _check_profile, _check_secrets,
-        _check_ollama, _check_gmail, _check_browser, _check_scheduler, _check_hardware,
+        _check_config, _check_dirs, _check_database, _check_permissions, _check_profile, _check_secrets,
+        _check_ollama, _check_gmail, lambda c: _check_browser(c, deep=deep), _check_scheduler, _check_hardware,
     ]
     for fn in runners:
         try:
             result = fn(ctx)
         except Exception as exc:  # a broken check must not hide the others
-            result = Check(fn.__name__.removeprefix("_check_"), FAIL, f"check crashed: {type(exc).__name__}: {exc}")
+            name = getattr(fn, "__name__", "check").removeprefix("_check_")
+            result = Check(name, FAIL, f"check crashed: {type(exc).__name__}: {exc}")
         checks.extend(result if isinstance(result, list) else [result])
     return checks
 

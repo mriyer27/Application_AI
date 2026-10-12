@@ -129,3 +129,36 @@ def test_env_file_update(tmp_path, monkeypatch):
     from dotenv import dotenv_values
 
     assert dotenv_values(env)["JOB_AGENT_X"] == "scrypt$1$2$3$abc$def"
+
+
+# ---------------- security review findings ---------------- #
+def test_traceback_secrets_are_redacted_in_file_log(tmp_path):
+    """Review finding: exc_text was filled after filters ran, so tracebacks hit the file log raw."""
+    from job_agent.logging_config import get_logger, setup_logging
+
+    setup_logging(tmp_path, "INFO", console=False)
+    log = get_logger("job_agent.test_tb")
+    try:
+        raise RuntimeError("Authorization: Bearer ya29.abcdefghijklmnopqrstuv for jane.doe@example.com "
+                           "refresh_token=1//0gabcdefghijklmnopqrstuvwxyz")
+    except RuntimeError:
+        log.exception("task failed")
+    for h in logging.getLogger("job_agent").handlers:
+        h.flush()
+    text = (tmp_path / "job_agent.log").read_text(encoding="utf-8")
+    assert "Traceback" in text
+    for leaked in ("ya29.abcdefghij", "jane.doe@example.com", "1//0gabcdef"):
+        assert leaked not in text, leaked
+
+
+@pytest.mark.parametrize("prose", ["Native English; basic conversational Spanish", "Basic Information",
+                                   "a bearer of good news"])
+def test_redaction_does_not_mangle_ordinary_prose(prose):
+    assert redact_text(prose) == prose
+
+
+@pytest.mark.parametrize("secret", ["Authorization: Basic dXNlcjpwYXNz", "https://x/cb?code=4/0AbCdEf&state=1",
+                                    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N",
+                                    "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345"])
+def test_more_token_formats_redacted(secret):
+    assert "REDACTED" in redact_text(secret)

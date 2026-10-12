@@ -58,16 +58,23 @@ def get_ctx():
     try:
         return state.context()
     except JobAgentError as exc:
-        err_console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {_esc(str(exc))}")
         if exc.human_action:
-            err_console.print(f"[yellow]Next step:[/yellow] {exc.human_action}")
+            err_console.print(f"[yellow]Next step:[/yellow] {_esc(exc.human_action)}")
         raise typer.Exit(2)
 
 
+def _esc(text: str) -> str:
+    """Error text can quote listings/emails/LLM output: never interpret it as Rich markup."""
+    from rich.markup import escape
+
+    return escape(text)
+
+
 def fail(exc: JobAgentError, code: int = 1) -> None:
-    err_console.print(f"[red]Error ({exc.kind.value}):[/red] {exc}")
+    err_console.print(f"[red]Error ({exc.kind.value}):[/red] {_esc(str(exc))}")
     if exc.human_action:
-        err_console.print(f"[yellow]Next step:[/yellow] {exc.human_action}")
+        err_console.print(f"[yellow]Next step:[/yellow] {_esc(exc.human_action)}")
     raise typer.Exit(code)
 
 
@@ -152,7 +159,7 @@ def doctor() -> None:
     from job_agent.health import FAIL, overall, run_checks
 
     ctx = get_ctx()
-    checks = run_checks(ctx)
+    checks = run_checks(ctx, deep=True)
     _print_checks(checks)
     result = overall(checks)
     console.print(f"\nOverall: [{STATUS_STYLE[result]}]{result.upper()}[/]")
@@ -405,9 +412,9 @@ def main() -> None:
     try:
         app()
     except JobAgentError as exc:  # last-resort readable error
-        err_console.print(f"[red]Error ({exc.kind.value}):[/red] {exc}")
+        err_console.print(f"[red]Error ({exc.kind.value}):[/red] {_esc(str(exc))}")
         if exc.human_action:
-            err_console.print(f"[yellow]Next step:[/yellow] {exc.human_action}")
+            err_console.print(f"[yellow]Next step:[/yellow] {_esc(exc.human_action)}")
         sys.exit(1)
 
 

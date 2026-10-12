@@ -313,3 +313,14 @@ def test_wrong_rejection_can_be_corrected_by_user_only(db, make_job):
                                     evidence={"type": "email", "gmail_message_id": "m4"})
     repo.transition_application(db, app_id, S.SUBMITTED, actor="user", details={"note": "wrong role"})
     assert repo.get_application(db, app_id)["status"] == "submitted"
+
+
+def test_approval_payload_shown_is_exactly_what_is_hashed(db, make_job):
+    """Review finding: the stored (displayed) payload was redacted while the raw payload was hashed."""
+    app_id = repo.create_application(db, make_job(), actor="system")
+    payload = {"answers": [{"label": "Basic Information", "answer": "Native English; basic conversational Spanish"}]}
+    uid = repo.create_approval(db, ApprovalType.SUBMIT_APPLICATION, payload, summary="x", actor="system",
+                               application_id=app_id)
+    row = repo.get_approval(db, uid)
+    shown = repo.approval_payload(row)
+    assert shown == payload and repo.payload_hash(shown) == row["payload_hash"]

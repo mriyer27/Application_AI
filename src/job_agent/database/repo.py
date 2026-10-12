@@ -514,7 +514,7 @@ def create_approval(db: Database, request_type: ApprovalType, payload: dict[str,
                 "application_id": application_id,
                 "followup_id": followup_id,
                 "summary": summary,
-                "payload": to_json(redact(payload, by_key=False)),
+                "payload": to_json(payload),  # shown verbatim: exactly what is hashed, approved and submitted
                 "payload_hash": phash,
                 "status": ApprovalStatus.PENDING.value,
                 "requested_at": to_iso(now),

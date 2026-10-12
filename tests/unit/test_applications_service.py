@@ -406,3 +406,16 @@ def test_decide_records_other_approval_types_without_application_side_effects(ct
     result = service.decide(ctx, uid, approve=True, actor="dashboard")
     assert result.application_uid is None and result.status is None
     assert repo.get_approval(ctx.db, uid)["status"] == "approved"
+
+
+def test_unapproved_documents_block_browser_submission():
+    """Security review: documents still 'needs_review' must not be uploaded by browser submission."""
+    from job_agent.applications.payload import submission_blockers
+
+    base = {"unanswered_required": [], "requires_review": [], "legal_declarations": [], "validation_errors": []}
+    blocked = submission_blockers({**base, "resume": {"document_id": 3, "status": "needs_review"},
+                                   "cover_letter": {"document_id": 4, "status": "draft"}})
+    assert any("résumé has not been approved" in b and "documents approve 3" in b for b in blocked)
+    assert any("cover letter has not been approved" in b for b in blocked)
+    assert submission_blockers({**base, "resume": {"document_id": 3, "status": "approved"},
+                                "cover_letter": None}) == []

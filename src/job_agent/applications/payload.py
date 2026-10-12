@@ -124,6 +124,11 @@ def submission_blockers(payload: dict[str, Any]) -> list[str]:
     problems = []
     if not payload.get("resume"):
         problems.append("no résumé document")
+    for kind, label in (("resume", "résumé"), ("cover_letter", "cover letter")):
+        doc = payload.get(kind)
+        if doc and doc.get("status") != "approved":
+            problems.append(f"the {label} has not been approved by you yet "
+                            f"(job-agent documents approve {doc.get('document_id', '<document-id>')})")
     for item in payload.get("unanswered_required") or []:
         problems.append(f"required field unanswered: {item['label']} [{item['field_key']}]")
     for item in payload.get("requires_review") or []:
