@@ -122,7 +122,8 @@ RULES: tuple[_Rule, ...] = (
        r"(?:formal |written |verbal |conditional )?(?:job |employment )?offer\b", 4.0, 4.0),
     _r(C.OFFER, r"\b(?:pleased|delighted|happy|excited|thrilled) to offer you (?:the|a|an) (?:position|role|job)\b",
        4.0, 4.0),
-    _r(C.OFFER, r"\b(?:offer letter|offer of employment|employment offer|job offer|your offer)\b", 3.5, 2.0),
+    # Never a bare "your offer": shops and banks send "your offer is ready" all the time.
+    _r(C.OFFER, r"\b(?:offer letter|offer of employment|employment offer|job offer)\b", 3.5, 2.0),
     # -- interview invitation -------------------------------------------------------
     _r(C.INTERVIEW_INVITATION,
        r"\b(?:invite|inviting) you (?:to|for) (?:an? |the |our )?" + _ROUND +
@@ -178,6 +179,37 @@ _NEWSLETTER = re.compile(
     r"in (?:your )?browser|manage (?:your )?(?:email |notification )?preferences|email preferences)\b",
     re.I,
 )
+#: "We are unable to extend an offer", "we must rescind your offer": an offer that is *not* being made.
+_OFFER_NEGATED = re.compile(
+    r"\b(?:unable to|not able to|not in a position to|cannot|can ?not|can't|won't|will not|would not|are not|aren't|"
+    r"is not|isn't|not to|do not|don't|no longer)\s+(?:be\s+)?(?:able to\s+)?"
+    r"(?:extend(?:ing)?|mak(?:e|ing)|offer(?:ing)?|present(?:ing)?|proceed(?:ing)? with|mov(?:e|ing) forward with)\s+"
+    r"(?:you\s+)?(?:an?\s+|the\s+|this\s+|your\s+|any\s+)?(?:formal\s+|written\s+|verbal\s+|conditional\s+|final\s+)?"
+    r"(?:job\s+|employment\s+)?offer\b"
+    r"|\b(?:rescind(?:s|ed|ing)?|revok(?:e|es|ed|ing)|retract(?:s|ed|ing)?|withdr(?:aw|aws|awn|awing|ew))\s+"
+    r"(?:the\s+|your\s+|our\s+|this\s+|its\s+|an?\s+)?(?:job\s+|employment\s+)?offer\b"
+    r"|\boffer(?:\s+of\s+employment|\s+letter)?\s+(?:has|have|had)\s+(?:now\s+)?been\s+"
+    r"(?:rescinded|revoked|retracted|withdrawn|cancell?ed)\b",
+    re.I,
+)
+#: Words right before a negation that make it conditional ("we reserve the right to rescind this offer if ...").
+_CONDITIONAL_BEFORE = re.compile(r"\b(?:right to|may|might|could|would|can|if|unless|should|in case)\s*$", re.I)
+#: An offer email must be about employment, not a shop's or bank's "offer".
+_EMPLOYMENT_CONTEXT = re.compile(
+    r"\b(?:position|role|employment|salary|compensation|start(?:ing)? date|base pay|annual base|offer letter|"
+    r"job offer|job title|hiring manager|benefits package|signing bonus|sign-on bonus|onboarding|"
+    r"background check|reporting to)\b",
+    re.I,
+)
+#: Marketing / bulk markers in the body. Such mail never changes a status automatically.
+_PROMOTIONAL = re.compile(
+    r"\b(?:unsubscribe|opt[- ]out|view (?:this email |it )?(?:in|on) (?:your |a )?(?:web )?browser|"
+    r"manage (?:your )?(?:email |notification |subscription |communication )?preferences|email preferences|"
+    r"pre-?approved|pre-?qualified|promo(?:tional)? code|coupon|limited[- ]time|annual fee|shop now|buy now|"
+    r"order now|cash ?back|special offer|exclusive offer|credit (?:card|limit)|apr|rewards? points|free shipping)\b"
+    r"|\b\d+\s?% off\b",
+    re.I,
+)
 _BULK_LOCALPART = re.compile(r"(?:job-?alerts?|alerts?|newsletters?|news|digest|marketing|promo(?:tions)?|"
                              r"notifications?|updates|jobs-listings|hello|info)", re.I)
 _NOREPLY = re.compile(r"(?:no-?reply|do-?not-?reply|donotreply|notifications?)", re.I)
@@ -209,10 +241,25 @@ def is_generic_sender(domain: str | None) -> bool:
     return _matches_domain(domain, GENERIC_MAIL_DOMAINS) or _matches_domain(domain, JOB_BOARD_DOMAINS)
 
 
+def is_promotional(*, subject: str, body: str) -> bool:
+    """Marketing / bulk markers ("unsubscribe", "pre-approved", "% off", ...) in the subject or body."""
+    return bool(_PROMOTIONAL.search(_norm(subject)) or _PROMOTIONAL.search(_norm(body)))
+
+
+def offer_negated(text: str) -> bool:
+    """An offer that is declined, rescinded or not extended (conditional clauses do not count)."""
+    for match in _OFFER_NEGATED.finditer(text):
+        if not _CONDITIONAL_BEFORE.search(text[max(0, match.start() - 30):match.start()]):
+            return True
+    return False
+
+
 @dataclass
 class RuleScores:
     scores: dict[EmailCategory, float]
     newsletter: float
+    #: Strong offer *and* strong rejection signals: never confident enough to act on.
+    conflict: bool = False
 
 
 def score_rules(*, subject: str, body: str, from_address: str | None, from_domain: str | None,
@@ -227,6 +274,17 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
         if text and rule.pattern.search(text):
             weight = max(weight, rule.body_weight) + (min(weight, rule.body_weight) * 0.25 if weight else 0.0)
         scores[rule.category] += weight
+
+    both = f"{subj}\n{text}"
+    conflict = False
+    if offer_negated(subj) or offer_negated(text):
+        conflict = scores[C.OFFER] >= 4.0  # "pleased to extend an offer" next to "unable to extend an offer"
+        scores[C.OFFER] = 0.0
+        scores[C.REJECTION] += 3.5
+    elif scores[C.OFFER] > 0 and not _EMPLOYMENT_CONTEXT.search(both):
+        scores[C.OFFER] = 0.0  # "an offer" with nothing about a job: marketing, not an employment offer
+    if scores[C.OFFER] >= 3.0 and scores[C.REJECTION] >= 3.0:
+        conflict = True
 
     local = (from_address or "").split("@", 1)[0]
     if _matches_domain(from_domain, ASSESSMENT_DOMAINS):
@@ -249,7 +307,7 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
         newsletter += 1.5
     if _matches_domain(from_domain, JOB_BOARD_DOMAINS) and (_BULK_LOCALPART.search(local) or noreply):
         newsletter += 3.0
-    return RuleScores(scores=scores, newsletter=newsletter)
+    return RuleScores(scores=scores, newsletter=newsletter, conflict=conflict)
 
 
 def rules_summary(category: EmailCategory, *, subject: str, from_name: str | None, from_domain: str | None) -> str:
@@ -276,6 +334,8 @@ def classify_rules(*, subject: str, body: str, from_address: str | None = None, 
         if second >= 1.0:
             confidence -= 0.1 * (second / best_score)
         confidence = max(0.3, confidence)
+        if rs.conflict:
+            confidence = min(confidence, 0.6)  # contradictory signals: ask the user
     return EmailClassification(
         category=category,
         confidence=round(confidence, 3),

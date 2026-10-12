@@ -8,13 +8,19 @@ confirmation. Keeping this logic browser-free makes it unit-testable.
 Detection is heuristic and errs on the side of stopping: a false positive
 means *you* finish the application by hand; a false negative is caught by the
 fact that nothing is ever submitted without your approval.
+
+Confirmation detection is deliberately strict, because "confirmed" records the
+application as SUBMITTED: it needs strong past-tense confirmation wording in the
+page's main content that was not on the form page, no "not yet / before it is
+submitted / review your application" wording anywhere, and the application
+form must be gone. A URL alone never confirms anything. Anything less is
+ambiguous and becomes an unknown outcome (``NEEDS_MANUAL_ACTION``).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -28,6 +34,11 @@ class PageSnapshot:
     visible_password_fields: int = 0
     form_control_count: int = 0
     status: int | None = None  # HTTP status of the main document, when known
+    #: Visible text of the main content (``<main>`` / ``[role=main]``, else the body
+    #: without header/nav/footer). Empty = unknown, ``text`` is used instead.
+    main_text: str = ""
+    #: name/id of every *visible* form control outside search boxes and page chrome.
+    visible_controls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,13 +108,35 @@ _CLOSED_TEXT = re.compile(
     re.I,
 )
 
+#: Strong, past-tense confirmation wording only.
 _CONFIRM_TEXT = re.compile(
-    r"(thanks? (you )?for (applying|your application|submitting your application)|"
-    r"(your )?application (has been|was|is) (successfully )?(received|submitted|sent)|"
-    r"we(?:'| ha)ve received your application|application submitted|successfully submitted)",
-    re.I,
+    r"\b(?:thanks?(?: you)? for (?:applying|your application|submitting your application)"
+    r"|(?:your )?application (?:has been|was) (?:successfully )?(?:received|submitted|sent)"
+    r"|we(?:'|\u2019| ha)ve (?:successfully )?received your application"
+    r"|application (?:successfully )?(?:received|submitted)(?=\s*(?:[.!]|$)))",
+    re.I | re.M,
 )
-_CONFIRM_URL = re.compile(r"(confirm|thank)", re.I)
+#: Wording of review steps, wizards and "not sent yet" pages. Any match anywhere
+#: on the page means the submission is *not* confirmed.
+_NOT_YET_TEXT = re.compile(
+    r"\bbefore\b[^.!?\n]{0,80}?\b(?:submit\w*|sen[dt]\w*)\b"
+    r"|\bwill\s+(?:only\s+|then\s+)?be\s+submitted\b"
+    r"|\b(?:application|answers|information|details)\b[^.!?\n]{0,40}?\b(?:will|would)\s+(?:only\s+|then\s+)?be"
+    r"\s+sent\b"
+    r"|\bnot\s+(?:yet\s+)?(?:been\s+)?(?:submitted|sent)\b"
+    r"|n['\u2019]t\s+(?:yet\s+)?(?:been\s+)?(?:submitted|sent)\b"
+    r"|\bnothing\s+(?:has\s+been|was|is|will\s+be)\s+(?:sent|submitted)\b"
+    r"|\byet\s+to\s+be\s+(?:submitted|sent)\b"
+    r"|(?:^|[.!?:]\s+|\bplease\s+|\bcarefully\s+)review\s+(?:your|the)\s+"
+    r"(?:application|answers|details|information|submission)\b"
+    r"|\bconfirm\s+(?:your|the)\s+(?:details|information|application|answers|submission)\b"
+    r"|\b(?:click|press|tap|select|hit)\s+(?:the\s+)?[\"'\u201c]?(?:submit|send|apply)\b"
+    r"|\b(?:one\s+more|final|last)\s+step\b|\balmost\s+(?:done|there|finished)\b"
+    r"|\bstep\s+\d+\s+(?:of|/)\s+\d+\b"
+    r"|\bapplication\s+(?:is\s+)?(?:not\s+(?:yet\s+)?complete|incomplete)\b"
+    r"|\bsaved\s+as\s+(?:a\s+)?draft\b",
+    re.I | re.M,
+)
 
 
 def detect_challenge(snap: PageSnapshot) -> Challenge | None:
@@ -143,19 +176,52 @@ def detect_closed_listing(snap: PageSnapshot) -> str | None:
     return None
 
 
-def detect_confirmation(snap: PageSnapshot, baseline: PageSnapshot | None = None) -> Confirmation | None:
-    """A credible submission confirmation that was *not* already on the form page."""
-    base_text = (baseline.text if baseline else "") or ""
-    for m in _CONFIRM_TEXT.finditer(snap.text or ""):
-        if m.group(0).lower() not in base_text.lower():
-            return Confirmation(snap.url, _context(snap.text, m.start(), m.end()))
-    if baseline is not None and snap.url != baseline.url:
-        parts = urlsplit(snap.url)
-        target = f"{parts.path}?{parts.query}"
-        base_parts = urlsplit(baseline.url)
-        if _CONFIRM_URL.search(target) and not _CONFIRM_URL.search(f"{base_parts.path}?{base_parts.query}"):
-            return Confirmation(snap.url, f"confirmation URL ({parts.path})")
+def confirmation_wording(snap: PageSnapshot, baseline: PageSnapshot | None = None) -> str | None:
+    """Strong confirmation wording in the main content that was not on the form page (context), or None."""
+    base_text = ((baseline.text if baseline else "") or "").lower()
+    text = snap.main_text or snap.text or ""
+    for m in _CONFIRM_TEXT.finditer(text):
+        if m.group(0).lower() not in base_text:
+            return _context(text, m.start(), m.end())
     return None
+
+
+def not_yet_submitted_wording(snap: PageSnapshot) -> str | None:
+    """Review-step / wizard / "nothing has been sent" wording anywhere on the page, or None."""
+    m = _NOT_YET_TEXT.search(snap.text or "") or _NOT_YET_TEXT.search(snap.main_text or "")
+    return " ".join(m.group(0).split()) if m else None
+
+
+def form_still_present(snap: PageSnapshot, baseline: PageSnapshot | None) -> bool:
+    """Is a visible control of the baseline (application) form still shown?"""
+    if baseline is None or not baseline.visible_controls:
+        return False
+    return bool(set(snap.visible_controls) & set(baseline.visible_controls))
+
+
+def confirmation_problem(snap: PageSnapshot, baseline: PageSnapshot | None = None) -> str | None:
+    """Why ``snap`` is not a credible confirmation (None = it is one)."""
+    wording = not_yet_submitted_wording(snap)
+    if wording:
+        return f"the page says {wording!r} (an intermediate / review step)"
+    if form_still_present(snap, baseline):
+        return "the application form is still shown"
+    if confirmation_wording(snap, baseline) is None:
+        return "no confirmation wording on the page"
+    return None
+
+
+def detect_confirmation(snap: PageSnapshot, baseline: PageSnapshot | None = None) -> Confirmation | None:
+    """A credible submission confirmation that was *not* already on the form page.
+
+    Requires strong past-tense wording in the main content, no "not yet sent /
+    review your application / before it is submitted" wording, and the
+    application form gone. The URL is never enough.
+    """
+    if confirmation_problem(snap, baseline) is not None:
+        return None
+    matched = confirmation_wording(snap, baseline)
+    return Confirmation(snap.url, matched) if matched else None
 
 
 def _context(text: str, start: int, end: int, width: int = 60) -> str:

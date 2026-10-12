@@ -1,18 +1,22 @@
 """Suggested replies (drafts the user may copy). Never sent by this program.
 
 Drafts never accept a proposed time, negotiate, commit the candidate to
-anything, or disclose sensitive information; they use placeholders such as
+anything, disclose sensitive information, state anything about work
+authorization / sponsorship, or claim experience (numbers, tools, leadership)
+that is not in the verified profile; they use placeholders such as
 ``[your availability]`` that the user fills in. An optional local-LLM draft is
-accepted only if it passes the same deterministic checks, otherwise the
-template is used.
+accepted only if it passes the same deterministic checks
+(``security.legal_text``), otherwise the template is used.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Callable
+from collections.abc import Iterable
+from typing import Any, Callable
 
 from job_agent.models import EmailCategory
+from job_agent.security.legal_text import draft_claim_problems
 from job_agent.security.untrusted import clean_untrusted
 
 C = EmailCategory
@@ -71,13 +75,39 @@ def template_reply(category: EmailCategory, *, candidate_name: str | None) -> st
     return template.format(name=(candidate_name or "[your name]").strip() or "[your name]")
 
 
-def reply_is_safe(text: str) -> bool:
-    return bool(text.strip()) and len(text) <= MAX_REPLY_CHARS and _FORBIDDEN.search(text) is None
+def reply_problems(text: str, *, facts: Iterable[Any] | None = None, skills: Iterable[str] | None = None,
+                   context: Iterable[str] = ()) -> list[str]:
+    """Why a drafted reply / follow-up may not be offered (empty list = safe).
+
+    ``facts`` (verified fact texts or ``Fact`` objects) and ``skills`` (profile
+    skills) let claims be checked; when ``facts`` is ``None`` any first-person
+    experience claim with numbers, tools or leadership is rejected. ``context``
+    is trusted application data whose numbers (e.g. the date you applied) may be
+    repeated. The incoming email is never a source of allowed claims.
+    """
+    problems: list[str] = []
+    if not text.strip():
+        problems.append("is empty")
+    if len(text) > MAX_REPLY_CHARS:
+        problems.append(f"is longer than {MAX_REPLY_CHARS} characters")
+    if _FORBIDDEN.search(text):
+        problems.append("accepts, commits, negotiates or discloses sensitive information")
+    problems += draft_claim_problems(text, facts=facts, skills=skills, context=context)
+    return problems
+
+
+def reply_is_safe(text: str, *, facts: Iterable[Any] | None = None, skills: Iterable[str] | None = None,
+                  context: Iterable[str] = ()) -> bool:
+    return not reply_problems(text, facts=facts, skills=skills, context=tuple(context))
 
 
 def suggest_reply(category: EmailCategory, *, candidate_name: str | None, subject: str = "", body: str = "",
-                  llm_draft: Callable[..., str] | None = None) -> tuple[str | None, str]:
-    """Return ``(draft, source)`` where source is ``template`` / ``llm`` / ``none``."""
+                  llm_draft: Callable[..., str] | None = None, facts: Iterable[Any] | None = None,
+                  profile_skills: Iterable[str] | None = None) -> tuple[str | None, str]:
+    """Return ``(draft, source)`` where source is ``template`` / ``llm`` / ``none``.
+
+    ``facts`` / ``profile_skills`` are only used to check the LLM draft.
+    """
     if category not in REPLY_CATEGORIES:
         return None, "none"
     fallback = template_reply(category, candidate_name=candidate_name)
@@ -85,6 +115,7 @@ def suggest_reply(category: EmailCategory, *, candidate_name: str | None, subjec
         draft = llm_draft(category=category.value, subject=subject, body=body,
                           candidate_name=candidate_name or "[your name]")
         cleaned = clean_untrusted(str(draft or ""), max_chars=MAX_REPLY_CHARS * 2)
-        if reply_is_safe(cleaned) and "[" in cleaned:
+        if "[" in cleaned and reply_is_safe(cleaned, facts=None if facts is None else list(facts),
+                                            skills=profile_skills):
             return cleaned, "llm"
     return fallback, "template"

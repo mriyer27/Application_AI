@@ -41,7 +41,7 @@ class SenderAuth:
 
     authenticated: bool = False
     method: str | None = None  # "dmarc" | "dkim"
-    source: str | None = None  # "authentication-results" | "arc-authentication-results"
+    source: str | None = None  # "authentication-results" when Gmail's header was found
     dkim: tuple[str, ...] = ()  # e.g. ("pass:acme.com", "fail:evil.example")
     spf: str | None = None
     dmarc: str | None = None
@@ -108,7 +108,8 @@ def header_values(payload: dict[str, Any] | None, name: str) -> list[str]:
 _AR_COMMENT = re.compile(r"\([^()]*\)")
 _AR_METHOD = re.compile(r"^\s*(dkim|spf|dmarc|arc)\s*=\s*([a-z]+)\b(.*)$", re.I | re.S)
 _AR_PROP = re.compile(r"\b(header\.[a-z]+|smtp\.[a-z]+)\s*=\s*\"?([^\s;\"]+)\"?", re.I)
-_ARC_INSTANCE = re.compile(r"^\s*i\s*=\s*(\d+)\s*$", re.I)
+#: DMARC results that still let an aligned DKIM pass count ("none" = the domain publishes no policy).
+_DMARC_NEUTRAL = {"pass", "none"}
 
 
 def _strip_comments(value: str) -> str:
@@ -118,18 +119,9 @@ def _strip_comments(value: str) -> str:
     return value
 
 
-def _parse_ar(value: str, *, arc: bool) -> tuple[int, str, list[tuple[str, str, dict[str, str]]]] | None:
-    """``(arc instance, authserv-id, [(method, result, props)])`` of one (ARC-)Authentication-Results value."""
+def _parse_ar(value: str) -> tuple[str, list[tuple[str, str, dict[str, str]]]] | None:
+    """``(authserv-id, [(method, result, props)])`` of one Authentication-Results value."""
     segments = [s.strip() for s in _strip_comments(value).split(";")]
-    instance = 0
-    if arc:
-        if not segments:
-            return None
-        match = _ARC_INSTANCE.match(segments[0])
-        if not match:
-            return None
-        instance = int(match.group(1))
-        segments = segments[1:]
     if not segments or not segments[0]:
         return None
     authserv = segments[0].split()[0].lower()
@@ -140,7 +132,7 @@ def _parse_ar(value: str, *, arc: bool) -> tuple[int, str, list[tuple[str, str, 
             continue
         props = {k.lower(): v.strip().lower() for k, v in _AR_PROP.findall(match.group(3))}
         results.append((match.group(1).lower(), match.group(2).lower(), props))
-    return instance, authserv, results
+    return authserv, results
 
 
 def _aligned(domain: str | None, from_domain: str | None) -> bool:
@@ -148,42 +140,34 @@ def _aligned(domain: str | None, from_domain: str | None) -> bool:
     if not domain or not from_domain:
         return False
     domain = domain.lstrip("@").rsplit("@", 1)[-1].strip(".")
-    return registrable_domain(domain) == registrable_domain(from_domain)
+    return bool(domain) and registrable_domain(domain) == registrable_domain(from_domain)
 
 
 def sender_auth(payload: dict[str, Any] | None, from_domain: str | None) -> SenderAuth:
     """DKIM / DMARC verdict for the From domain, from Gmail's own Authentication-Results.
 
-    Only the topmost ``Authentication-Results`` header is considered (Gmail
-    prepends its own; anything below it came with the message and may be
-    forged), and only when its authserv-id is Gmail's. Without it, the
-    highest-instance ``ARC-Authentication-Results`` written by Gmail is used.
+    Only the topmost ``Authentication-Results`` header is considered: Gmail
+    prepends its own when it receives a message, so anything below it came
+    with the message and may be forged. It counts only when its authserv-id is
+    Gmail's. ``ARC-Authentication-Results`` is never used: when Gmail's own
+    header is missing, a sender-supplied ARC header would be just as forgeable.
     """
-    chosen: list[tuple[str, str, dict[str, str]]] | None = None
-    source = None
     top = header_values(payload, "Authentication-Results")
-    if top:
-        parsed = _parse_ar(top[0], arc=False)
-        if parsed and parsed[1] in TRUSTED_AUTHSERV_IDS:
-            chosen, source = parsed[2], "authentication-results"
-    if chosen is None:
-        arcs = [p for p in (_parse_ar(v, arc=True) for v in header_values(payload, "ARC-Authentication-Results"))
-                if p and p[1] in TRUSTED_AUTHSERV_IDS]
-        if arcs:
-            chosen, source = max(arcs, key=lambda p: p[0])[2], "arc-authentication-results"
-    if chosen is None:
-        reason = ("Authentication-Results not written by Gmail" if top else "no Authentication-Results from Gmail")
-        return SenderAuth(reason=reason)
-
+    if not top:
+        return SenderAuth(reason="no Authentication-Results from Gmail")
+    parsed = _parse_ar(top[0])
+    if not parsed or parsed[0] not in TRUSTED_AUTHSERV_IDS:
+        return SenderAuth(reason="Authentication-Results not written by Gmail")
+    chosen = parsed[1]
     dkim = tuple(f"{res}:{props.get('header.d') or props.get('header.i', '').lstrip('@') or '?'}"
                  for method, res, props in chosen if method == "dkim")
     spf = next((res for method, res, _ in chosen if method == "spf"), None)
     dmarc_entries = [(res, props) for method, res, props in chosen if method == "dmarc"]
     dmarc = dmarc_entries[0][0] if dmarc_entries else None
-    base = dict(source=source, dkim=dkim, spf=spf, dmarc=dmarc)
+    base = dict(source="authentication-results", dkim=dkim, spf=spf, dmarc=dmarc)
     if not from_domain:
         return SenderAuth(reason="no sender address", **base)
-    if dmarc and dmarc != "pass":
+    if dmarc and dmarc not in _DMARC_NEUTRAL:
         return SenderAuth(reason=f"dmarc={dmarc}", **base)
     for res, props in dmarc_entries:
         if res == "pass" and _aligned(props.get("header.from"), from_domain):

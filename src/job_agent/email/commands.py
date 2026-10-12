@@ -84,11 +84,18 @@ def gmail_status_cmd() -> None:
 @gmail_app.command("sync")
 def gmail_sync() -> None:
     """Read recent messages (read-only), categorize them and apply evidence-based status updates."""
-    from job_agent.cli import console, err_console, get_ctx
+    from job_agent.cli import console, err_console, fail, get_ctx
+    from job_agent.email.service import ensure_gmail_enabled
+    from job_agent.errors import JobAgentError
     from job_agent.models import RunStatus
     from job_agent.tasks import run_task
 
     ctx = get_ctx()
+    try:
+        ensure_gmail_enabled(ctx.config)  # a plain message, not a failed task run with a traceback
+    except JobAgentError as exc:
+        fail(exc)
+        return
     result = run_task(ctx, "email_sync", trigger="manual")
     if result.status == RunStatus.FAILED:
         err_console.print(f"[red]Gmail sync failed ({result.error_kind.value if result.error_kind else 'error'}):"
@@ -188,6 +195,7 @@ def emails_show(email_id: int = typer.Argument(..., help="Email id (see `job-age
     """Show one email's metadata, category, associations and suggested reply."""
     from job_agent.cli import console, err_console, get_ctx
     from job_agent.email.repository import associations_for, get_message
+    from job_agent.email.repository import last_review_reasons as review_reasons
 
     ctx = get_ctx()
     row = get_message(ctx.db, email_id)
@@ -203,6 +211,13 @@ def emails_show(email_id: int = typer.Argument(..., help="Email id (see `job-age
     if row["snippet"]:
         console.print(f"Snippet: {_e(row['snippet'])}")
     console.print(f"Needs attention: {'yes' if row['requires_attention'] else 'no'}")
+    held = review_reasons(ctx.db, email_id)
+    if held:
+        console.print("[yellow]Status not changed automatically:[/yellow]")
+        for reason in held:
+            console.print(f"  - {_e(reason)}")
+        console.print("  If this email is about one of your applications, confirm it with "
+                      "[bold]job-agent emails associate <id> <A-...> --apply-status[/bold].")
     if row["injection_suspected"]:
         console.print("[yellow]Contains instruction-like text (possible prompt injection); not acted on "
                       "automatically.[/yellow]")

@@ -27,7 +27,7 @@ from job_agent.logging_config import get_logger
 from job_agent.models import DocumentStatus, DocumentType, Permission, PipelineState
 from job_agent.profile import CandidateProfile
 from job_agent.resume import render
-from job_agent.resume.cover_letter import build_cover_letter, display_text
+from job_agent.resume.cover_letter import build_cover_letter, title_slot
 from job_agent.resume.keywords import JobKeywords, extract_job_keywords
 from job_agent.resume.llm_assist import LLMAssist, get_assist, reword_bullets
 from job_agent.resume.models import (
@@ -113,7 +113,7 @@ def generate_resume(profile: CandidateProfile, job: JobListing, kw: JobKeywords,
     content = select_resume_content(profile, kw, max_bullets_per_role=max_bullets_per_role)
     issues: list[Issue] = []
     if assist is not None:
-        issues += reword_bullets(assist, content, profile, kw, job_title=display_text(job.title, max_len=120),
+        issues += reword_bullets(assist, content, profile, kw, job_title=title_slot(job.title) or "",
                                  forbidden_names=[job.employer])
     issues += validate_resume(content, profile, profile_label=profile_label)
     if kw.injection_suspected:

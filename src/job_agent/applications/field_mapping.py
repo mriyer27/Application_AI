@@ -3,12 +3,18 @@
 Deterministic rules only (no LLM decides anything here):
 
 * personal fields come from ``profile.personal`` -- never a ``<placeholder>`` value;
-* résumé / cover-letter uploads use the application's stored documents (PDF preferred);
+* résumé / cover-letter uploads use the application's stored documents (PDF
+  preferred). A cover letter (file or pasted text) is used only once you have
+  approved it; an unapproved résumé is attached but flagged for review;
 * education fields use the first (most recent) profile education entry verbatim;
-* LEGAL / ELIGIBILITY questions are always flagged (``is_legal_declaration`` +
-  ``requires_review``) and filled *only* from a matching ``verified_answers``
-  entry whose answer exactly matches an available option (or the field is free
-  text). ``work_authorization`` booleans are never used to answer them;
+* LEGAL / ELIGIBILITY questions -- any field whose label, name, placeholder, help
+  text or options mention a legal topic (``security.legal_text.is_legal_question``)
+  -- are always flagged (``is_legal_declaration`` + ``requires_review``), never
+  drafted by the LLM, and filled *only* from a ``verified_answers`` entry marked
+  ``is_legal_declaration: true`` whose pattern covers the whole question (no
+  extra clause, negation, condition or other country) and whose answer exactly
+  matches an available option (or the field is free text). Non-legal verified
+  answers and ``work_authorization`` booleans are never used to answer them;
 * EEO / voluntary self-identification is left blank for you;
 * agreements / certifications / consents are never checked automatically;
 * salary / start date / relocation / notice period need review unless a
@@ -31,6 +37,7 @@ from typing import Any, Callable, Mapping
 from job_agent.applications.documents import DocumentRef, pick_variant
 from job_agent.browser.forms import TEXT_TYPES, FormField, match_option
 from job_agent.profile import CandidateProfile, Education, VerifiedAnswer
+from job_agent.security.legal_text import is_legal_question
 
 _PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
 
@@ -133,6 +140,24 @@ _REFERRAL = re.compile(
 _OPEN_ENDED = re.compile(
     r"^(why|what|how|describe|tell us|explain|please (describe|share|explain|tell|provide)|share|in a few)\b"
 )
+#: Words that may surround a legal verified answer's pattern without changing what is asked
+#: ("Will you now or in the future require visa sponsorship?" for "require visa sponsorship").
+#: Anything else -- another clause, a condition, a past tense, another country -- means the
+#: pattern does not answer the question.
+_LEGAL_FILLER = frozenset("""
+a an the are you your yourself do does will would could can shall should be is am have has need now or and in
+of for to at on by with this that any please explain answer indicate select specify confirm currently presently
+present future time point some work working employment employed employer job position role company us u s usa
+united states america american legally lawfully visa status required
+""".split())
+#: Words that invert or qualify a question; a pattern never answers a question that adds one.
+_NEGATIONS = frozenset({"not", "never", "no", "without", "t", "cannot", "nor", "neither", "unable", "unwilling",
+                        "none", "nobody", "nothing"})
+_LABEL_NOISE = re.compile(
+    r"\((?:e\.?\s?g\.?|i\.?\s?e\.?|for example|such as|ex\.)[^)]*\)|\((?:optional|required|not required|if applicable|"
+    r"yes ?/ ?no|yes or no)\)", re.I)
+_YES_NO = re.compile(r"\byes (?:or )?no\b")
+UPLOADS = frozenset({"resume", "cover_letter_file", "other_upload"})
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
      "november", "december"], start=1)}
@@ -154,7 +179,7 @@ def classify_field(label: str, key: str = "", field_type: str = "text") -> Field
         if _RESUME.search(t) or _RESUME.search(k):
             return FieldCategory.RESUME
         return FieldCategory.OTHER_UPLOAD
-    if _LEGAL.search(t):
+    if _LEGAL.search(t) or is_legal_question(label) or (key and is_legal_question(key)):
         return FieldCategory.LEGAL
     if _EEO.search(t) or (not t and _EEO.search(k)) or k.startswith("eeo "):
         return FieldCategory.EEO
@@ -268,15 +293,27 @@ def map_fields(fields: list[FormField], inputs: MappingInputs) -> list[MappedAns
     return [map_field(fld, inputs) for fld in fields]
 
 
+def field_is_legal(fld: FormField) -> bool:
+    """Does the label, field name / id, placeholder, help text or an option mention a legal topic?"""
+    texts = [fld.label, fld.key, fld.name, fld.element_id, fld.placeholder,
+             getattr(fld, "help_text", None), getattr(fld, "description", None)]
+    if fld.type in {"select", "radio", "checkbox", "checkbox_group", "select-multiple"}:
+        texts += [o.label for o in fld.options]
+    return any(is_legal_question(str(t)) for t in texts if t)
+
+
 def apply_drafts(mapped: list[MappedAnswer], drafter: Drafter | None, *, max_drafts: int = 3) -> list[MappedAnswer]:
-    """Attach local-LLM *suggestions* to unanswered open-ended questions (never filled)."""
+    """Attach local-LLM *suggestions* to unanswered open-ended questions (never filled).
+
+    Legal / eligibility questions are never sent to the drafter.
+    """
     if drafter is None or max_drafts <= 0:
         return mapped
     out: list[MappedAnswer] = []
     left = max_drafts
     for m in mapped:
         if (left > 0 and m.category is FieldCategory.OPEN_ENDED and m.answer is None and m.source is None
-                and m.field.type in TEXT_TYPES):
+                and m.field.type in TEXT_TYPES and not m.is_legal and not field_is_legal(m.field)):
             left -= 1
             draft = drafter(m.field.label)
             if draft is not None and draft.answer.strip():
@@ -291,6 +328,8 @@ def apply_drafts(mapped: list[MappedAnswer], drafter: Drafter | None, *, max_dra
 
 def map_field(fld: FormField, inputs: MappingInputs) -> MappedAnswer:
     category = classify_field(fld.label, fld.key, fld.type)
+    if category.value not in UPLOADS and category is not FieldCategory.LEGAL and field_is_legal(fld):
+        category = FieldCategory.LEGAL  # legal wording in the name, placeholder, help text or options
     user = (inputs.user_answers or {}).get(fld.key)
     if user is not None:
         mapped = _from_user(fld, category, user)
@@ -335,8 +374,10 @@ def _auto(fld: FormField, cat: FieldCategory, inputs: MappingInputs) -> MappedAn
     if cat is FieldCategory.COVER_LETTER_TEXT:
         if inputs.cover_letter_text and fld.type in TEXT_TYPES:
             doc = inputs.cover_letter_text_doc
-            return MappedAnswer(fld, cat, inputs.cover_letter_text, f"document:{doc.id}" if doc else "document",
-                                "verified", False, False, "text of your cover letter document")
+            if doc is None or doc.status != "approved":
+                return _review(fld, cat, _approve_cover_letter(doc or next(iter(inputs.cover_letter_variants), None)))
+            return MappedAnswer(fld, cat, inputs.cover_letter_text, f"document:{doc.id}", "verified", False, False,
+                                "text of your approved cover letter document")
         return _missing(fld, cat, "no cover letter text available; paste it yourself if you want to")
     if cat in EDUCATION:
         return _education(fld, cat, profile.education[0] if profile.education else None)
@@ -462,6 +503,10 @@ def _month_value(value: str) -> str | None:
     return f"{m.group(2)}-{month:02d}" if month else None
 
 
+def _approve_cover_letter(doc: DocumentRef | None) -> str:
+    return f"approve the cover letter first (job-agent documents approve {doc.id if doc else '<id>'})"
+
+
 def _document(fld: FormField, cat: FieldCategory, variants: list[DocumentRef], what: str) -> MappedAnswer:
     if not variants:
         return _missing(fld, cat, f"no {what} document for this application")
@@ -469,28 +514,73 @@ def _document(fld: FormField, cat: FieldCategory, variants: list[DocumentRef], w
     if doc is None:
         formats = ", ".join(sorted({v.format for v in variants}))
         return _review(fld, cat, f"the form accepts {fld.accept!r} but your {what} exists only as {formats}")
+    if doc.status != "approved":
+        if cat is FieldCategory.COVER_LETTER_FILE:
+            return _review(fld, cat, _approve_cover_letter(doc))
+        # The résumé is attached so the form can be prepared, but it must be approved before submission.
+        return MappedAnswer(fld, cat, doc.file_name, f"document:{doc.id}", "verified", True, False,
+                            f"your {what} ({doc.format.upper()}) is {doc.status}, not approved: review it, run "
+                            f"`job-agent documents approve {doc.id}` and prepare the application again",
+                            document=doc)
     return MappedAnswer(fld, cat, doc.file_name, f"document:{doc.id}", "verified", False, False,
                         f"your {what} ({doc.format.upper()})", document=doc)
 
 
-def matching_verified_answers(label: str, answers: list[VerifiedAnswer]) -> list[VerifiedAnswer]:
-    text = " ".join((label or "").casefold().split())
-    return [a for a in answers if any(" ".join(p.casefold().split()) in text for p in a.question_patterns
-                                      if p.strip())]
+def _remainder(label_norm: str, pattern_norm: str) -> list[str] | None:
+    """Words of the label outside the first whole-word occurrence of the pattern (None if absent)."""
+    padded, needle = f" {label_norm} ", f" {pattern_norm} "
+    idx = padded.find(needle)
+    if idx < 0:
+        return None
+    return (padded[:idx] + " " + padded[idx + len(needle):]).split()
+
+
+def matching_verified_answers(label: str, answers: list[VerifiedAnswer], *,
+                              strict: bool = False) -> list[VerifiedAnswer]:
+    """Verified answers with a pattern that occurs in the label as whole words.
+
+    A pattern never matches a label that adds a negation ("not", "without", ...)
+    around it. ``strict`` (legal declarations) also requires every other word of
+    the label to be neutral filler (``_LEGAL_FILLER``), so "require visa
+    sponsorship" answers "Will you now or in the future require visa sponsorship?"
+    but not a question that adds another clause, a condition, a past tense or
+    another country.
+    """
+    text = _YES_NO.sub(" ", normalize(_LABEL_NOISE.sub(" ", label or "")))
+    out: list[VerifiedAnswer] = []
+    for answer in answers:
+        for pattern in answer.question_patterns:
+            needle = normalize(pattern)
+            rest = _remainder(text, needle) if needle else None
+            if rest is None or any(w in _NEGATIONS and w not in needle.split() for w in rest):
+                continue
+            if strict and any(w not in _LEGAL_FILLER for w in rest):
+                continue
+            out.append(answer)
+            break
+    return out
 
 
 def _legal(fld: FormField, answers: list[VerifiedAnswer]) -> MappedAnswer:
     cat = FieldCategory.LEGAL
-    matches = matching_verified_answers(fld.label, answers)
-    if not matches:
-        return _review(fld, cat, "legal/eligibility question: never answered automatically -- answer it with "
-                                 "`job-agent approvals answer` or save a verified answer in your profile",
-                       is_legal=True)
+    legal_answers = [a for a in answers if a.is_legal_declaration]
+    matches = matching_verified_answers(fld.label, legal_answers, strict=True)
     if len(matches) > 1:
         ids = ", ".join(m.id for m in matches)
         return _review(fld, cat, f"legal/eligibility question matches several verified answers ({ids}); "
                                  "answer it yourself", is_legal=True)
-    return _from_verified(fld, cat, matches[0], force_legal=True)
+    if matches:
+        return _from_verified(fld, cat, matches[0], force_legal=True)
+    reason = ("legal/eligibility question: never answered automatically -- answer it with `job-agent approvals "
+              "answer` or save a verified answer with is_legal_declaration: true in your profile")
+    partial = [a.id for a in matching_verified_answers(fld.label, legal_answers)]
+    if partial:
+        reason += f"; verified answer(s) {', '.join(partial)} match only part of this question"
+    other = [a.id for a in matching_verified_answers(fld.label, [a for a in answers if not a.is_legal_declaration])]
+    if other:
+        reason += (f"; verified answer(s) {', '.join(other)} are not marked is_legal_declaration and are never "
+                   "used for legal questions")
+    return _review(fld, cat, reason, is_legal=True)
 
 
 def _from_verified(fld: FormField, cat: FieldCategory, va: VerifiedAnswer, *, force_legal: bool = False) -> MappedAnswer:

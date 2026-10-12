@@ -1,5 +1,5 @@
 {
-  "_note": "Synthetic messages (fictional people, employers and domains). The fake Gmail service in tests/unit/test_email_fakes.py turns each entry into a Gmail API message resource (base64url MIME parts). 'expected' is the category the rules classifier must produce.",
+  "_note": "Synthetic messages (fictional people, employers and domains). The fake Gmail service in tests/unit/test_email_fakes.py turns each entry into a Gmail API message resource (base64url MIME parts). 'expected' is the category the rules classifier must produce. 'headers' are extra message headers; Authentication-Results imitates the header Gmail's servers (authserv-id mx.google.com) add after checking DKIM/SPF/DMARC.",
   "messages": [
     {
       "id": "m-confirm-1",
@@ -8,6 +8,9 @@
       "from": "Acme Analytics Hiring Team <no-reply@us.greenhouse-mail.io>",
       "subject": "Thank you for applying to Acme Analytics",
       "snippet": "Hi Test, Thank you for applying for the Business Analyst position at Acme Analytics.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@us.greenhouse-mail.io header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of no-reply@us.greenhouse-mail.io designates 192.0.2.10 as permitted sender) smtp.mailfrom=no-reply@us.greenhouse-mail.io; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=greenhouse-mail.io"
+      },
       "text": "Hi Test,\n\nThank you for applying for the Business Analyst position at Acme Analytics. We have received your application and our team will review it shortly.\n\nInternal reference BODYMARKER-c0nf1rm-7f3a (synthetic).\n\nBest,\nAcme Analytics Recruiting",
       "expected": "application_confirmation"
     },
@@ -18,6 +21,9 @@
       "from": "Jordan Lee <jordan.lee@globex-corp.com>",
       "subject": "Business Analyst opportunity at Globex",
       "snippet": "Hi Test, I'm a technical recruiter at Globex.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@globex-corp.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of jordan.lee@globex-corp.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=jordan.lee@globex-corp.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=globex-corp.com"
+      },
       "text": "Hi Test,\n\nI'm a technical recruiter at Globex. I came across your profile and your background stood out. Would you be open to a quick call this week to discuss a Business Analyst role on our data team?\n\nThanks,\nJordan",
       "expected": "recruiter_message"
     },
@@ -28,6 +34,9 @@
       "from": "Initech Talent Team <talent@initech.com>",
       "subject": "Interview invitation - Data Analyst",
       "snippet": "Thank you for your application. We would like to invite you to a first-round interview.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@initech.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of talent@initech.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=talent@initech.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=initech.com"
+      },
       "text": "Hello,\n\nThank you for your application. We would like to invite you to a first-round interview for the Data Analyst position. Please share your availability for next week.\n\nInitech Talent Team",
       "expected": "interview_invitation"
     },
@@ -38,6 +47,9 @@
       "from": "Initech Scheduling <scheduling@goodtime.io>",
       "subject": "Schedule your interview with Initech",
       "snippet": "Please use the link below to select a time for your interview.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@goodtime.io header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of scheduling@goodtime.io designates 192.0.2.10 as permitted sender) smtp.mailfrom=scheduling@goodtime.io; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=goodtime.io"
+      },
       "html": "<html><head><style>p{color:red}</style></head><body><p>Hi Test,</p><p>Please use the link below to <b>select a time</b> for your interview with Initech:</p><p><a href=\"https://goodtime.io/s/example\">https://goodtime.io/s/example</a></p></body></html>",
       "expected": "scheduling_request"
     },
@@ -48,6 +60,9 @@
       "from": "Hooli Recruiting <noreply@hackerrank.com>",
       "subject": "Hooli Online Assessment Invitation",
       "snippet": "As the next step in your application, please complete the online assessment.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@hackerrank.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of noreply@hackerrank.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=noreply@hackerrank.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=hackerrank.com"
+      },
       "text": "Hi Test,\n\nAs the next step in your application for the Software Analyst role at Hooli, please complete the online assessment on HackerRank within 7 days.\n\nGood luck!",
       "expected": "assessment"
     },
@@ -58,6 +73,9 @@
       "from": "Umbrella Careers <careers@umbrella-health.com>",
       "subject": "Update on your application",
       "snippet": "Thank you for your interest in the Business Analyst role at Umbrella Health.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@umbrella-health.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of careers@umbrella-health.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=careers@umbrella-health.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=umbrella-health.com"
+      },
       "text": "Dear Test,\n\nThank you for your interest in the Business Analyst role at Umbrella Health. Unfortunately, after careful review, we have decided to move forward with other candidates whose experience more closely matches our needs.\n\nWe wish you the best in your search.\nUmbrella Health Talent Acquisition",
       "expected": "rejection"
     },
@@ -68,6 +86,9 @@
       "from": "Vandelay Industries HR <hr@vandelay-industries.com>",
       "subject": "Offer letter - Data Analyst",
       "snippet": "We are delighted to extend you an offer for the Data Analyst position.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@vandelay-industries.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of hr@vandelay-industries.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=hr@vandelay-industries.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=vandelay-industries.com"
+      },
       "text": "Dear Test,\n\nWe are delighted to extend you an offer for the Data Analyst position at Vandelay Industries. Please review the attached offer letter and let us know if you have any questions.\n\nVandelay Industries HR",
       "expected": "offer"
     },
@@ -78,6 +99,9 @@
       "from": "Sam Rivera <sam.rivera@stark-labs.com>",
       "subject": "Great meeting you at the career fair",
       "snippet": "Hi Test, it was great meeting you at the career fair yesterday.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@stark-labs.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of sam.rivera@stark-labs.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=sam.rivera@stark-labs.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=stark-labs.com"
+      },
       "text": "Hi Test,\n\nIt was great meeting you at the Example State University career fair yesterday. Feel free to reach out if you have any questions about our analyst programs.\n\nSam",
       "expected": "follow_up_opportunity"
     },
@@ -88,7 +112,10 @@
       "from": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
       "subject": "New jobs for Business Analyst in New York",
       "snippet": "Jobs you may be interested in: Business Analyst at Acme Analytics.",
-      "headers": {"List-Unsubscribe": "<https://www.linkedin.com/unsubscribe/example>"},
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@linkedin.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of jobalerts-noreply@linkedin.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=jobalerts-noreply@linkedin.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=linkedin.com",
+        "List-Unsubscribe": "<https://www.linkedin.com/unsubscribe/example>"
+      },
       "text": "Jobs you may be interested in:\n\nBusiness Analyst at Acme Analytics - New York, NY\nData Analyst at Globex - Remote\n\nWe'd love to help you find your next interview.\n\nUnsubscribe | Manage email preferences",
       "expected": "other"
     }

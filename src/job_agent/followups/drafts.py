@@ -2,7 +2,11 @@
 
 Templates contain only facts from the database (employer, job title, the date
 you applied) and placeholders. An optional local-LLM draft is used only if it
-passes the same deterministic safety checks as suggested email replies.
+passes the same deterministic safety checks as suggested email replies: no
+commitments or sensitive data, no work-authorization statements, and no
+numbers, tools or leadership claims that are not in the verified profile
+(``ctx["facts"]`` / ``ctx["profile_skills"]`` when provided; otherwise any such
+experience claim is rejected).
 """
 
 from __future__ import annotations
@@ -67,7 +71,11 @@ def suggested_action(followup_type: FollowupType, ctx: dict[str, Any]) -> str:
 def llm_followup_draft(draft_fn: Callable[..., str], ctx: dict[str, Any]) -> str | None:
     """Call the LLM drafter and keep the result only if it passes the safety checks."""
     context = f"Applied on {_date_part(ctx.get('submitted_at'))}; no response for {ctx.get('days')} days."
-    text = draft_fn(employer=ctx.get("employer") or "", job_title=ctx.get("title") or "", context=context,
+    employer, title = ctx.get("employer") or "", ctx.get("title") or ""
+    text = draft_fn(employer=employer, job_title=title, context=context,
                     candidate_name=ctx.get("candidate_name") or "[your name]")
     cleaned = clean_untrusted(str(text or ""), max_chars=3000)
-    return cleaned if reply_is_safe(cleaned) else None
+    facts = ctx.get("facts")
+    safe = reply_is_safe(cleaned, facts=None if facts is None else list(facts), skills=ctx.get("profile_skills"),
+                         context=(context, employer, title))
+    return cleaned if safe else None

@@ -4,10 +4,17 @@
 memory and dropped; only metadata (+ optional short snippet / summary) is
 stored. Email content can never trigger anything other than the deterministic
 status rules in ``email.status``; nothing is ever sent, accepted or replied to.
+
+A message is always stored first; its status update runs in its own savepoint,
+so a refused or failed update can never lose the message (which would make
+every later sync download and re-process it). Anything status-relevant that is
+not applied automatically is flagged ``requires_attention`` with the reasons
+recorded (``job-agent emails show <id>``).
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -21,6 +28,7 @@ from job_agent.email.classify import (
     RULES_CONFIDENT,
     classify_rules,
     combine,
+    is_promotional,
     rules_summary,
     validate_llm_classification,
 )
@@ -95,6 +103,47 @@ def _list_params(config: Any) -> tuple[str | None, list[str] | None, str]:
 
 def _short(exc: BaseException) -> str:
     return redact_text(f"{type(exc).__name__}: {exc}", pii=True)[:300]
+
+
+def ensure_gmail_enabled(config: Any) -> None:
+    """Raise ``HumanActionRequired`` (with the setup doc as next step) unless ``gmail.enabled``."""
+    if not config.gmail.enabled:
+        raise HumanActionRequired("Gmail integration is disabled (gmail.enabled: false)",
+                                  human_action=f"Follow {auth.SETUP_DOC}, then set gmail.enabled: true")
+
+
+def _scope_list(value: Any) -> list[str] | None:
+    if isinstance(value, str):
+        return value.split()
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return [v for v in value if v]
+    return None
+
+
+def require_verified_token_scopes(ctx: "AppContext") -> None:
+    """Refuse a token file that does not record its scopes: it cannot be verified as read-only.
+
+    ``google-auth`` happily loads a token without ``scopes``; the access it then
+    carries is whatever the grant had, which may include sending mail.
+    """
+    path = auth.token_file(ctx.config)
+    if not path.is_file():
+        return  # load_credentials reports the missing token
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return  # load_credentials records the unreadable token
+    if not isinstance(info, dict):
+        return
+    stored, granted = _scope_list(info.get("scopes")), _scope_list(info.get("granted_scopes"))
+    if stored or granted:
+        return
+    auth.record_auth_error(ctx.db, ctx.config, "token file does not record its scopes (not verified read-only)")
+    raise AuthorizationRequired(
+        "Gmail token does not record which scopes it carries, so it cannot be verified as read-only; refusing "
+        "to use it",
+        human_action="Run job-agent gmail revoke, then job-agent gmail auth",
+    )
 
 
 class _Processor:
@@ -204,6 +253,7 @@ class _Processor:
         llm = self.llm_classify(parsed) if rules.confidence < RULES_CONFIDENT else None
         cls = combine(rules, llm)
         suspicious = injection_suspected(parsed.subject) or injection_suspected(parsed.body_text)
+        bulk = parsed.bulk or is_promotional(subject=parsed.subject, body=parsed.body_text)
 
         # Newsletters / unrelated mail are not linked to anything (avoids noisy guesses).
         candidates = [] if cls.category == EmailCategory.OTHER else find_candidates(
@@ -211,9 +261,9 @@ class _Processor:
             from_domain=parsed.from_domain, from_name=parsed.from_name, subject=parsed.subject,
             body=parsed.body_text, employer_guess=cls.employer_guess)
         best: AssociationCandidate | None = candidates[0] if candidates else None
-        auto = (cls.classifier == "rules" and cls.confidence >= RULES_CONFIDENT and not suspicious
-                and cls.category in CATEGORY_TARGET and best is not None and best.application_id is not None
-                and best.confidence >= AUTO_THRESHOLD)
+        status_relevant = cls.category in CATEGORY_TARGET
+        held = auto_update_blockers(parsed, cls, suspicious=suspicious, bulk=bulk, best=best) \
+            if status_relevant else []
 
         reply: str | None = None
         if cls.category in REPLY_CATEGORIES and self.drafts_allowed:
@@ -229,31 +279,77 @@ class _Processor:
                                     from_domain=parsed.from_domain)
 
         outcome = StatusOutcome()
+        attention = cls.requires_attention or cls.category in ACTIONABLE or suspicious
         with self.db.transaction():
+            # Stored first, flagged until the status question is settled below.
             email_id = email_repo.insert_message(self.db, {
                 **base, "category": cls.category.value, "category_confidence": cls.confidence,
-                "classifier": cls.classifier, "summary": summary, "requires_attention": 0,
+                "classifier": cls.classifier, "summary": summary,
+                "requires_attention": int(attention or status_relevant),
                 "suggested_reply": reply, "injection_suspected": int(suspicious)})
             if email_id is None:  # stored concurrently by another run
                 return _Processed(None, cls.category, False, None, False, suspicious)
             assoc_ids = store_candidates(self.db, email_id, candidates)
-            if auto and best is not None:
-                outcome = apply_email_status(
-                    self.db, application_id=int(best.application_id), association_id=assoc_ids[0],
-                    category=cls.category, actor="email", email_id=email_id,
-                    evidence=evidence_for(gmail_message_id=parsed.gmail_message_id, subject=parsed.subject,
-                                          received_at=parsed.received_at, category=cls.category))
-            attention = cls.requires_attention or cls.category in ACTIONABLE or suspicious
-            if cls.category in CATEGORY_TARGET and outcome.applied is None and not (
+            if status_relevant and not held and best is not None:
+                outcome = self._apply_status(parsed, cls.category, best, assoc_ids[0], email_id)
+            if status_relevant and outcome.applied is None and not (
                     outcome.skipped_reason or "").startswith("application already"):
                 attention = True  # status-relevant but not applied automatically: ask the user
+                repo.audit(self.db, actor="email", action="email_status_needs_review", entity_type="email",
+                           entity_id=email_id, outcome="needs_review", run_id=self.run.run_id if self.run else None,
+                           details={"category": cls.category.value,
+                                    "application_id": best.application_id if best else None,
+                                    "reasons": held or [outcome.skipped_reason or "not applied"]})
             email_repo.update_message(self.db, email_id, {"requires_attention": int(attention)})
         return _Processed(email_id, cls.category, bool(candidates), outcome.applied, attention, suspicious)
+
+    def _apply_status(self, parsed: ParsedEmail, category: EmailCategory, best: AssociationCandidate,
+                      association_id: int, email_id: int) -> StatusOutcome:
+        """Automatic status update in its own savepoint; a refusal is recorded, never raised."""
+        try:
+            with self.db.transaction():
+                return apply_email_status(
+                    self.db, application_id=int(best.application_id or 0), association_id=association_id,
+                    category=category, actor="email", email_id=email_id,
+                    evidence=evidence_for(gmail_message_id=parsed.gmail_message_id, subject=parsed.subject,
+                                          received_at=parsed.received_at, category=category))
+        except (JobAgentError, sqlite3.Error) as exc:
+            repo.record_error(self.db, component="email:status", error=exc, task_name="email_sync",
+                              run_id=self.run.run_id if self.run else None, application_id=best.application_id,
+                              details={"gmail_message_id": parsed.gmail_message_id, "email_id": email_id},
+                              retryable=False)
+            return StatusOutcome(skipped_reason=f"status update refused: {_short(exc)}")
+
+
+def auto_update_blockers(parsed: ParsedEmail, cls: EmailClassification, *, suspicious: bool, bulk: bool,
+                         best: AssociationCandidate | None) -> list[str]:
+    """Why this status-relevant email must not change a status by itself (empty = it may)."""
+    reasons: list[str] = []
+    if cls.classifier != "rules":
+        reasons.append(f"category suggested by the local AI ({cls.classifier}), not the deterministic rules")
+    elif cls.confidence < RULES_CONFIDENT:
+        reasons.append(f"category uncertain (confidence {cls.confidence:.2f})")
+    if suspicious:
+        reasons.append("message contains instruction-like text (possible prompt injection)")
+    if bulk:
+        reasons.append("bulk or promotional mail")
+    if not parsed.auth.authenticated:
+        reasons.append(f"sender not verified by Gmail ({parsed.auth.reason})")
+    if best is None:
+        reasons.append("not linked to any job you are tracking")
+    elif best.application_id is None:
+        reasons.append("the linked job has no application")
+    elif best.confidence < AUTO_THRESHOLD:
+        detail = "; ".join(best.reasons[-2:])
+        reasons.append(f"link to the application is uncertain ({best.confidence:.2f}" + (f": {detail})" if detail
+                                                                                          else ")"))
+    return reasons
 
 
 def _make_client(ctx: "AppContext", service: Any, fmt: str) -> GmailReadClient:
     if service is not None:
         return GmailReadClient(service, message_format=fmt)
+    require_verified_token_scopes(ctx)
     creds = auth.load_credentials(ctx)
     return GmailReadClient.from_credentials(creds, message_format=fmt)
 
@@ -270,9 +366,7 @@ def sync_gmail(ctx: "AppContext", *, service: Any = None, max_messages: int | No
     """
     config = ctx.config
     db = ctx.db
-    if not config.gmail.enabled:
-        raise HumanActionRequired("Gmail integration is disabled (gmail.enabled: false)",
-                                  human_action=f"Follow {auth.SETUP_DOC}, then set gmail.enabled: true")
+    ensure_gmail_enabled(config)
     require_permission(config, Permission.READ_EMAILS)
     auth.requested_scopes(config)  # refuses anything but read-only scopes
     auth.fail_fast_if_auth_broken(db, config)

@@ -110,42 +110,62 @@ def test_metadata_scope_lists_inbox_without_query(gctx):
 
 
 # ------------------------------------------------------ status updates ---- #
-def test_confirmation_email_resolves_unknown_outcome(gctx, make_job):
+SUBMITTED_AT = "2026-10-01T00:00:00+00:00"
+
+
+def test_confirmation_email_flags_unknown_outcome_for_you_to_confirm(gctx, make_job):
+    """An unknown submission outcome is never resolved by email automatically; you confirm it."""
     db = gctx.db
     job_id = _acme(make_job)
     app_id = _submitted_via_approval(db, job_id)
     assert repo.get_application(db, app_id)["status"] == "needs_manual_action"
+    events_before = db.scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?", (app_id,))
 
     result = sync_gmail(gctx, service=fake_service("m-confirm-1"))
-    assert result.status_updates == 1 and result.associated == 1
+    assert result.status_updates == 0 and result.associated == 1 and result.attention == 1
+    assert repo.get_application(db, app_id)["status"] == "needs_manual_action"
+    assert db.scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?", (app_id,)) == events_before
+    email = _email(db, "m-confirm-1")
+    assoc = _assoc(db, email["id"])[0]
+    assert assoc["application_id"] == app_id and assoc["confidence"] >= 0.8  # the link itself is trusted
+    assert assoc["status_applied"] is None and email["requires_attention"] == 1
+    skipped = db.query_one("SELECT * FROM audit_events WHERE action = 'email_status_update_skipped'")
+    assert "unknown submission outcome" in from_json(skipped["details"])["reason"]
+
+    # You confirm it: the email becomes the evidence.
+    app_uid = repo.get_application(db, app_id)["application_uid"]
+    res = associate_email(gctx, email["id"], application_ref=app_uid, apply_status=True)
+    assert res.status_applied == "confirmation_received" and res.previous_status == "needs_manual_action"
     app = repo.get_application(db, app_id)
-    assert app["status"] == "confirmation_received"
-    assert app["confirmation_status"] == "email_confirmed"
+    assert app["status"] == "confirmation_received" and app["confirmation_status"] == "email_confirmed"
     event = db.query_one("SELECT * FROM application_events WHERE application_id = ? ORDER BY id DESC LIMIT 1",
                          (app_id,))
-    assert event["actor"] == "email" and event["from_status"] == "needs_manual_action"
+    assert event["actor"] == "user" and event["from_status"] == "needs_manual_action"
     evidence = from_json(event["evidence"])
     assert evidence["type"] == "email" and evidence["gmail_message_id"] == "m-confirm-1"
     assert evidence["category"] == "application_confirmation" and evidence["received_at"]
-    email = _email(db, "m-confirm-1")
-    assoc = _assoc(db, email["id"])[0]
-    assert assoc["application_id"] == app_id and assoc["confidence"] >= 0.8
-    assert assoc["status_applied"] == "confirmation_received" and assoc["confirmed_by_user"] == 0
-    assert email["requires_attention"] == 0
+    assert _email(db, "m-confirm-1")["requires_attention"] == 0
 
 
 def test_confirmation_from_submission_attempted(gctx, make_job):
     db = gctx.db
     app_id = make_application(db, _acme(make_job), "submission_attempted")
-    sync_gmail(gctx, service=fake_service("m-confirm-1"))
-    assert repo.get_application(db, app_id)["status"] == "confirmation_received"
+    db.update("applications", app_id, {"submission_attempts": 1})
+    result = sync_gmail(gctx, service=fake_service("m-confirm-1"))
+    assert result.status_updates == 1
+    app = repo.get_application(db, app_id)
+    assert app["status"] == "confirmation_received" and app["confirmation_status"] == "email_confirmed"
+    event = db.query_one("SELECT * FROM application_events WHERE application_id = ? ORDER BY id DESC LIMIT 1",
+                         (app_id,))
+    assert event["actor"] == "email" and from_json(event["evidence"])["gmail_message_id"] == "m-confirm-1"
+    assert _email(db, "m-confirm-1")["requires_attention"] == 0
 
 
 def test_rejection_by_sender_domain(gctx, make_job):
     db = gctx.db
     job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health", title="Data Analyst",
-                      title_normalized="data analyst")
-    app_id = make_application(db, job_id, "submitted")
+                      title_normalized="data analyst", job_url="https://careers.umbrellahealth.com/jobs/77")
+    app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
     sync_gmail(gctx, service=fake_service("s-domain-reject-1"))
     assert repo.get_application(db, app_id)["status"] == "rejected"
     assoc = _assoc(db, _email(db, "s-domain-reject-1")["id"])[0]
@@ -155,8 +175,8 @@ def test_rejection_by_sender_domain(gctx, make_job):
 def test_thread_association_and_own_messages_ignored(gctx, make_job):
     db = gctx.db
     job_id = make_job(employer="Initech", employer_normalized="initech", title="Data Analyst",
-                      title_normalized="data analyst")
-    app_id = make_application(db, job_id, "submitted")
+                      title_normalized="data analyst", job_url="https://careers.initech.com/jobs/da-1")
+    app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
     result = sync_gmail(gctx, service=fake_service("s-thread-first", "s-thread-reply", "s-sent-1"))
     assert repo.get_application(db, app_id)["status"] == "interview_requested"
     assert result.status_updates == 1
@@ -174,14 +194,32 @@ def test_thread_association_and_own_messages_ignored(gctx, make_job):
 
 def test_disallowed_transition_is_skipped_and_recorded(gctx, make_job):
     db = gctx.db
-    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health")
-    app_id = make_application(db, job_id, "awaiting_approval")
+    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health",
+                      job_url="https://umbrellahealth.com/careers/1")
+    app_id = make_application(db, job_id, "withdrawn", submitted_at=SUBMITTED_AT)
     result = sync_gmail(gctx, service=fake_service("s-domain-reject-1"))
-    assert result.status_updates == 0
-    assert repo.get_application(db, app_id)["status"] == "awaiting_approval"
+    assert result.status_updates == 0 and result.errors == []
+    assert repo.get_application(db, app_id)["status"] == "withdrawn"
     audit = db.query_one("SELECT * FROM audit_events WHERE action = 'email_status_update_skipped'")
     assert audit is not None and audit["entity_id"] == str(app_id)
     assert "not an allowed transition" in from_json(audit["details"])["reason"]
+    email = _email(db, "s-domain-reject-1")
+    assert email["requires_attention"] == 1
+    review = db.query_one("SELECT * FROM audit_events WHERE action = 'email_status_needs_review'")
+    assert review["entity_id"] == str(email["id"])
+    assert "not an allowed transition" in from_json(review["details"])["reasons"][0]
+
+
+def test_never_submitted_application_is_not_changed_by_email(gctx, make_job):
+    db = gctx.db
+    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health",
+                      job_url="https://umbrellahealth.com/careers/1")
+    app_id = make_application(db, job_id, "awaiting_approval")
+    result = sync_gmail(gctx, service=fake_service("s-domain-reject-1"))
+    assert result.status_updates == 0 and result.errors == []
+    assert repo.get_application(db, app_id)["status"] == "awaiting_approval"
+    audit = db.query_one("SELECT * FROM audit_events WHERE action = 'email_status_update_skipped'")
+    assert "no record that this application was submitted" in from_json(audit["details"])["reason"]
     assert _email(db, "s-domain-reject-1")["requires_attention"] == 1
 
 

@@ -64,7 +64,7 @@ def test_gmail_sync_then_emails_commands(cli, home, monkeypatch, ctx, make_job):
     _enable_gmail(home)
     job_id = make_job(employer="Acme Analytics", employer_normalized="acme analytics",
                       job_url="https://boards.greenhouse.io/acmeanalytics/jobs/7")
-    app_id = make_application(ctx.db, job_id, "submitted")
+    app_id = make_application(ctx.db, job_id, "submitted", submitted_at="2026-10-01T00:00:00+00:00")
     app_uid = ctx.db.scalar("SELECT application_uid FROM applications WHERE id = ?", (app_id,))
     _patch_service(monkeypatch, fake_service())
 

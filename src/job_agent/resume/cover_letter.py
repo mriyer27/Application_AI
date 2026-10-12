@@ -1,10 +1,10 @@
-"""Cover letters: a deterministic template, plus an optional validated LLM draft.
+"""Cover letters: a deterministic template, plus an optional validated LLM body.
 
-Template structure (every sentence is either fixed wording, a profile value, the
-job's title/employer, or a verified fact):
+Template structure (every sentence is either fixed wording, a profile value, a
+title-like job title / employer slot, or a verified fact):
 
 1. "Dear Hiring Team,"
-2. Opening: the exact job title and employer, and the candidate's degree program
+2. Opening: the job title and employer, and the candidate's degree program
    with its (expected) graduation date verbatim from the profile.
 3. Two or three body sentences, each restating one selected verified fact and
    naming a requirement keyword that literally appears in the listing.
@@ -12,9 +12,21 @@ job's title/employer, or a verified fact):
    also mentions -- no knowledge about the company is invented.
 5. Closing, "Sincerely," and the profile name.
 
-An LLM draft (``job_agent.llm.generation.draft_cover_letter``) is used only if
-every sentence passes the deterministic checks; any failure => template.
-Cover letters are always ``needs_review``.
+The job title / employer come from the untrusted listing. They are used only
+when they look like a plain title / name (no sentence punctuation, no
+first-person words, no instructions, at most 12 words); otherwise the letter
+says "the advertised position" / "your organization" and a ``review`` issue is
+added. They are never a source for any claim.
+
+With the LLM (``job_agent.llm.generation.draft_cover_letter``), the opening,
+motivation and closing paragraphs stay the deterministic template. The draft
+may only supply body sentences: each must restate fact(s) the draft cites and
+pass ``validation.validate_claim`` against them (with the verified entry
+context such as "Student Intern, Example State Agency"). Every first-person
+sentence is a claim. Pure letter boilerplate ("Thank you for your time.") is
+dropped in favour of the template's own wording. Any other sentence, or any
+failure, means the whole template letter is used. Cover letters are always
+``needs_review``.
 """
 
 from __future__ import annotations
@@ -35,10 +47,13 @@ from job_agent.security.untrusted import clean_untrusted, injection_suspected
 GREETING = "Dear Hiring Team,"
 CLOSING = "Sincerely,"
 _MAX_BODY_FACTS = 3
+TITLE_FALLBACK = "the advertised position"
+EMPLOYER_FALLBACK = "your organization"
+MAX_SLOT_WORDS = 12
 
 
 def display_text(text: str | None, *, max_len: int) -> str:
-    """Untrusted single-line text (job title / employer) made safe to print in a letter."""
+    """Untrusted single-line text made safe to show (control/markup characters removed, truncated)."""
     cleaned = normalize_space(clean_untrusted(text or "", max_chars=max_len * 2))
     cleaned = re.sub(r"[<>{}\[\]\\`]", "", cleaned)
     if len(cleaned) > max_len:
@@ -46,6 +61,63 @@ def display_text(text: str | None, *, max_len: int) -> str:
     return cleaned
 
 
+# --------------------------------------------------------------------------- #
+# Title / employer slots (untrusted listing text)
+# --------------------------------------------------------------------------- #
+_SLOT_ABBREVIATIONS = frozenset(
+    "sr jr snr mgr assoc asst dir vp svp evp avp eng engr co inc ltd corp st dept intl bros llc plc no mt ft dr "
+    "univ natl".split())
+_SLOT_FIRST_PERSON = re.compile(
+    r"(?<![A-Za-z'’])(?:me|my|mine|myself|we|our|ours|ourselves|i['’](?:m|ve|d|ll)|im|ive)(?![A-Za-z'’])",
+    re.IGNORECASE)
+_SLOT_US = re.compile(r"(?<![A-Za-z])us(?![A-Za-z])")  # lower-case "us" only; "US" is a country
+_PRONOUN_I = re.compile(r"(?<![A-Za-z'’])I(?![A-Za-z'’])")
+
+
+def _slot(text: str | None, *, max_len: int) -> str | None:
+    """A title-like single line, or None when the text could carry a sentence / claim / instruction."""
+    cleaned = normalize_space(clean_untrusted(text or "", max_chars=max_len * 4))
+    cleaned = re.sub(r"[<>{}\[\]\\`]", "", cleaned).strip(" ,-–—|/")
+    if not cleaned or len(cleaned) > max_len:
+        return None
+    if re.search(r"[!?;:…\"“”]", cleaned) or validation._LINK.search(cleaned):
+        return None
+    for m in re.finditer(r"\.", cleaned):
+        before = re.search(r"([A-Za-z0-9]+)$", cleaned[: m.start()])
+        token = before.group(1) if before else ""
+        following = cleaned[m.end(): m.end() + 1]
+        if token.isdigit() and following.isdigit():  # "Web 2.0"
+            continue
+        if (len(token) == 1 and token.isalpha()) or token.lower() in _SLOT_ABBREVIATIONS:  # "U.S.", "Sr.", "Inc."
+            continue
+        return None
+    if len([t for t in cleaned.split() if re.search(r"[A-Za-z0-9]", t)]) > MAX_SLOT_WORDS:
+        return None
+    if _SLOT_FIRST_PERSON.search(cleaned) or _SLOT_US.search(cleaned):
+        return None
+    for m in _PRONOUN_I.finditer(cleaned):
+        rest = cleaned[m.end():]
+        if not rest.strip() or re.match(r"^\s*[-–—|/(),&]", rest):  # roman numeral level: "Analyst I"
+            continue
+        return None
+    if injection_suspected(cleaned):
+        return None
+    return cleaned
+
+
+def title_slot(job_title: str | None) -> str | None:
+    """The job title if it looks like a plain job title, else None (use ``TITLE_FALLBACK``)."""
+    return _slot(job_title, max_len=120)
+
+
+def employer_slot(employer: str | None) -> str | None:
+    """The employer if it looks like a plain organization name, else None (use ``EMPLOYER_FALLBACK``)."""
+    return _slot(employer, max_len=100)
+
+
+# --------------------------------------------------------------------------- #
+# Template
+# --------------------------------------------------------------------------- #
 def format_letter_date(on: date) -> str:
     return f"{on.strftime('%B')} {on.day}, {on.year}"
 
@@ -55,10 +127,11 @@ def _primary_education(profile: CandidateProfile) -> Education:
     return expected[0] if expected else profile.education[0]
 
 
-def opening_paragraph(profile: CandidateProfile, *, job_title: str, employer: str) -> str:
+def opening_paragraph(profile: CandidateProfile, *, job_title: str | None, employer: str | None) -> str:
+    position = f"the {job_title} position" if job_title else TITLE_FALLBACK
+    first = f"I am writing to apply for {position} at {employer or EMPLOYER_FALLBACK}."
     edu = _primary_education(profile)
     program = edu.degree + (f" in {edu.field}" if edu.field else "")
-    first = f"I am writing to apply for the {job_title} position at {employer}."
     if edu.expected:
         when = ""
         if edu.end:
@@ -139,21 +212,24 @@ def _pick_body_facts(profile: CandidateProfile, kw: JobKeywords) -> list[tuple[S
     return chosen
 
 
-def motivation_sentence(profile: CandidateProfile, kw: JobKeywords, job_title: str) -> str:
-    themes = [t for t in profile.preferences.preferred_themes if t.strip() and kw.mentions(t)]
+def motivation_sentence(profile: CandidateProfile, listing_text: str, job_title: str | None) -> str:
+    """Fixed motivation wording; names only preferred themes the listing literally mentions."""
+    role = f"the {job_title} role" if job_title else "this role"
+    themes = [t for t in profile.preferences.preferred_themes if t.strip() and mentions(listing_text, t)]
     if not themes:
-        return f"I would welcome the opportunity to bring this experience to the {job_title} role."
+        return f"I would welcome the opportunity to bring this experience to {role}."
     joined = themes[0] if len(themes) == 1 else ", ".join(themes[:-1]) + f" and {themes[-1]}"
     return (f"The listing's references to {joined} match the areas I most want to work in, "
-            f"and I would welcome the opportunity to bring this experience to the {job_title} role.")
+            f"and I would welcome the opportunity to bring this experience to {role}.")
 
 
 CLOSING_PARAGRAPH = ("Thank you for considering my application. I would welcome the opportunity to discuss how my "
                      "experience could contribute to your team.")
 
 
-def template_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_title: str, employer: str,
-                          on: date) -> tuple[CoverLetterContent, list[Claim], list[Issue]]:
+def template_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_title: str | None,
+                          employer: str | None, on: date) -> tuple[CoverLetterContent, list[Claim], list[Issue]]:
+    """The deterministic letter. ``job_title`` / ``employer`` must be slot values (or None for the fallback)."""
     issues: list[Issue] = []
     body_items = _pick_body_facts(profile, kw)
     if sum(1 for _, k in body_items if k) < 2:
@@ -175,11 +251,12 @@ def template_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_tit
     paragraphs = [opening]
     if body_sentences:
         paragraphs.append(" ".join(body_sentences))
-    paragraphs.append(motivation_sentence(profile, kw, job_title))
+    paragraphs.append(motivation_sentence(profile, kw.text, job_title))
     paragraphs.append(CLOSING_PARAGRAPH)
     content = CoverLetterContent(
-        header=build_header(profile), date_text=format_letter_date(on), employer=employer, job_title=job_title,
-        greeting=GREETING, paragraphs=paragraphs, closing=CLOSING, signature=profile.personal.full_name,
+        header=build_header(profile), date_text=format_letter_date(on), employer=employer or "",
+        job_title=job_title or "", greeting=GREETING, paragraphs=paragraphs, closing=CLOSING,
+        signature=profile.personal.full_name,
     )
     return content, claims, issues
 
@@ -187,85 +264,118 @@ def template_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_tit
 # --------------------------------------------------------------------------- #
 # LLM draft validation
 # --------------------------------------------------------------------------- #
-_CLAIM_VERB = re.compile(r"(?<![A-Za-z])I\s+(?:have\s+)?[a-z]+ed(?![A-Za-z])")
 _PROFICIENCY = re.compile(
     r"(?<![A-Za-z])(expert|expertise|proficient|proficiency|mastery|skilled|advanced|extensive|in-depth|deep|"
-    r"seasoned|veteran|specialist|fluent|years\s+of|track\s+record|proven)(?![A-Za-z])",
+    r"seasoned|veteran|specialist|fluent|years\s+of|track\s+record|proven|hands-on)(?![A-Za-z])",
     re.IGNORECASE,
 )
 _GREETING_RE = re.compile(r"^\s*(dear|hello|hi|to whom)\b", re.IGNORECASE)
+_GREETING_PREFIX = re.compile(r"^\s*(?:dear|hello|hi)\b[^,]{0,40},\s*", re.IGNORECASE)
 _SIGNOFF_RE = re.compile(r"^\s*(sincerely|best regards|regards|kind regards|thank you,|warm regards|respectfully)\b",
                          re.IGNORECASE)
+_FIRST_PERSON = re.compile(r"(?<![A-Za-z'’])(?:I|(?i:me|my|mine|myself))(?![A-Za-z])")
+#: Openers of letter boilerplate (no claim) that the template's own opening/closing replaces.
+_BOILERPLATE_START = re.compile(
+    r"^(?:I\s+am\s+writing\s+to\s+(?:apply|express|submit)|I['’]m\s+writing\s+to\s+(?:apply|express|submit)|"
+    r"I\s+(?:would|['’]d)\s+(?:welcome|appreciate|love|be\s+(?:glad|happy|delighted|grateful))|"
+    r"Thank\s+you|Thanks\s+(?:for|again)|I\s+look\s+forward|I\s+am\s+looking\s+forward|"
+    r"I\s+am\s+(?:excited|eager|pleased|happy|delighted|glad|grateful)\s+to\s+(?:apply|submit|be\s+considered|"
+    r"have\s+the\s+(?:opportunity|chance))|Please\s+(?:feel\s+free|let\s+me\s+know|consider)|I\s+appreciate\s+your)",
+    re.IGNORECASE,
+)
+BOILERPLATE_VOCABULARY = content_set(
+    """
+    write writing apply applying application express expressing interest interested position role job opening
+    opportunity opportunities thank thanks time consideration considering consider welcome discuss discussing
+    discussion contribute contributing contribution team look looking forward hear hearing excited eager pleased
+    happy delighted glad grateful submit submitting candidacy review reviewing attention appreciate chance speak
+    speaking talk talking conversation further learn learning more bring bringing experience background skills
+    qualifications fit
+    """
+)
+_CLAIM_MARKERS = (validation._CREDENTIAL, validation._LEADERSHIP, validation._BUILD_VERBS, validation._INFLATION,
+                  validation._DEGREE_WORDS, validation._GRADUATION, validation._PUFFERY, validation._LINK,
+                  validation._NUMBER_WORDS, _PROFICIENCY)
 
 
-def _is_claim_sentence(sentence: str) -> bool:
-    return bool(validation._NUM_RE.search(sentence) or lexicon.find_skills(sentence)
-                or validation._LEADERSHIP.search(sentence) or validation._CREDENTIAL.search(sentence)
-                or _CLAIM_VERB.search(sentence))
+def is_boilerplate(sentence: str, *, job_title: str | None, employer: str | None,
+                   profile: CandidateProfile) -> bool:
+    """Claim-free letter boilerplate ("Thank you for your time.") that the template wording replaces."""
+    text = _GREETING_PREFIX.sub("", normalize_space(sentence))
+    if not _BOILERPLATE_START.match(text):
+        return False
+    masked = validation._mask_phrases(text, [job_title or "", employer or "", profile.personal.full_name])
+    if re.search(r"\d", masked) or lexicon.find_skills(masked, ignore_case=True):
+        return False
+    if any(rx.search(masked) for rx in _CLAIM_MARKERS) or validation.work_authorization_terms(masked):
+        return False
+    tokens = re.findall(r"[A-Za-z][A-Za-z'’-]*", masked)
+    if any(t[:1].isupper() and t != "I" and not t.startswith(("I'", "I’")) for t in tokens[1:]):
+        return False  # a name, organization or other proper noun
+    return all(w in BOILERPLATE_VOCABULARY for w in content_words(masked))
 
 
 def validate_llm_draft(paragraphs: Sequence[str], fact_ids_used: Sequence[str], allowed_facts: Sequence[Fact],
-                       profile: CandidateProfile, kw: JobKeywords, *, job_title: str,
-                       employer: str) -> tuple[list[str], list[Claim], list[str]]:
+                       profile: CandidateProfile, kw: JobKeywords, *, job_title: str | None,
+                       employer: str | None) -> tuple[list[str], list[Claim], list[str]]:
     """Validate an LLM cover-letter draft sentence by sentence.
 
-    Returns ``(clean paragraphs, claims, problems)``; any problem means the
-    draft must not be used.
+    Returns ``(body paragraphs, claims, problems)``. Body paragraphs hold only
+    the sentences that restate cited facts and pass ``validate_claim`` (with
+    the verified entry context); boilerplate is dropped. Any problem means the
+    draft must not be used. ``job_title`` / ``employer`` are slot values (or
+    None); they are never a source for a claim.
     """
     problems: list[str] = []
     allowed = {f.id: f for f in allowed_facts}
     unknown = [fid for fid in fact_ids_used if fid not in allowed]
     if unknown:
         problems.append(f"draft cites fact ids that were not provided: {unknown}")
-    cited = [allowed[fid] for fid in fact_ids_used if fid in allowed]
+    cited = [allowed[fid] for fid in dict.fromkeys(fact_ids_used) if fid in allowed]
+    if not cited:
+        problems.append("draft cites no verified facts")
     paras = [normalize_space(p) for p in paragraphs if p and p.strip()]
     while paras and _GREETING_RE.match(paras[0]) and len(words(paras[0])) <= 6:
         paras.pop(0)
     while paras and (_SIGNOFF_RE.match(paras[-1]) or paras[-1] == profile.personal.full_name):
         paras.pop()
+    if not 1 <= len(paras) <= 6:
+        problems.append(f"expected 1-6 paragraphs, got {len(paras)}")
     total_words = sum(len(words(p)) for p in paras)
-    if not 2 <= len(paras) <= 6:
-        problems.append(f"expected 2-6 paragraphs, got {len(paras)}")
-    if not 80 <= total_words <= 450:
-        problems.append(f"letter length {total_words} words is outside 80-450")
-    if not cited:
-        problems.append("draft cites no verified facts")
+    if total_words > 450:
+        problems.append(f"letter length {total_words} words is over 450")
 
-    edu_text = "\n".join(f"{e.degree} {e.field or ''} {e.institution} {e.start or ''} {e.end or ''}"
-                         for e in profile.education)
-    profile_text = "\n".join([*validation.organizations(profile), *profile.skills, edu_text,
-                              *profile.preferences.preferred_themes, profile.personal.full_name,
-                              validation.credential_text(profile)])
-    context_text = "\n".join([job_title, employer, edu_text])
+    title, company = job_title or None, employer or None
+    body: list[str] = []
     claims: list[Claim] = []
     for para in paras:
+        kept: list[str] = []
         for sentence in split_sentences(para):
-            issues: list[Issue] = []
+            if is_boilerplate(sentence, job_title=title, employer=company, profile=profile):
+                continue
             mapped = [f for f in cited if _maps_to(sentence, f)]
-            source = "\n".join(f.text for f in (mapped or cited))
-            issues += validation.check_numbers(sentence, source, extra_sources=context_text)
-            issues += validation.check_skills(sentence, mapped or cited, profile, strict=False,
-                                              extra_allowed=[job_title, employer])
-            issues += validation.check_leadership(sentence, source + "\n" + job_title)
-            issues += validation.check_credentials(sentence, source, profile)
-            issues += validation.check_forbidden_content(sentence)
-            issues += validation.check_organizations(
-                sentence, source, profile, allowed_text="\n".join([profile_text, context_text, kw.text]))
-            issues += validation.check_company_claims(sentence, employer=employer, listing_text=kw.text,
-                                                      profile_text=profile_text + "\n" + source)
+            if not mapped:
+                kind = "first-person statement" if _FIRST_PERSON.search(sentence) else "sentence"
+                problems.append(f"'{sentence[:80]}': unsupported_claim: this {kind} restates no cited verified fact")
+                continue
+            issues = validation.validate_body_claim(sentence, mapped, profile, employer=company,
+                                                    listing_text=kw.text)
+            source = "\n".join(f.text for f in mapped)
             for m in sorted({m.group(0).lower() for m in _PROFICIENCY.finditer(sentence)}):
                 if not mentions(source, m):
                     issues.append(Issue(code="unverified_proficiency",
                                         message=f"'{m}' claims a proficiency level no verified fact states"))
-            if _is_claim_sentence(sentence) and not mapped and not _only_context(sentence,
-                                                                                 context_text + "\n" + kw.text):
-                issues.append(Issue(code="unsupported_claim", message="claim-bearing sentence matches no cited fact"))
             if issues:
                 problems.append(f"'{sentence[:80]}': " + "; ".join(validation.summarize(issues)))
-            elif mapped:
-                claims.append(Claim(text=sentence, fact_ids=[f.id for f in mapped], generator="llm",
-                                    section="cover_letter:body"))
-    return paras, claims, problems
+                continue
+            kept.append(sentence)
+            claims.append(Claim(text=sentence, fact_ids=[f.id for f in mapped], generator="llm",
+                                section="cover_letter:body"))
+        if kept:
+            body.append(" ".join(kept))
+    if not claims:
+        problems.append("the draft has no sentence that restates a cited verified fact")
+    return body, claims, problems
 
 
 def _maps_to(sentence: str, fact: Fact) -> bool:
@@ -279,26 +389,26 @@ def _maps_to(sentence: str, fact: Fact) -> bool:
     return bool(fact_numbers & {n[1] for n in validation._numbers(sentence)})
 
 
-def _only_context(sentence: str, allowed_text: str) -> bool:
-    """A sentence that only restates the listing / job title / education (e.g. the opening).
-
-    Every content word must come from ``allowed_text`` or neutral letter wording;
-    numbers, skills, proficiency and leadership words are checked separately.
-    """
-    allowed = content_set(allowed_text) | validation.LETTER_VOCABULARY
-    return all(w in allowed for w in content_words(sentence)) and not validation._LEADERSHIP.search(sentence)
-
-
 def build_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_title: str, employer: str, on: date,
                        drafter: Any = None, model_label: str | None = None) -> GeneratedCoverLetter:
-    """Template letter, or a validated LLM draft when ``drafter`` is given and its draft passes every check.
+    """Template letter, or the template with a validated LLM body when ``drafter`` is given and its draft passes.
 
     ``drafter(employer=, job_title=, job_highlights=, facts=, candidate_name=)`` returns an object with
     ``.paragraphs`` and ``.fact_ids_used``, or ``None`` when the LLM failed (the wrapper records the error).
     """
-    title = display_text(job_title, max_len=120) or "advertised"
-    company = display_text(employer, max_len=100) or "your organization"
+    title = title_slot(job_title)
+    company = employer_slot(employer)
     content, claims, issues = template_cover_letter(profile, kw, job_title=title, employer=company, on=on)
+    if title is None and normalize_space(job_title or ""):
+        issues.append(Issue(code="job_title_not_used", severity="review", document="cover_letter",
+                            message="The listing's job title does not look like a plain job title (sentence "
+                                    "punctuation, first-person words, instructions or more than "
+                                    f"{MAX_SLOT_WORDS} words), so the letter says '{TITLE_FALLBACK}'. "
+                                    "Check the listing and edit the letter if needed."))
+    if company is None and normalize_space(employer or ""):
+        issues.append(Issue(code="employer_not_used", severity="review", document="cover_letter",
+                            message="The listing's employer name does not look like a plain organization name, so "
+                                    f"the letter says '{EMPLOYER_FALLBACK}'. Check the listing."))
     if injection_suspected(job_title) or injection_suspected(employer):
         issues.append(Issue(code="listing_text_suspicious", severity="review", document="cover_letter",
                             message="The job title or employer name contains instruction-like text; check the "
@@ -310,20 +420,21 @@ def build_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_title:
                  if sf.fact not in facts]
         facts = (facts + extra)[:6]
         highlights = [display_text(r, max_len=200) for r in kw.requirements[:8] if not injection_suspected(r)]
-        draft = drafter(employer=company, job_title=title, job_highlights=highlights, facts=facts,
-                        candidate_name=profile.personal.full_name)
+        draft = drafter(employer=company or EMPLOYER_FALLBACK, job_title=title or TITLE_FALLBACK,
+                        job_highlights=highlights, facts=facts, candidate_name=profile.personal.full_name)
         if draft is None:
             problems = ["the local LLM was unavailable or returned an error"]
-            paras, llm_claims = [], []
+            body, llm_claims = [], []
         else:
-            paras, llm_claims, problems = validate_llm_draft(
+            body, llm_claims, problems = validate_llm_draft(
                 [str(p) for p in (getattr(draft, "paragraphs", None) or [])],
                 [str(f) for f in (getattr(draft, "fact_ids_used", None) or [])],
                 facts, profile, kw, job_title=title, employer=company)
         if not problems:
             label = f"llm:{model_label}" if model_label else "llm"
-            content = content.model_copy(update={"paragraphs": paras})
-            claims = [c.model_copy(update={"generator": label}) for c in llm_claims]
+            opening, fixed_tail = content.paragraphs[0], content.paragraphs[-2:]
+            content = content.model_copy(update={"paragraphs": [opening, *body, *fixed_tail]})
+            claims = [claims[0], *(c.model_copy(update={"generator": label}) for c in llm_claims)]
             generator = label
             issues = [i for i in issues if i.code != "few_listing_matches"]
         else:

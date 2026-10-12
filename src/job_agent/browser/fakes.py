@@ -19,7 +19,19 @@ from job_agent.browser.forms import FALSY, TEXT_TYPES, TRUTHY, FormField, Submit
 from job_agent.browser.policy import NavigationPolicy
 from job_agent.browser.session import BrowserOptions, ensure_no_challenge
 
-OUTCOMES = {"confirm", "validation", "hang", "challenge", "offhost"}
+#: confirm: a thank-you page; validation: the form shows errors; hang: nothing changes;
+#: challenge: a CAPTCHA appears; offhost: the page navigates off the policy;
+#: review: a "review your application - nothing has been sent yet" step;
+#: screening: "before your application is submitted, answer..." plus a validation error.
+OUTCOMES = {"confirm", "validation", "hang", "challenge", "offhost", "review", "screening"}
+
+_AFTER_SUBMIT_PAGES = {
+    "review": ("/apply/confirm", "Review your application",
+               "Review your application. Nothing has been sent yet. Check your answers, then confirm."),
+    "screening": ("/apply/screening", "Screening questions",
+                  "Thank you for your application. Before your application is submitted, answer the screening "
+                  "questions below."),
+}
 
 
 @dataclass
@@ -53,6 +65,7 @@ class FakePage:
         self._url = url
         self.values: dict[str, str] = {}
         self.submitted = False
+        self.armed = False
 
     @property
     def url(self) -> str:
@@ -60,14 +73,21 @@ class FakePage:
 
     def snapshot(self) -> PageSnapshot:
         f = self.form
+        base = self._url.split("?")[0].rsplit("/", 1)[0]
         if self.submitted and f.outcome == "confirm":
-            return PageSnapshot(url=self._url.split("?")[0].rsplit("/", 1)[0] + "/thank-you", title="Thanks",
-                                text="Thank you for applying! Your application has been received.", status=200)
+            text = "Thank you for applying! Your application has been received."
+            return PageSnapshot(url=base + "/thank-you", title="Thanks", text=text, main_text=text, status=200)
+        if self.submitted and f.outcome in _AFTER_SUBMIT_PAGES:
+            path, title, text = _AFTER_SUBMIT_PAGES[f.outcome]
+            controls = ("screening_q1",) if f.outcome == "screening" else ()
+            return PageSnapshot(url=base + path, title=title, text=text, main_text=text, status=200,
+                                form_control_count=len(controls), visible_controls=controls)
         markers = f.markers + ((".g-recaptcha",) if self.submitted and f.outcome == "challenge" else ())
-        return PageSnapshot(url=self._url, title=f.title, text=f.text, iframe_srcs=f.iframe_srcs,
+        controls = tuple(dict.fromkeys(fld.name or fld.key for fld in f.fields if fld.visible))
+        return PageSnapshot(url=self._url, title=f.title, text=f.text, main_text=f.text, iframe_srcs=f.iframe_srcs,
                             script_srcs=f.script_srcs, markers=markers,
                             visible_password_fields=f.visible_password_fields,
-                            form_control_count=len(f.fields), status=f.status)
+                            form_control_count=len(f.fields), status=f.status, visible_controls=controls)
 
     def inspect_form(self) -> list[FormField]:
         self.check_navigation()
@@ -108,6 +128,10 @@ class FakePage:
     def validation_errors(self, *, include_constraints: bool = False) -> list[str]:
         if self.submitted and self.form.outcome == "validation":
             return list(self.form.validation_errors_after)
+        if self.submitted and self.form.outcome == "screening":
+            return ["Please answer this question"]
+        if self.submitted and self.form.outcome in {"confirm", "review"}:
+            return []
         return list(self.form.validation_errors_before)
 
     def screenshot(self, path: Path) -> Path | None:
@@ -121,9 +145,13 @@ class FakePage:
 
     def click_submit(self, control: SubmitControl) -> None:
         self.check_navigation()
+        self.armed = True
         self.submitted = True
         self.browser.submissions += 1
         self.browser.submitted_values.append(dict(self.values))
+
+    def disarm(self) -> None:
+        self.armed = False
 
     def check_navigation(self) -> None:
         if self.submitted and self.form.outcome == "offhost":

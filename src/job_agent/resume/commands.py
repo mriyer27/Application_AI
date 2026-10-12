@@ -1,4 +1,9 @@
-"""CLI: ``prepare <job-uid>`` and ``documents list|approve|reject``."""
+"""CLI: ``prepare <job-uid>`` and ``documents list|approve|reject``.
+
+Every value derived from a listing, the LLM or stored data is passed through
+``rich.markup.escape`` so text such as ``[red]`` or ``[/]`` in a job title or
+an LLM rewording is printed literally (and cannot break the output).
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ def prepare_cmd(
     no_cover_letter: bool = typer.Option(False, "--no-cover-letter", help="Generate the résumé only."),
 ) -> None:
     """Generate a tailored, fact-checked résumé (and cover letter) for one job."""
+    from rich.markup import escape
     from rich.table import Table
 
     from job_agent.cli import console, fail, get_ctx
@@ -31,14 +37,14 @@ def prepare_cmd(
         fail(exc)
         return
 
-    files = Table(title=f"Documents for {result.job_uid} (application status: {result.application_status.value})",
-                  header_style="bold")
+    files = Table(title=escape(f"Documents for {result.job_uid} "
+                               f"(application status: {result.application_status.value})"), header_style="bold")
     for col in ("ID", "Document", "Version", "Format", "Status"):
         files.add_column(col, no_wrap=True)
     files.add_column("File (under documents/)", overflow="fold")
     for d in result.resume + result.cover_letter:
-        files.add_row(str(d.id), d.doc_type.value, str(d.version), d.format,
-                      f"[{_STATUS_STYLE.get(d.status.value, 'white')}]{d.status.value}[/]", d.relative_path)
+        files.add_row(str(d.id), escape(d.doc_type.value), str(d.version), escape(d.format),
+                      _styled(d.status.value, _STATUS_STYLE), escape(d.relative_path))
     console.print(files)
 
     bullets = Table(title="Résumé bullets and their verified source facts", header_style="bold")
@@ -49,7 +55,7 @@ def prepare_cmd(
     for c in result.claims:
         if c.section.startswith("cover_letter"):
             continue
-        bullets.add_row(c.section, c.text, ", ".join(c.fact_ids), c.generator)
+        bullets.add_row(escape(c.section), escape(c.text), escape(", ".join(c.fact_ids)), escape(c.generator))
     console.print(bullets)
 
     if result.issues:
@@ -58,15 +64,16 @@ def prepare_cmd(
             issues.add_column(col, no_wrap=True)
         issues.add_column("Message", overflow="fold")
         for i in result.issues:
-            issues.add_row(i.document or "", f"[{_SEVERITY_STYLE.get(i.severity, 'white')}]{i.severity}[/]",
-                           i.code, i.message)
+            issues.add_row(escape(i.document or ""), _styled(i.severity, _SEVERITY_STYLE), escape(i.code),
+                           escape(i.message))
         console.print(issues)
-    console.print(f"[bold]Overall:[/bold] {result.status.value}")
-    console.print(f"[bold]Next step:[/bold] {result.next_step}")
+    console.print(f"[bold]Overall:[/bold] {escape(result.status.value)}")
+    console.print(f"[bold]Next step:[/bold] {escape(result.next_step)}")
 
 
 def documents_list(job_uid: str = typer.Argument(..., help="Job id (job_uid or numeric id).")) -> None:
     """List generated document versions for a job."""
+    from rich.markup import escape
     from rich.table import Table
 
     from job_agent.cli import console, fail, get_ctx
@@ -80,22 +87,32 @@ def documents_list(job_uid: str = typer.Argument(..., help="Job id (job_uid or n
         return
     docs = list_documents(ctx.db, int(job["id"]))
     if not docs:
-        console.print(f"No documents yet for {job['job_uid']}. Run `job-agent prepare {job['job_uid']}`.")
+        uid = escape(str(job["job_uid"]))
+        console.print(f"No documents yet for {uid}. Run `job-agent prepare {uid}`.")
         return
-    table = Table(title=f"Documents for {job['job_uid']} - {job['employer']} / {job['title']}", header_style="bold")
+    table = Table(title=escape(f"Documents for {job['job_uid']} - {job['employer']} / {job['title']}"),
+                  header_style="bold")
     for col in ("ID", "Document", "Version", "Format", "Status"):
         table.add_column(col, no_wrap=True)
     for col in ("Generator", "Issues", "Created (UTC)", "File"):
         table.add_column(col, overflow="fold")
     for d in docs:
         n_issues = sum(1 for i in d.validation_issues if i.get("severity") in {"error", "review"})
-        table.add_row(str(d.id), d.doc_type.value, str(d.version), d.format,
-                      f"[{_STATUS_STYLE.get(d.status.value, 'white')}]{d.status.value}[/]", d.generator,
-                      str(n_issues), d.created_at, d.relative_path)
+        table.add_row(str(d.id), escape(d.doc_type.value), str(d.version), escape(d.format),
+                      _styled(d.status.value, _STATUS_STYLE), escape(d.generator), str(n_issues),
+                      escape(d.created_at), escape(d.relative_path))
     console.print(table)
 
 
+def _styled(value: str, styles: dict[str, str]) -> str:
+    from rich.markup import escape
+
+    return f"[{styles.get(value, 'white')}]{escape(value)}[/]"
+
+
 def _review(document_id: int, status: str, note: str | None) -> None:
+    from rich.markup import escape
+
     from job_agent.cli import console, fail, get_ctx
     from job_agent.resume.service import set_document_status
 
@@ -106,7 +123,8 @@ def _review(document_id: int, status: str, note: str | None) -> None:
         fail(exc)
         return
     for r in records:
-        console.print(f"{r.doc_type.value} v{r.version} ({r.format}, id {r.id}): [bold]{r.status.value}[/bold]")
+        console.print(escape(f"{r.doc_type.value} v{r.version} ({r.format}, id {r.id}): ")
+                      + f"[bold]{escape(r.status.value)}[/bold]")
 
 
 def documents_approve(

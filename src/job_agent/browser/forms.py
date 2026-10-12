@@ -12,7 +12,11 @@ Heuristics (documented limitations):
 * invisible controls are skipped (honeypots), except file inputs and styled
   radios/checkboxes whose label is visible; invisible *required* controls are
   reported with ``visible=False`` so they are routed to you;
-* password fields are never inspected or filled.
+* password fields are never inspected or filled;
+* the submit control must be labelled exactly "Submit application", "Submit",
+  "Apply" or "Send application" (case-insensitive); a page whose only button
+  is e.g. "Continue" / "Next" / "Review" is a multi-step wizard this tool does
+  not drive, so no control is returned and the submission goes to you.
 """
 
 from __future__ import annotations
@@ -133,9 +137,24 @@ _SNAPSHOT_JS = "(markers) => {" + _COMMON_JS + r"""
   const found = markers.filter(sel => { try { return !!document.querySelector(sel); } catch (e) { return false; } });
   const pw = Array.from(document.querySelectorAll('input[type="password"]')).filter(vis).length;
   const controls = document.querySelectorAll('input:not([type="hidden"]), select, textarea').length;
+  const chrome = 'header, nav, footer, [role="banner"], [role="navigation"], [role="contentinfo"]';
+  const mainEl = Array.from(document.querySelectorAll('main, [role="main"]')).find(vis);
+  let mainText = mainEl ? (mainEl.innerText || '') : text;
+  if (!mainEl) {
+    for (const el of document.querySelectorAll(chrome)) {
+      const t = (el.innerText || '').trim();
+      if (t && !el.querySelector('form, input, select, textarea')) mainText = mainText.replace(t, ' ');
+    }
+  }
+  const skip = ['hidden', 'submit', 'button', 'reset', 'image', 'search'];
+  const visibleControls = Array.from(document.querySelectorAll('input, select, textarea'))
+      .filter(el => !(el.tagName === 'INPUT' && skip.includes((el.getAttribute('type') || 'text').toLowerCase())))
+      .filter(el => !el.closest('[role="search"]') && !el.closest(chrome) && vis(el))
+      .map(el => el.getAttribute('name') || el.id || '').filter(Boolean);
   return {url: location.href, title: document.title || '', text: text.slice(0, 20000),
           iframe_srcs: iframes.slice(0, 50), script_srcs: scripts.slice(0, 300), markers: found,
-          visible_password_fields: pw, form_control_count: controls};
+          visible_password_fields: pw, form_control_count: controls, main_text: mainText.slice(0, 20000),
+          visible_controls: Array.from(new Set(visibleControls)).slice(0, 300)};
 }"""
 
 _INSPECT_JS = "() => {" + _COMMON_JS + r"""
@@ -289,7 +308,12 @@ _VALIDATION_JS = "(includeConstraints) => {" + _COMMON_JS + r"""
   return out.slice(0, 50);
 }"""
 
+#: Labels accepted for the final submit control (exact, case-insensitive; trailing punctuation/arrow allowed).
+SUBMIT_LABEL_RE = re.compile(r"^\s*(?:submit(?: application)?|apply|send application)\s*[.!>\u203a\u00bb\u2192]*\s*$",
+                             re.I)
+
 _SUBMIT_JS = "() => {" + _COMMON_JS + r"""
+  const SUBMIT_LABEL = /^\s*(?:submit(?: application)?|apply|send application)\s*[.!>\u203a\u00bb\u2192]*\s*$/i;
   const root = chooseRoot();
   const scope = root === document ? document : root;
   const cands = Array.from(scope.querySelectorAll('button, input[type="submit"], [role="button"]'))
@@ -297,9 +321,9 @@ _SUBMIT_JS = "() => {" + _COMMON_JS + r"""
   const label = (el) => clean(el.innerText || el.value || el.getAttribute('aria-label') || '');
   const isSubmit = (el) => (el.tagName === 'INPUT' && el.type === 'submit')
       || (el.tagName === 'BUTTON' && (el.getAttribute('type') || 'submit').toLowerCase() === 'submit' && root !== document);
-  let pick = cands.find(el => isSubmit(el) && /submit|apply|send/i.test(label(el)))
-      || cands.find(el => /^\s*(submit( application)?|apply( now)?|send application)\s*$/i.test(label(el)))
-      || cands.find(isSubmit);
+  // Only an explicitly labelled final-submit control; never "any submit button" (wizards: Continue / Next).
+  const finalLabel = (el) => SUBMIT_LABEL.test(label(el));
+  const pick = cands.find(el => isSubmit(el) && finalLabel(el)) || cands.find(finalLabel);
   if (!pick) return null;
   const form = pick.form || (root !== document ? root : null);
   const id = pick.id && document.querySelectorAll(`[id="${q(pick.id)}"]`).length === 1 ? pick.id : null;
@@ -329,6 +353,8 @@ def take_snapshot(page: "Page", status: int | None = None) -> PageSnapshot:
         visible_password_fields=int(raw.get("visible_password_fields") or 0),
         form_control_count=int(raw.get("form_control_count") or 0),
         status=status,
+        main_text=str(raw.get("main_text") or ""),
+        visible_controls=tuple(str(x) for x in (raw.get("visible_controls") or ())),
     )
 
 
@@ -392,9 +418,15 @@ def visible_validation_errors(page: "Page", *, include_constraints: bool = False
     return [str(x) for x in (page.evaluate(_VALIDATION_JS, include_constraints) or [])]
 
 
+def is_final_submit_label(text: str | None) -> bool:
+    """Is ``text`` one of the accepted final-submit labels (see ``SUBMIT_LABEL_RE``)?"""
+    return bool(SUBMIT_LABEL_RE.match(" ".join((text or "").split())))
+
+
 def find_submit_control(page: "Page") -> SubmitControl | None:
+    """The form's explicitly labelled final submit control, or None (wizard / unsupported form)."""
     raw = page.evaluate(_SUBMIT_JS)
-    if not raw:
+    if not raw or not is_final_submit_label(str(raw.get("text") or "")):
         return None
     return SubmitControl(locator=str(raw["locator"]), text=str(raw.get("text") or ""),
                          form_action=raw.get("form_action"), form_method=raw.get("form_method"))
@@ -518,7 +550,8 @@ def snapshot_from_dict(data: dict[str, Any]) -> PageSnapshot:
 
 __all__ = [
     "CHOICE_TYPES", "TEXT_TYPES", "FieldOption", "FormField", "SubmitControl", "attach_file", "build_fields",
-    "clean_label", "fill_field", "find_submit_control", "inspect_form", "match_option", "norm",
+    "SUBMIT_LABEL_RE", "clean_label", "fill_field", "find_submit_control", "inspect_form", "is_final_submit_label",
+    "match_option", "norm",
     "read_field_value", "snapshot_from_dict", "take_snapshot", "value_matches", "visible_validation_errors",
 ]
 

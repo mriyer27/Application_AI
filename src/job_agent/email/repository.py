@@ -11,6 +11,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from job_agent.database import Database
+from job_agent.database.connection import from_json
 from job_agent.utils.time import utcnow_iso
 
 SNIPPET_MAX = 200
@@ -141,3 +142,25 @@ def association_targets(db: Database) -> list[sqlite3.Row]:
         "FROM jobs j LEFT JOIN applications a ON a.job_id = j.id "
         "WHERE (a.id IS NOT NULL AND a.status != 'closed') OR (a.id IS NULL AND j.pipeline_state = 'shortlisted')"
     )
+
+
+def confirmed_sender_domains(db: Database) -> list[sqlite3.Row]:
+    """Sender domains of emails you linked to a job yourself, with that job's employer."""
+    return db.query_all(
+        "SELECT DISTINCT em.from_domain, j.employer FROM email_associations ea "
+        "JOIN email_messages em ON em.id = ea.email_id JOIN jobs j ON j.id = ea.job_id "
+        "WHERE ea.confirmed_by_user = 1 AND em.from_domain IS NOT NULL"
+    )
+
+
+def last_review_reasons(db: Database, email_id: int) -> list[str]:
+    """Why the most recent automatic status update for this email was withheld (empty if none recorded)."""
+    row = db.query_one(
+        "SELECT details FROM audit_events WHERE action = 'email_status_needs_review' AND entity_type = 'email' "
+        "AND entity_id = ? ORDER BY id DESC LIMIT 1",
+        (str(email_id),),
+    )
+    if row is None:
+        return []
+    details = from_json(row["details"]) or {}
+    return [str(r) for r in details.get("reasons") or []]
