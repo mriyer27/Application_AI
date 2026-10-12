@@ -107,7 +107,8 @@ def _check_profile(ctx: "AppContext") -> list[Check]:
 def _check_secrets(ctx: "AppContext") -> Check:
     s = ctx.secrets
     missing = [n for n, v in (("JOB_AGENT_DASHBOARD_USERNAME", s.dashboard_username),
-                              ("JOB_AGENT_DASHBOARD_PASSWORD_HASH", s.dashboard_password_hash)) if not v]
+                              ("JOB_AGENT_DASHBOARD_PASSWORD_HASH", s.dashboard_password_hash),
+                              ("JOB_AGENT_SESSION_SECRET", s.session_secret)) if not v]
     env_file = ctx.config.home / ".env"
     if env_file.exists() and os.name == "posix" and (env_file.stat().st_mode & 0o077):
         return Check("secrets", WARN, ".env is readable by other users", "Run: chmod 600 .env")

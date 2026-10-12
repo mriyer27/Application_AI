@@ -55,4 +55,4 @@ markers = [
     "browser: test launches a real local browser via Playwright",
     "ollama: test requires a running local Ollama server",
 ]
-filterwarnings = ["ignore::DeprecationWarning:google.*"]
+filterwarnings = ["ignore::DeprecationWarning:google.*", "ignore::DeprecationWarning:starlette.*"]
