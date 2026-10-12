@@ -804,6 +804,35 @@ def mark_submitted(ctx: "AppContext", application_ref: str | int, *, note: str |
     return previous
 
 
+#: Statuses you can set yourself to record or correct an outcome (e.g. an email
+#: was linked to the wrong application). The state machine decides which moves
+#: are valid from the current status.
+USER_SETTABLE_STATUSES: frozenset[PipelineState] = frozenset(
+    {S.SUBMITTED, S.CONFIRMATION_RECEIVED, S.ASSESSMENT_RECEIVED, S.INTERVIEW_REQUESTED,
+     S.INTERVIEW_SCHEDULED, S.REJECTED, S.OFFER_RECEIVED, S.CLOSED}
+)
+
+
+def set_status(ctx: "AppContext", application_ref: str | int, status: PipelineState | str, *,
+               note: str | None = None) -> PipelineState:
+    """Record or correct an application outcome yourself (actor "user"). Returns the previous state."""
+    target = PipelineState(status)
+    if target not in USER_SETTABLE_STATUSES:
+        allowed = ", ".join(sorted(s.value for s in USER_SETTABLE_STATUSES))
+        raise PermanentError(f"status {target.value!r} cannot be set by hand; choose one of: {allowed}")
+    db = ctx.db
+    app = arepo.resolve_application(db, application_ref)
+    app_id = int(app["id"])
+    with db.transaction():
+        previous = repo.transition_application(db, app_id, target, actor="user",
+                                               details={"note": note, "method": "set by you"},
+                                               next_action=f"{target.value.replace('_', ' ').capitalize()} "
+                                                           "(set by you)")
+        if target in {S.SUBMITTED, S.CLOSED}:
+            _reject_live_approvals(db, app_id, f"application marked {target.value} by you")
+    return previous
+
+
 def withdraw(ctx: "AppContext", application_ref: str | int, *, note: str | None = None) -> PipelineState:
     db = ctx.db
     app = arepo.resolve_application(db, application_ref)

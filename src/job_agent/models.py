@@ -206,6 +206,21 @@ ALLOWED_TRANSITIONS: dict[PipelineState, frozenset[PipelineState]] = {
     _S.CLOSED: frozenset(),
 }
 
+#: Corrections between post-submission outcomes (e.g. an email wrongly marked an
+#: application "rejected"). Only the user may make these.
+_POST_SUBMIT_STATES = frozenset(
+    {_S.SUBMITTED, _S.CONFIRMATION_RECEIVED, _S.ASSESSMENT_RECEIVED, _S.INTERVIEW_REQUESTED,
+     _S.INTERVIEW_SCHEDULED, _S.REJECTED, _S.OFFER_RECEIVED}
+)
+USER_CORRECTIONS: frozenset[tuple[PipelineState, PipelineState]] = frozenset(
+    (a, b) for a in _POST_SUBMIT_STATES for b in _POST_SUBMIT_STATES
+    if a != b and b not in ALLOWED_TRANSITIONS[a]
+)
+ALLOWED_TRANSITIONS = {
+    state: targets | frozenset(b for a, b in USER_CORRECTIONS if a == state)
+    for state, targets in ALLOWED_TRANSITIONS.items()
+}
+
 #: Transitions that only a human (actor == "user") may perform without
 #: machine-verified evidence.
 USER_ONLY_WITHOUT_EVIDENCE: frozenset[tuple[PipelineState, PipelineState]] = frozenset(

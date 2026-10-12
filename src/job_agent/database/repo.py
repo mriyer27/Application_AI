@@ -26,6 +26,7 @@ from job_agent.models import (
     ApprovalStatus,
     ApprovalType,
     ErrorKind,
+    USER_CORRECTIONS,
     PipelineState,
     RunStatus,
 )
@@ -371,6 +372,20 @@ def _add_event(db: Database, application_id: int, event_type: str, from_status: 
     )
 
 
+#: Required keys per machine evidence type (anything else is not credible evidence).
+_EVIDENCE_KEYS: dict[str, tuple[str, ...]] = {
+    "page": ("url", "matched_text"),
+    "email": ("gmail_message_id",),
+}
+
+
+def _valid_evidence(evidence: dict[str, Any] | None) -> bool:
+    if not isinstance(evidence, dict):
+        return False
+    keys = _EVIDENCE_KEYS.get(str(evidence.get("type", "")))
+    return bool(keys) and all(evidence.get(k) for k in keys)
+
+
 def add_application_event(db: Database, application_id: int, event_type: str, *, actor: str,
                           details: dict[str, Any] | None = None, evidence: dict[str, Any] | None = None) -> int:
     with db.transaction():
@@ -412,8 +427,16 @@ def transition_application(db: Database, application_id: int, target: PipelineSt
             raise InvalidTransition(f"application {application_id}: {current} -> {target} is not allowed")
         if (current, target) in USER_ONLY_WITHOUT_EVIDENCE and actor != "user":
             raise InvalidTransition(f"{current} -> {target} may only be recorded by the user")
-        if target in EVIDENCE_REQUIRED and actor != "user" and not evidence:
-            raise InvalidTransition(f"-> {target} requires evidence (e.g. confirmation page or email)")
+        if (current, target) in USER_CORRECTIONS and actor != "user":
+            raise InvalidTransition(f"{current} -> {target} is a correction only the user may make")
+        if target in EVIDENCE_REQUIRED and actor != "user" and not _valid_evidence(evidence):
+            raise InvalidTransition(
+                f"-> {target} requires evidence: {{'type': 'page', 'url', 'matched_text'}} or "
+                "{'type': 'email', 'gmail_message_id'}")
+        if (current == PipelineState.NEEDS_MANUAL_ACTION and target == PipelineState.CONFIRMATION_RECEIVED
+                and actor != "user" and int(row["submission_attempts"] or 0) == 0):
+            raise InvalidTransition("a confirmation can only resolve an application whose submission was "
+                                    "attempted; this one was never submitted")
         if target == PipelineState.SUBMISSION_ATTEMPTED:
             if not approval_uid or approved_payload is None:
                 raise ApprovalError("submission requires an approved approval request and its payload")

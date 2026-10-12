@@ -14,7 +14,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from job_agent.errors import JobAgentError
+from job_agent.errors import JobAgentError, PermanentError
 
 approvals_app = typer.Typer(help="Review and decide pending approvals (nothing is submitted without one).",
                             invoke_without_command=True)
@@ -386,6 +386,28 @@ def applications_mark_submitted(
         fail(exc)
         return
     console.print(f"[green]{_e(application_uid)} marked submitted[/green] (was {_e(previous.value)}).")
+
+
+@applications_app.command("set-status")
+def applications_set_status(
+    application_uid: str = typer.Argument(..., help="Application id (A-...)."),
+    status: str = typer.Argument(..., help="submitted | confirmation_received | assessment_received | "
+                                           "interview_requested | interview_scheduled | rejected | "
+                                           "offer_received | closed"),
+    note: Optional[str] = typer.Option(None, "--note", help="Why (e.g. 'rejection email was for another role')."),
+) -> None:
+    """Record or correct an outcome yourself (e.g. undo a status an email set wrongly)."""
+    from job_agent.applications.service import set_status
+    from job_agent.cli import console, fail, get_ctx
+
+    try:
+        previous = set_status(get_ctx(), application_uid, status.strip().lower(), note=note)
+    except (JobAgentError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            exc = PermanentError(f"unknown status {status!r}")
+        fail(exc)
+        return
+    console.print(f"[green]{_e(application_uid)} set to {_e(status)}[/green] (was {_e(previous.value)}).")
 
 
 @applications_app.command("submit")

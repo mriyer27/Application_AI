@@ -269,3 +269,47 @@ def test_pause_resume_audited(db):
     repo.set_paused(db, False, actor="cli")
     assert not repo.is_paused(db)
     assert db.scalar("SELECT COUNT(*) FROM audit_events WHERE action LIKE 'automation_%'") == 2
+
+
+# ---------------- review findings: evidence & corrections ---------------- #
+def _submitted_app(db, make_job, actor="user"):
+    app_id = repo.create_application(db, make_job(), actor="system")
+    repo.transition_application(db, app_id, S.DOCUMENTS_READY, actor="system")
+    repo.transition_application(db, app_id, S.SUBMITTED, actor="user", details={"note": "applied"})
+    return app_id
+
+
+@pytest.mark.parametrize("evidence", [None, {}, {"junk": True}, {"type": "page"}, {"type": "email"},
+                                      {"type": "rumor", "url": "x"}, {"type": "page", "url": "https://x"}])
+def test_machine_outcomes_require_well_formed_evidence(db, make_job, evidence):
+    app_id = _submitted_app(db, make_job)
+    with pytest.raises(InvalidTransition, match="requires evidence"):
+        repo.transition_application(db, app_id, S.REJECTED, actor="email", evidence=evidence)
+
+
+def test_well_formed_email_evidence_accepted(db, make_job):
+    app_id = _submitted_app(db, make_job)
+    repo.transition_application(db, app_id, S.REJECTED, actor="email",
+                                evidence={"type": "email", "gmail_message_id": "m1", "subject": "Update"})
+    assert repo.get_application(db, app_id)["status"] == "rejected"
+
+
+def test_confirmation_cannot_resolve_never_submitted_application(db, make_job):
+    app_id = repo.create_application(db, make_job(), actor="system")
+    repo.transition_application(db, app_id, S.NEEDS_MANUAL_ACTION, actor="system")  # e.g. CAPTCHA, never submitted
+    with pytest.raises(InvalidTransition, match="never submitted"):
+        repo.transition_application(db, app_id, S.CONFIRMATION_RECEIVED, actor="email",
+                                    evidence={"type": "email", "gmail_message_id": "m2"})
+    row = repo.get_application(db, app_id)
+    assert row["status"] == "needs_manual_action" and row["submitted_at"] is None
+
+
+def test_wrong_rejection_can_be_corrected_by_user_only(db, make_job):
+    app_id = _submitted_app(db, make_job)
+    repo.transition_application(db, app_id, S.REJECTED, actor="email",
+                                evidence={"type": "email", "gmail_message_id": "m3"})
+    with pytest.raises(InvalidTransition, match="only the user"):
+        repo.transition_application(db, app_id, S.SUBMITTED, actor="email",
+                                    evidence={"type": "email", "gmail_message_id": "m4"})
+    repo.transition_application(db, app_id, S.SUBMITTED, actor="user", details={"note": "wrong role"})
+    assert repo.get_application(db, app_id)["status"] == "submitted"

@@ -159,3 +159,43 @@ def test_generic_approval_show_and_approve(cli, ctx):
     assert repo.get_approval(ctx.db, uid)["status"] == "approved"
     missing = cli("approvals", "show", "AP-nope")
     assert missing.exit_code == 1 and "not found" in missing.output
+
+
+def test_set_status_corrects_a_wrong_email_rejection(home):
+    """Integration finding: an email could reject the wrong application with no way to undo it."""
+    import typer
+    from typer.testing import CliRunner
+
+    from job_agent.applications.commands import register
+    from job_agent.cli import state
+    from job_agent.context import AppContext
+    from job_agent.database import repo
+    from job_agent.models import PipelineState as S
+    from job_agent.utils.time import utcnow_iso
+
+    ctx = AppContext.load()
+    now = utcnow_iso()
+    job_id = ctx.db.insert("jobs", {
+        "job_uid": "J-corr000001", "source_name": "fixture", "source_identifier": "t", "external_id": "c1",
+        "employer": "Acme", "employer_normalized": "acme", "title": "Business Analyst",
+        "title_normalized": "business analyst", "description_hash": "h", "content_hash": "c",
+        "discovered_at": now, "last_checked_at": now, "last_changed_at": now, "created_at": now, "updated_at": now})
+    app_id = repo.create_application(ctx.db, job_id, actor="system")
+    repo.transition_application(ctx.db, app_id, S.DOCUMENTS_READY, actor="system")
+    repo.transition_application(ctx.db, app_id, S.SUBMITTED, actor="user")
+    repo.transition_application(ctx.db, app_id, S.REJECTED, actor="email",
+                                evidence={"type": "email", "gmail_message_id": "x1"})
+    uid = repo.get_application(ctx.db, app_id)["application_uid"]
+    ctx.close()
+
+    app = typer.Typer()
+    register(app)
+    state._ctx = None
+    runner = CliRunner()
+    bad = runner.invoke(app, ["applications", "set-status", uid, "in_progress"])
+    assert bad.exit_code != 0
+    ok = runner.invoke(app, ["applications", "set-status", uid, "submitted", "--note", "email was for another role"])
+    assert ok.exit_code == 0, ok.output
+    ctx = AppContext.load()
+    assert repo.get_application(ctx.db, app_id)["status"] == "submitted"
+    ctx.close()

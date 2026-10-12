@@ -550,7 +550,8 @@ def test_counts_with_real_repo_state_machine(ctx, make_job):
     browser_ok = prepared(make_job())
     attempt(browser_ok)
     repo.transition_application(db, browser_ok, S.SUBMITTED, actor="browser",
-                                evidence={"type": "page", "url": "https://example.com/thanks"})
+                                evidence={"type": "page", "url": "https://example.com/thanks",
+                                          "matched_text": "Thank you for applying"})
     unknown = prepared(make_job())
     attempt(unknown)
     repo.transition_application(db, unknown, S.NEEDS_MANUAL_ACTION, actor="browser")
