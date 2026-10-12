@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.44,<2"]
+browser = ["playwright>=1.48,<2"]  # 1.48+: context.route_web_socket (exfiltration guard)
 gmail = [
     "google-api-python-client>=2.100,<3",
     "google-auth>=2.25,<3",

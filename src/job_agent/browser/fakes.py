@@ -29,8 +29,7 @@ _AFTER_SUBMIT_PAGES = {
     "review": ("/apply/confirm", "Review your application",
                "Review your application. Nothing has been sent yet. Check your answers, then confirm."),
     "screening": ("/apply/screening", "Screening questions",
-                  "Thank you for your application. Before your application is submitted, answer the screening "
-                  "questions below."),
+                  "Before your application is submitted, answer the screening questions below."),
 }
 
 
