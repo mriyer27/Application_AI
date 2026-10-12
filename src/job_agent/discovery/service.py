@@ -194,7 +194,7 @@ def discover_jobs(
 ) -> DiscoveryResult:
     """Discover jobs from public job boards and persist them.
 
-    ``limit`` caps new + updated listings written in this run (default
+    ``limit`` caps new + updated listings *that pass the filters* written in this run (default
     ``search.max_jobs_per_run``); once reached, remaining sources are skipped and
     further new/changed listings are deferred to the next run.
     """
@@ -272,8 +272,10 @@ def _run_source(ctx: "AppContext", name: str, ident: str, http: PoliteHttpClient
                 continue  # counted in fetched - relevant; irrelevant listings are not stored
             decision = evaluate_filters(job, search, now=now_dt, title_relevant=relevant)
             try:
+                # Only listings that pass the filters count toward the run limit;
+                # filtered-out rows are cheap and must not crowd out relevant ones.
                 outcome = jobs_repo.upsert_job(db, job, source_id=source_id, decision=decision, now=now_iso,
-                                               allow_write=remaining > 0)
+                                               allow_write=remaining > 0 or not decision.passed)
             except JobAgentError as exc:
                 st.job_errors += 1
                 repo.record_error(db, component=f"discovery:{name}:{ident}", error=exc,
@@ -290,7 +292,7 @@ def _run_source(ctx: "AppContext", name: str, ident: str, http: PoliteHttpClient
                 st.duplicates += 1
             elif outcome.status == "deferred":
                 st.deferred += 1
-            if outcome.status in {"new", "updated"}:
+            if outcome.status in {"new", "updated"} and not outcome.filtered:
                 remaining -= 1
             st.reopened += int(outcome.reopened)
             st.reposts += int(outcome.reposted)

@@ -13,11 +13,14 @@ Two stages:
 All keyword matching is case-insensitive and on word boundaries over
 normalized text: ``"sr"`` matches "Sr. Analyst" but not "Srinagar", ``"lead"``
 matches "Team Lead" but not "Leadership Program", and the location ``"US"``
-matches "US - New York" but never "Austin".
+matches "US - New York" but never "Austin". When ``search.locations`` targets
+the US ("United States"/"USA"/"US"), listings named only by city and state
+("San Francisco, CA", "Bellevue, Washington") also match.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -75,15 +78,92 @@ def excluded_title_keyword(title: str, search: SearchSection) -> str | None:
     return None
 
 
+_US_ALIASES = {"united states", "united states of america", "usa", "us", "u s"}
+_US_STATES = {
+    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california",
+    "CO": "colorado", "CT": "connecticut", "DE": "delaware", "FL": "florida", "GA": "georgia",
+    "HI": "hawaii", "ID": "idaho", "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas",
+    "KY": "kentucky", "LA": "louisiana", "ME": "maine", "MD": "maryland", "MA": "massachusetts",
+    "MI": "michigan", "MN": "minnesota", "MS": "mississippi", "MO": "missouri", "MT": "montana",
+    "NE": "nebraska", "NV": "nevada", "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico",
+    "NY": "new york", "NC": "north carolina", "ND": "north dakota", "OH": "ohio", "OK": "oklahoma",
+    "OR": "oregon", "PA": "pennsylvania", "RI": "rhode island", "SC": "south carolina",
+    "SD": "south dakota", "TN": "tennessee", "TX": "texas", "UT": "utah", "VT": "vermont",
+    "VA": "virginia", "WA": "washington", "WV": "west virginia", "WI": "wisconsin", "WY": "wyoming",
+    "DC": "district of columbia",
+}
+#: Country / region names that mark a location part as non-US even when it
+#: contains a state-like token ("Berlin, DE", "Bengaluru, IN", "Toronto, ON, Canada").
+_NON_US_MARKERS = (
+    "canada", "mexico", "brazil", "argentina", "colombia", "chile", "united kingdom", "uk", "england",
+    "scotland", "ireland", "germany", "deutschland", "france", "spain", "portugal", "italy", "netherlands",
+    "belgium", "switzerland", "austria", "poland", "czech", "sweden", "norway", "denmark", "finland",
+    "india", "china", "hong kong", "japan", "korea", "singapore", "malaysia", "philippines", "vietnam",
+    "indonesia", "australia", "new zealand", "israel", "uae", "dubai", "saudi", "qatar", "doha",
+    "south africa", "nigeria", "kenya", "egypt", "turkey", "romania", "hungary", "greece", "ukraine",
+    "emea", "apac", "latam", "europe",
+)
+_LOCATION_SPLIT = re.compile(r"\s*(?:;|\||/|\bor\b|\n)\s*", re.I)
+_AMBIGUOUS_CODES = {"DE", "IN"}
+_ZIP = re.compile(r"\b\d{5}(?:-\d{4})?\b")
+_STATE_CODE = re.compile(r"(?:^|,|\s-\s|\()\s*([A-Z]{2})\s*(?:$|,|\)|\s\d{5})")
+
+
+def _wants_us(search: SearchSection) -> bool:
+    return any(normalize_key(w) in _US_ALIASES for w in search.locations)
+
+
+def is_us_location(location: str) -> bool:
+    """True if any part of a (possibly multi-location) string is clearly in the US.
+
+    Recognizes US aliases, full state names and ", XX" state codes per part, and
+    ignores parts that name another country or region.
+    """
+    for part in _LOCATION_SPLIT.split(location or ""):
+        if not part.strip():
+            continue
+        key = normalize_key(part)
+        if any(contains_phrase(key, marker) for marker in _NON_US_MARKERS):
+            continue
+        if any(contains_phrase(key, alias) for alias in _US_ALIASES - {"u s"}):
+            return True
+        if any(contains_phrase(key, name) for name in _US_STATES.values()):
+            return True
+        for m in _STATE_CODE.finditer(part.strip()):
+            code = m.group(1)
+            # DE/IN double as ISO country codes (Germany, India): need a ZIP to count.
+            if code in _US_STATES and (code not in _AMBIGUOUS_CODES or _ZIP.search(part)):
+                return True
+    return False
+
+
+def names_only_foreign_places(location: str) -> bool:
+    """True if every named part of the location is outside the US ("Remote - UK", "Remote Canada")."""
+    parts = [p for p in _LOCATION_SPLIT.split(location or "") if p.strip()]
+    foreign = [p for p in parts if any(contains_phrase(normalize_key(p), m) for m in _NON_US_MARKERS)]
+    return bool(foreign) and not is_us_location(location)
+
+
 def _location_matches(job: NormalizedJob, search: SearchSection) -> bool:
     if not job.location:
         return True  # unknown location is not a reason to drop a listing
     key = normalize_key(job.location)
+    wants_us = _wants_us(search)
+    remote_wanted = False
     for wanted in search.locations:
-        if normalize_key(wanted) == "remote" and job.work_arrangement == WorkArrangement.REMOTE:
-            return True
+        wanted_key = normalize_key(wanted)
+        if wanted_key == "remote":
+            remote_wanted = True
+            continue
+        if wants_us and wanted_key in _US_ALIASES:
+            continue  # handled by is_us_location below (per location part)
         if contains_phrase(key, wanted):
-            return True
+            return True  # an explicitly listed place, e.g. "New York" or "Canada"
+    if wants_us and is_us_location(job.location):
+        return True
+    if remote_wanted and (job.work_arrangement == WorkArrangement.REMOTE or contains_phrase(key, "remote")):
+        # A remote role restricted to another country does not fit a US search.
+        return not (wants_us and names_only_foreign_places(job.location))
     return False
 
 

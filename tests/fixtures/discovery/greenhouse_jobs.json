@@ -104,7 +104,7 @@
       ],
       "internal_job_id": 901003,
       "location": {
-        "name": "Austin, TX"
+        "name": "London, United Kingdom"
       },
       "metadata": [
         {
@@ -134,8 +134,8 @@
       "offices": [
         {
           "id": 8,
-          "name": "Austin, TX",
-          "location": "Austin, TX",
+          "name": "London, United Kingdom",
+          "location": "London, United Kingdom",
           "child_ids": [],
           "parent_id": null
         }

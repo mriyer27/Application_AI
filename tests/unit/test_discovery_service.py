@@ -88,16 +88,16 @@ def test_discover_real_sources_counts_and_states(ctx, db, http, lever_two_pages)
     assert gh.filter_reasons == {"location": 1, "employment_type": 1, "excluded_title_keyword": 1,
                                  "experience_years": 1, "closing_date_passed": 1, "posting_age": 1}
     lv = by_key(result, "lever:acme")
-    assert (lv.fetched, lv.relevant, lv.new, lv.filtered) == (3, 3, 3, 1)
+    assert (lv.fetched, lv.relevant, lv.new, lv.filtered) == (3, 3, 3, 0)  # Washington, D.C. is US
     ab = by_key(result, "ashby:examplefin")
     assert (ab.fetched, ab.relevant, ab.new, ab.filtered) == (3, 2, 2, 0)
     t = result.totals
-    assert (t.fetched, t.invalid, t.relevant, t.new, t.filtered, t.updated, t.unchanged) == (16, 2, 14, 14, 7, 0, 0)
+    assert (t.fetched, t.invalid, t.relevant, t.new, t.filtered, t.updated, t.unchanged) == (16, 2, 14, 14, 6, 0, 0)
     assert not result.partial and not result.limit_reached and result.failed_sources == []
 
     gh_states = states(db, "greenhouse")
     assert "1004" not in gh_states  # irrelevant title: counted, never stored
-    assert gh_states["1003"] == "filtered_out"  # Austin, TX does not match "US"
+    assert gh_states["1003"] == "filtered_out"  # London, United Kingdom is not in search.locations
     assert gh_states["1009"] == "discovered"  # "lead" does not exclude "Leadership"
     assert {k for k, v in gh_states.items() if v == "discovered"} == {"1001", "1002", "1009"}
     assert db.scalar("SELECT filter_reason FROM jobs WHERE external_id = '1003'").startswith("location")
@@ -333,3 +333,15 @@ def test_list_and_check_sources(ctx, db, http):
     gh = status[("greenhouse", "example")]
     assert gh.configured and gh.enabled and gh.last_success_at and gh.active_jobs == 9
     assert status[("lever", "acme")].last_success_at is None
+
+
+def test_limit_counts_only_jobs_that_pass_filters(ctx, db, http):
+    with respx.mock(assert_all_called=False) as router:
+        mock_apis(router)
+        result = service.discover_jobs(ctx, sources=["greenhouse:example"], http_client=http, now=NOW, limit=1)
+    gh = by_key(result, "greenhouse:example")
+    stored = {r["pipeline_state"]: r["n"] for r in db.query_all(
+        "SELECT pipeline_state, COUNT(*) n FROM jobs GROUP BY pipeline_state")}
+    assert stored.get("discovered") == 1  # exactly `limit` passing listings written
+    assert stored.get("filtered_out") == gh.filtered == 6  # filtered rows never consume the limit
+    assert gh.deferred == 2 and result.limit_reached  # the other passing listings wait for the next run

@@ -60,12 +60,13 @@ def test_exclusions_use_word_boundaries(search, title, excluded):
 
 @pytest.mark.parametrize("location,passes", [
     ("US - New York", True),
-    ("Austin, TX", False),  # CRITICAL: "US" must not match "Austin"
+    ("Austin, TX", True),  # a US city/state (recognized as US, not via the "us" substring)
     ("Houston, TX, USA", True),
     ("Remote (US)", True),
     ("Albany, NY", True),
     ("London, United Kingdom", False),
-    ("Sunnyvale, CA", False),  # "NY" must not match "Sunnyvale"
+    ("Sunnyvale, CA", True),  # US city/state; "NY" substring is irrelevant
+    ("Bengaluru, India", False),
     ("Toronto, ON, Canada", False),
     (None, True),  # unknown location is not a reason to drop
 ])
@@ -123,7 +124,86 @@ def test_posting_age_and_closing_date(search):
 
 
 def test_multiple_reasons_are_all_reported(search):
-    bad = job(title="Senior Data Analyst", location="Austin, TX", employment_type=EmploymentType.CONTRACT)
+    bad = job(title="Senior Data Analyst", location="London, United Kingdom", employment_type=EmploymentType.CONTRACT)
     decision = evaluate_filters(bad, search, now=NOW)
     assert decision.codes == ["excluded_title_keyword", "location", "employment_type"]
-    assert "senior" in decision.reason and "Austin" in decision.reason
+    assert "senior" in decision.reason and "London" in decision.reason
+
+
+def test_location_phrases_use_word_boundaries():
+    from job_agent.discovery.normalize import contains_phrase, normalize_key
+
+    assert not contains_phrase(normalize_key("Austin"), "US")  # CRITICAL: no substring matches
+    assert not contains_phrase(normalize_key("Sunnyvale"), "NY")
+    assert contains_phrase(normalize_key("US - New York"), "US")
+
+
+# --- US recognition for city/state-only locations (integration finding) ---- #
+@pytest.mark.parametrize("location, expected", [
+    ("Bellevue, Washington; Mountain View, California; San Francisco", True),
+    ("San Francisco, CA", True),
+    ("New York, NY 10001", True),
+    ("Austin, TX", True),
+    ("Washington, DC", True),
+    ("Chicago, Illinois, United States", True),
+    ("London, UK; New York, NY", True),
+    ("Wilmington, DE 19801", True),
+    ("Indianapolis, Indiana", True),
+    ("UK - London", False),
+    ("Poland - Warsaw", False),
+    ("Berlin, DE", False),
+    ("Chennai, IN", False),
+    ("Bengaluru, IN, India", False),
+    ("Toronto, ON, Canada", False),
+    ("Remote (Canada)", False),
+    ("Dublin, Ireland", False),
+    ("Hong Kong", False),
+    ("Paris", False),
+])
+def test_is_us_location(location, expected):
+    from job_agent.discovery.filters import is_us_location
+
+    assert is_us_location(location) is expected
+
+
+def test_city_state_location_matches_when_targeting_us(tmp_path):
+    from job_agent.config import SearchSection
+    from job_agent.discovery.filters import evaluate_filters
+    from job_agent.models import NormalizedJob
+
+    search = SearchSection(target_titles=["Data Analyst"], locations=["United States"])
+    job = NormalizedJob(source_name="greenhouse", source_identifier="x", external_id="1", employer="X",
+                        title="Data Analyst", location="Bellevue, Washington; Mountain View, California")
+    assert evaluate_filters(job, search).passed
+    other = SearchSection(target_titles=["Data Analyst"], locations=["New York"])
+    assert not evaluate_filters(job, other).passed  # US recognition only when targeting the US
+
+
+@pytest.mark.parametrize("location, arrangement, passes", [
+    ("Remote - USA", WorkArrangement.REMOTE, True),
+    ("United States - Remote", WorkArrangement.REMOTE, True),
+    ("Remote", WorkArrangement.REMOTE, True),
+    ("Anywhere", WorkArrangement.REMOTE, True),
+    ("Remote - UK", WorkArrangement.REMOTE, False),
+    ("Remote Canada", WorkArrangement.REMOTE, False),
+    ("Canada - Remote (ON, AB, BC, or NS Only)", WorkArrangement.REMOTE, False),
+    ("Remote - US or Canada", WorkArrangement.REMOTE, True),
+])
+def test_remote_roles_restricted_to_other_countries_do_not_match_us_search(location, arrangement, passes):
+    from job_agent.config import SearchSection
+    from job_agent.models import NormalizedJob
+
+    search = SearchSection(target_titles=["Data Analyst"], locations=["United States", "Remote", "New York"])
+    j = NormalizedJob(source_name="greenhouse", source_identifier="x", external_id="1", employer="X",
+                      title="Data Analyst", location=location, work_arrangement=arrangement)
+    assert evaluate_filters(j, search).passed is passes
+
+
+def test_explicitly_listed_foreign_location_still_matches():
+    from job_agent.config import SearchSection
+    from job_agent.models import NormalizedJob
+
+    search = SearchSection(target_titles=["Data Analyst"], locations=["United States", "Remote", "Canada"])
+    j = NormalizedJob(source_name="greenhouse", source_identifier="x", external_id="1", employer="X",
+                      title="Data Analyst", location="Remote Canada", work_arrangement=WorkArrangement.REMOTE)
+    assert evaluate_filters(j, search).passed
