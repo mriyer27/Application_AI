@@ -271,6 +271,9 @@ def load_credentials(ctx: "AppContext", *, request: Any = None) -> Any:
     if isinstance(stored, str):
         stored = stored.split()
     granted = info.get("granted_scopes") or stored
+    if not stored and not granted:
+        # Without recorded scopes the token cannot be verified as read-only.
+        raise _auth_failure(ctx, "token file does not record its scopes (not verified read-only)")
     try:
         check_read_only(stored, what="token scopes")
         check_read_only(granted, what="granted scopes")

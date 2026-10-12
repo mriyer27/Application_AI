@@ -29,7 +29,8 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 #: Hard cap on list pages per sync (500 ids per page at most).
 MAX_LIST_PAGES = 50
 #: Headers requested in metadata mode (gmail.metadata scope).
-METADATA_HEADERS = ["From", "Subject", "Date", "List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted"]
+METADATA_HEADERS = ["From", "Subject", "Date", "List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted",
+                    "Authentication-Results"]  # sender verification (DKIM/DMARC) for automatic updates
 
 
 @dataclass(frozen=True)

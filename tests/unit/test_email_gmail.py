@@ -365,3 +365,27 @@ def test_token_with_empty_scope_lists_is_refused(ctx, monkeypatch):
                         classmethod(lambda cls, creds, **kw: cls(fake_service("m-confirm-1"), **kw)))
     with pytest.raises(AuthorizationRequired):
         sync_gmail(ctx)
+
+
+def test_load_credentials_refuses_token_without_recorded_scopes(ctx):
+    """Integration: the read-only guarantee must hold in load_credentials itself, not only in sync."""
+    import json
+
+    import pytest as _pytest
+
+    from job_agent.email import auth
+    from job_agent.errors import AuthorizationRequired
+
+    ctx.config.gmail.enabled = True
+    path = auth.token_file(ctx.config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"token": "x", "refresh_token": "y", "client_id": "c", "client_secret": "s",
+                                "token_uri": "https://oauth2.googleapis.com/token"}), encoding="utf-8")
+    with _pytest.raises(AuthorizationRequired):
+        auth.load_credentials(ctx)
+
+
+def test_metadata_mode_requests_authentication_results():
+    from job_agent.email.gmail_client import METADATA_HEADERS
+
+    assert "Authentication-Results" in METADATA_HEADERS
