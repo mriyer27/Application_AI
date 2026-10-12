@@ -82,7 +82,7 @@ search:
   employment_types: [full_time, unknown]   # add "internship" to include internships
   experience_levels: [entry, new_grad, associate, early_career, unknown]
   max_years_experience: 3     # jobs explicitly requiring more years are filtered out
-  industries: []
+  industries: []             # reserved: not used yet
   target_employers: []        # employers to rank slightly higher, e.g. ["Capco"]
   max_jobs_per_run: 300
   max_posting_age_days: 45
@@ -164,12 +164,12 @@ followups:
   application_no_response_days: 8
   recruiter_reply_days: 2
   stale_application_days: 30
-  interview_reminder_hours: 24
+  interview_reminder_hours: 24      # reserved: interview times are not read from emails yet
   max_followups_per_application: 2
 
 reporting:
   top_matches: 15
-  keep_days: 365
+  keep_days: 365              # reserved: old reports are never deleted automatically
 
 dashboard:
   host: 127.0.0.1                   # loopback only by default

@@ -162,3 +162,29 @@ def test_redaction_does_not_mangle_ordinary_prose(prose):
                                     "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345"])
 def test_more_token_formats_redacted(secret):
     assert "REDACTED" in redact_text(secret)
+
+
+def test_log_rotation_blocked_by_open_file_never_drops_records(tmp_path, monkeypatch):
+    """Windows: a log file held open by another process cannot be renamed (WinError 32)."""
+    import os
+
+    from job_agent.logging_config import SafeRotatingFileHandler
+
+    def locked_rename(src, dst):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(os, "rename", locked_rename)
+    monkeypatch.setattr(os, "replace", locked_rename)
+    handler = SafeRotatingFileHandler(tmp_path / "job_agent.log", maxBytes=2_000, backupCount=2, encoding="utf-8")
+    logger = logging.getLogger("job_agent.test_rotation")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        for i in range(300):
+            logger.info("record %05d with some padding text", i)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+    text = (tmp_path / "job_agent.log").read_text(encoding="utf-8")
+    assert "record 00000" in text and "record 00299" in text and text.count("record ") == 300

@@ -234,7 +234,7 @@ def _check_scheduler(ctx: "AppContext") -> list[Check]:
     action = "Run `job-agent resume`." if paused else (None if running else "Start it with `job-agent daemon`.")
     checks.append(Check("scheduler", status, detail, action))
 
-    pending = db.scalar("SELECT COUNT(*) FROM approval_requests WHERE status = 'pending'")
+    pending = len(repo.pending_approvals(db))  # expires stale approvals first
     errors = db.scalar("SELECT COUNT(*) FROM errors WHERE resolved = 0 AND requires_human_action = 1")
     checks.append(Check("approvals", WARN if pending else OK, f"{pending} pending approval(s)",
                         "Run `job-agent approvals`." if pending else None))

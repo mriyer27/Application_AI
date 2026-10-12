@@ -131,7 +131,7 @@ def init(
             set_env_var(env_path, "JOB_AGENT_SESSION_SECRET", generate_secret())
             actions.append("generated JOB_AGENT_SESSION_SECRET in .env (chmod 600)")
     state.config_path = root / "config" / "config.yaml"
-    os.environ.setdefault("JOB_AGENT_HOME", str(root))
+    os.environ["JOB_AGENT_HOME"] = str(root)  # this run uses the home being initialized
     ctx = get_ctx()
     ctx.db  # creates + migrates
     actions.append(f"database ready at {ctx.config.db_path.relative_to(root)}")
@@ -185,8 +185,8 @@ def status() -> None:
         "Jobs (total)": db.scalar("SELECT COUNT(*) FROM jobs"),
         "Jobs shortlisted": db.scalar("SELECT COUNT(*) FROM jobs WHERE pipeline_state = 'shortlisted'"),
         "Applications": db.scalar("SELECT COUNT(*) FROM applications"),
-        "Pending approvals": db.scalar("SELECT COUNT(*) FROM approval_requests WHERE status = 'pending'"),
-        "Pending follow-ups": db.scalar("SELECT COUNT(*) FROM followups WHERE status IN ('pending','drafted')"),
+        "Pending approvals": len(repo.pending_approvals(db)),  # also expires stale ones
+        "Pending follow-ups": db.scalar("SELECT COUNT(*) FROM followups WHERE status NOT IN ('completed','dismissed')"),
         "Unresolved errors": db.scalar("SELECT COUNT(*) FROM errors WHERE resolved = 0"),
     }
     for k, v in counts.items():
@@ -408,7 +408,17 @@ _MODULE_COMMANDS: list[str] = [
 _register_module_commands()
 
 
+def _safe_output_streams() -> None:
+    """Never crash on characters the console/pipe encoding cannot show (e.g. cp1252 on Windows)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> None:
+    _safe_output_streams()
     try:
         app()
     except JobAgentError as exc:  # last-resort readable error

@@ -9,11 +9,41 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import time
 from pathlib import Path
 
 from job_agent.security.redaction import RedactingFilter
 
 _CONFIGURED_MARK = "_job_agent_handler"
+
+
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Rotating handler that never drops records when rotation is impossible.
+
+    On Windows a log file that another job-agent process (daemon, dashboard)
+    holds open cannot be renamed (WinError 32). The stock handler then fails
+    every record. This one keeps appending to the current file and retries the
+    rotation a minute later.
+    """
+
+    retry_seconds = 60.0
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._blocked_until = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> int:  # noqa: N802 - stdlib name
+        if time.monotonic() < self._blocked_until:
+            return 0
+        return super().shouldRollover(record)
+
+    def doRollover(self) -> None:  # noqa: N802 - stdlib name
+        try:
+            super().doRollover()
+        except OSError:
+            self._blocked_until = time.monotonic() + self.retry_seconds
+            if self.stream is None:
+                self.stream = self._open()
 
 
 def setup_logging(logs_dir: Path | None, level: str = "INFO", *, max_bytes: int = 5_000_000,
@@ -30,7 +60,7 @@ def setup_logging(logs_dir: Path | None, level: str = "INFO", *, max_bytes: int 
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%Y-%m-%dT%H:%M:%S%z")
     if logs_dir is not None:
         logs_dir.mkdir(parents=True, exist_ok=True)
-        fh = logging.handlers.RotatingFileHandler(
+        fh = SafeRotatingFileHandler(
             Path(logs_dir) / "job_agent.log", maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
         )
         fh.setFormatter(fmt)

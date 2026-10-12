@@ -143,3 +143,44 @@ def test_cli_bad_config_exit_code(home):
     (home / "config/config.yaml").write_text("search: {}\n")
     result = runner.invoke(__import__("job_agent.cli", fromlist=["app"]).app, ["doctor"])
     assert result.exit_code == 2
+
+
+def test_init_home_option_wins_over_env(tmp_path, monkeypatch):
+    """Correctness review: `init --home B` with JOB_AGENT_HOME=A must initialize B only."""
+    import shutil
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    a, b = tmp_path / "A", tmp_path / "B"
+    for home in (a, b):
+        (home / "config").mkdir(parents=True)
+        (home / "profiles").mkdir()
+        shutil.copy(repo_root / "config/config.example.yaml", home / "config")
+        shutil.copy(repo_root / "profiles/candidate_profile.example.yaml", home / "profiles")
+    monkeypatch.setenv("JOB_AGENT_HOME", str(a))
+    result = _cli("init", "--home", str(b))
+    assert result.exit_code == 0, result.output
+    assert (b / "data/job_agent.db").exists() and not (a / "data/job_agent.db").exists()
+
+
+def test_status_does_not_count_expired_approvals(home):
+    from job_agent.context import AppContext
+    from job_agent.database import repo as _repo
+    from job_agent.models import ApprovalType
+    from job_agent.utils.time import utcnow_iso
+
+    c = AppContext.load()
+    now = utcnow_iso()
+    job_id = c.db.insert("jobs", {"job_uid": "J-exp0000001", "source_name": "fixture", "source_identifier": "t",
+                                  "external_id": "e1", "employer": "Acme", "employer_normalized": "acme",
+                                  "title": "Analyst", "title_normalized": "analyst", "description_hash": "h",
+                                  "content_hash": "c", "discovered_at": now, "last_checked_at": now,
+                                  "last_changed_at": now, "created_at": now, "updated_at": now})
+    app_id = _repo.create_application(c.db, job_id, actor="system")
+    uid = _repo.create_approval(c.db, ApprovalType.SUBMIT_APPLICATION, {"x": 1}, summary="s", actor="system",
+                                application_id=app_id)
+    c.db.execute("UPDATE approval_requests SET expires_at = '2000-01-01T00:00:00+00:00' WHERE approval_uid = ?",
+                 (uid,))
+    c.close()
+    out = _cli("status").output
+    assert "Pending approvals: 0" in out

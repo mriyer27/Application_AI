@@ -96,3 +96,17 @@ def test_task_and_run_once_cli(ctx, fixture_source, home):
     out = CliRunner().invoke(app, ["run-once", "--no-llm", "--no-documents"], catch_exceptions=False)
     assert out.exit_code == 0, out.output
     assert "discover_and_score" in out.output
+
+
+def test_offline_cycle_is_a_retryable_failure(ctx, fixture_source, monkeypatch):
+    """Correctness review: every source failing (laptop offline at wake) must not count as success."""
+    from job_agent.discovery import service as discovery_service
+    from job_agent.errors import RecoverableError
+
+    def down(c, **kwargs):
+        raise RecoverableError("network unreachable")
+
+    monkeypatch.setattr(discovery_service, "discover_jobs", down)
+    result = run_task(ctx, "discover_and_score", trigger="scheduled")
+    assert result.status == RunStatus.FAILED and result.error_kind.value == "recoverable"
+    assert ctx.db.scalar("SELECT last_success_at FROM scheduled_tasks WHERE task_name = 'discover_and_score'") is None

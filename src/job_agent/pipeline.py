@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from job_agent.database import repo
-from job_agent.errors import JobAgentError
+from job_agent.errors import JobAgentError, RecoverableError
 from job_agent.logging_config import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -39,9 +39,13 @@ def run_cycle(ctx: "AppContext", run: "RunInfo | None" = None, *, discover: bool
             summary["steps"]["discover"] = result.model_dump(mode="json")
             if result.partial:
                 summary["partial"] = True
+            attempted = [s for s in result.sources if not s.skipped]
+            if attempted and all(s.error for s in attempted):
+                summary["discovery_failed"] = "every job source failed"
         except Exception as exc:  # recorded; scoring of existing jobs still runs
             summary["errors"].append(_record(ctx, "discover", exc, run))
             summary["partial"] = True
+            summary["discovery_failed"] = f"{type(exc).__name__}: {exc}"
 
     # 2. Local AI analyzer (optional) ------------------------------------
     analyzer = None
@@ -107,4 +111,11 @@ def _auto_prepare(ctx: "AppContext", top_n: int, run: "RunInfo | None", summary:
 
 
 def discover_and_score_task(ctx: "AppContext", run: "RunInfo") -> dict[str, Any]:
-    return run_cycle(ctx, run)
+    summary = run_cycle(ctx, run)
+    if summary.get("discovery_failed"):
+        # Existing jobs were still scored, but a cycle that fetched nothing (e.g. the
+        # laptop was offline at wake) must count as a failure so it is retried and
+        # caught up instead of being recorded as a successful run.
+        raise RecoverableError(f"discovery failed ({summary['discovery_failed']}); existing jobs were re-scored, "
+                               "the run will be retried", human_action=None)
+    return summary
