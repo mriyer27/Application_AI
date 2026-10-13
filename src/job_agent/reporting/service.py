@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -145,16 +145,48 @@ def generate_daily_report(ctx: "AppContext", report_date: date | None = None, *,
                         generation_count=generation)
 
 
+def missed_previous_day(ctx: "AppContext", today: date, *, exclude_run_id: int | None = None) -> date | None:
+    """Yesterday (local), if it has no report yet although the agent already had data before today.
+
+    A 21:30 report missed because the laptop was asleep or off is otherwise never
+    written: the catch-up after midnight would only produce the new day.
+    """
+    yesterday = today - timedelta(days=1)
+    db = ctx.db
+    if db.scalar("SELECT 1 FROM reports WHERE report_date = ?", (yesterday.isoformat(),)):
+        return None
+    start, _ = q.local_day_bounds(today, ctx.config.app.timezone)
+    before = "julianday({}) < julianday(?)"
+    checks = (
+        (f"SELECT 1 FROM jobs WHERE {before.format('discovered_at')} LIMIT 1", (start,)),
+        (f"SELECT 1 FROM applications WHERE {before.format('created_at')} LIMIT 1", (start,)),
+        (f"SELECT 1 FROM email_messages WHERE {before.format('COALESCE(received_at, processed_at)')} LIMIT 1",
+         (start,)),
+        (f"SELECT 1 FROM agent_runs WHERE {before.format('started_at')} AND id != ? LIMIT 1",
+         (start, -1 if exclude_run_id is None else exclude_run_id)),
+    )
+    return yesterday if any(db.scalar(sql, params) for sql, params in checks) else None
+
+
 def report_task(ctx: "AppContext", run: "RunInfo") -> dict[str, Any]:
-    """``report`` task (scheduler / dashboard / ``job-agent tasks run report``): today's report."""
+    """``report`` task (scheduler / dashboard / ``job-agent tasks run report``): today's report, plus
+    yesterday's when it was never generated (e.g. the 21:30 run was missed and caught up after midnight)."""
     actor = "scheduler" if run.trigger == "scheduled" else "system"
-    result = generate_daily_report(ctx, actor=actor, run_id=run.run_id)
+    today = local_today(ctx.config.app.timezone)
+    caught_up: list[str] = []
+    missed = missed_previous_day(ctx, today, exclude_run_id=run.run_id)
+    if missed is not None:
+        previous = generate_daily_report(ctx, missed, actor=actor, run_id=run.run_id)
+        caught_up.append(previous.report_date.isoformat())
+        log.info("generated the missed report for %s", missed.isoformat())
+    result = generate_daily_report(ctx, today, actor=actor, run_id=run.run_id)
     counts = result.stats["counts"]
     return {
         "report_date": result.report_date.isoformat(),
         "xlsx_file": result.xlsx_path.name,
         "markdown_file": result.markdown_path.name,
         "generation_count": result.generation_count,
+        "caught_up_reports": caught_up,
         **{k: counts.get(k, 0) for k in ("new_jobs_today", "submitted_today", "approvals_pending",
                                          "errors_requiring_attention")},
     }

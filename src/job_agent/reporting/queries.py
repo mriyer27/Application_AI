@@ -235,8 +235,9 @@ def trend_counts(db: Database, days: int, *, tz_name: str = "UTC",
                  end_date: date | None = None) -> list[dict[str, Any]]:
     """Per-local-day counts for the ``days`` days ending at ``end_date`` (default: today in ``tz_name``).
 
-    Returns ``[{date, discovered, applications, submitted, interviews, rejections, offers}]``
-    oldest first; ``date`` is an ISO ``YYYY-MM-DD`` string. Pass
+    Returns ``[{date, discovered, applications, submitted, interviews, rejections, offers, emails}]``
+    oldest first; ``date`` is an ISO ``YYYY-MM-DD`` string. Each timestamp is bucketed by its own
+    local date (DST-aware), so the report and the dashboard agree. Pass
     ``tz_name=config.app.timezone`` so days match the user's calendar.
     """
     if days < 1 or days > 366:
@@ -246,7 +247,7 @@ def trend_counts(db: Database, days: int, *, tz_name: str = "UTC",
     dates = [end_date - timedelta(days=i) for i in range(days - 1, -1, -1)]
     start_utc, _ = local_day_bounds(dates[0], tz_name)
     _, end_utc = local_day_bounds(end_date, tz_name)
-    keys = ("discovered", "applications", "submitted", "interviews", "rejections", "offers")
+    keys = ("discovered", "applications", "submitted", "interviews", "rejections", "offers", "emails")
     buckets: dict[date, dict[str, Any]] = {d: {"date": d.isoformat(), **{k: 0 for k in keys}} for d in dates}
     params = (start_utc, end_utc)
 
@@ -275,6 +276,9 @@ def trend_counts(db: Database, days: int, *, tz_name: str = "UTC",
         add(key, db.query_all(
             f"SELECT m.application_id AS ident, m.at AS at FROM ({_milestones_sql(states)}) m "
             f"WHERE {_win('m.at')}", params))
+    email_at = "COALESCE(received_at, processed_at)"
+    add("emails", db.query_all(
+        f"SELECT id AS ident, {email_at} AS at FROM email_messages WHERE {_win(email_at)}", params))
     return [buckets[d] for d in dates]
 
 

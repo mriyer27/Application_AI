@@ -69,11 +69,6 @@ def local_midnight_utc_iso(tz_name: str, days_ago: int = 0) -> str:
     return to_iso(datetime.combine(day, dtime.min, tzinfo=ZoneInfo(tz_name)))  # type: ignore[return-value]
 
 
-def _offset_modifier(tz_name: str) -> str:
-    offset = datetime.now(ZoneInfo(tz_name)).utcoffset() or timedelta(0)
-    return f"{int(offset.total_seconds() // 60):+d} minutes"
-
-
 @dataclass
 class Page:
     items: list[dict[str, Any]]
@@ -543,31 +538,25 @@ class Series:
         return max((c for _, c in self.points), default=0)
 
 
-#: (key, label, table, timestamp column, extra WHERE)
-_TREND_SOURCES: tuple[tuple[str, str, str, str, str], ...] = (
-    ("jobs", "Jobs discovered", "jobs", "discovered_at", "AND duplicate_of_job_id IS NULL"),
-    ("applications", "Applications submitted", "applications", "submitted_at", ""),
-    ("emails", "Job emails received", "email_messages", "received_at", ""),
+#: (series key, label, ``reporting.queries.trend_counts`` key)
+_TREND_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("jobs", "Jobs discovered", "discovered"),
+    ("applications", "Applications submitted", "submitted"),  # evidence-based, like the report
+    ("emails", "Job emails received", "emails"),
 )
 
 
 def trends(db: Database, cfg: AppConfig, days: int = 30) -> list[Series]:
-    """Daily counts for the last ``days`` local days (grouped in SQL, using today's UTC offset)."""
-    tz = cfg.app.timezone
-    start_iso = local_midnight_utc_iso(tz, days_ago=days - 1)
-    modifier = _offset_modifier(tz)
-    today = local_today(tz)
-    labels = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
-    out = []
-    for key, label, table, column, extra in _TREND_SOURCES:
-        rows = db.query_all(
-            f"SELECT date({column}, ?) AS d, COUNT(*) AS n FROM {table} "
-            f"WHERE {column} IS NOT NULL AND {column} >= ? {extra} GROUP BY d",
-            (modifier, start_iso),
-        )
-        counts = {r["d"]: int(r["n"]) for r in rows}
-        out.append(Series(key=key, label=label, points=[(d, counts.get(d, 0)) for d in labels]))
-    return out
+    """Daily counts for the last ``days`` local days.
+
+    Same numbers as the daily report: ``reporting.queries.trend_counts`` buckets
+    each timestamp by its own local date in ``app.timezone`` (DST-aware).
+    """
+    from job_agent.reporting.queries import trend_counts
+
+    rows = trend_counts(db, days, tz_name=cfg.app.timezone, end_date=local_today(cfg.app.timezone))
+    return [Series(key=key, label=label, points=[(r["date"], int(r[source])) for r in rows])
+            for key, label, source in _TREND_SOURCES]
 
 
 # --------------------------------------------------------------------------- #

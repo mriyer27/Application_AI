@@ -69,7 +69,13 @@ from job_agent.browser.detection import (
     not_yet_submitted_wording,
 )
 from job_agent.browser.dlp import ProtectedData
-from job_agent.browser.errors import BrowserUnavailable, ChallengeDetected, NavigationBlocked, PageUnavailable
+from job_agent.browser.errors import (
+    BrowserUnavailable,
+    ChallengeDetected,
+    FillError,
+    NavigationBlocked,
+    PageUnavailable,
+)
 from job_agent.browser.forms import FormField, SubmitControl, match_option
 from job_agent.browser.policy import NavigationPolicy
 from job_agent.errors import RecoverableError
@@ -378,7 +384,9 @@ class _Guard:
     """Request guard for one application page (and everything it opens).
 
     ``decide`` is the single rule set; see the module docstring. ``locked`` is
-    set when filling begins, ``armed_until`` by the approved submit click.
+    set when filling begins, ``armed_until`` by the approved submit click, which
+    also sets ``released``: from then on the data-loss checks no longer apply to
+    the job's own hosts (you approved sending those answers there).
     """
 
     policy: NavigationPolicy
@@ -387,23 +395,45 @@ class _Guard:
     clock: Callable[[], float] = time.monotonic
     page: "Page | None" = None
     locked: bool = False
+    released: bool = False
     armed_until: float | None = None
+    #: What was typed / attached (see ``dlp.ProtectedData``).
+    protected: ProtectedData = field(default_factory=ProtectedData)
+    #: URLs requested, or referenced by the page, before filling began (fragment removed).
+    known_urls: set[str] = field(default_factory=set)
+    #: New asset URLs allowed after filling began (bounded by ``new_asset_budget``).
+    new_urls: set[str] = field(default_factory=set)
+    new_asset_budget: int = NEW_ASSET_BUDGET
     violations: list[tuple[str, str]] = field(default_factory=list)
     blocked: list[tuple[str, str, str]] = field(default_factory=list)  # (method, clipped url, reason)
     blocked_posts: list[str] = field(default_factory=list)
+    #: Requests aborted because they carried typed data / file content (clipped URLs).
+    leaks: list[str] = field(default_factory=list)
     posts: list[str] = field(default_factory=list)
     websockets: list[str] = field(default_factory=list)
     dialogs: list[str] = field(default_factory=list)
     _open_sockets: list["WebSocketRoute"] = field(default_factory=list, repr=False)
 
     # -- state ----------------------------------------------------------- #
-    def lock(self) -> None:
-        """Filling begins: from now on nothing may go to third-party hosts."""
+    def lock(self, referenced_urls: "list[str] | tuple[str, ...]" = ()) -> None:
+        """Filling begins: nothing may go to third-party hosts, and the data-loss checks start.
+
+        ``referenced_urls`` are the URLs the page referenced before anything was typed.
+        """
+        if not self.locked:
+            self.known_urls.update(_url_key(u) for u in referenced_urls)
         self.locked = True
+
+    def protect_value(self, value: str | None) -> None:
+        self.protected.add_value(value)
+
+    def protect_file(self, data: bytes, name: str | None = None) -> None:
+        self.protected.add_file(data, name)
 
     def arm(self) -> None:
         """The approved submission click: allow its non-GET request(s) to policy hosts, for a short window."""
         self.locked = True
+        self.released = True
         self.armed_until = self.clock() + self.arm_seconds
 
     def disarm(self) -> None:
@@ -427,12 +457,12 @@ class _Guard:
         if self.page is None or self._owner(request) is not self.page:
             return "request from another window, a worker or an unknown frame"
         is_nav = request.is_navigation_request()
+        main = is_nav and request.frame.parent_frame is None
         if is_nav:
-            main = request.frame.parent_frame is None
             problem = self.policy.navigation_problem(url)
             if problem:
                 if main:
-                    self.violations.append((url, problem))
+                    self.violations.append((_clip(url), problem))
                 return f"{'navigation' if main else 'frame navigation'} refused: {problem}"
         if method not in _SAFE_METHODS:
             if not self.armed:
@@ -445,15 +475,50 @@ class _Guard:
                 self.disarm()  # the one approved form post
             self.posts.append(_clip(url))
             return None
+        if self.locked and not self.released:
+            reason = self._before_approval(request, url, is_nav=is_nav, main=main)
+            if reason:
+                return reason
         if is_nav or self.policy.request_host_allowed(url):
-            return None
+            return self._allow(url)
         if self.strict:
             return "third-party request (strict mode)"
         if not self.locked:
-            return None  # still rendering the page; nothing has been typed yet
+            return self._allow(url)  # still rendering the page; nothing has been typed yet
         if request.resource_type in _STATIC_TYPES and self.policy.asset_request_allowed(url):
-            return None
+            return self._allow(url)
         return "third-party request after filling began"
+
+    def _before_approval(self, request: "Request", url: str, *, is_nav: bool, main: bool) -> str | None:
+        """Data-loss rules between the first typed value and the approved click (any host)."""
+        if is_nav:
+            if main:
+                self.violations.append((_clip(url), "the page tried to navigate after filling began, before your "
+                                                    "approval (the navigation could carry what was typed)"))
+            return f"{'navigation' if main else 'frame navigation'} after filling began, before the approved " \
+                   "submission"
+        key = _url_key(url)
+        if key in self.known_urls:
+            return None  # requested / referenced before anything was typed: carries nothing typed
+        leak = self.protected.match(url, _post_body(request))
+        if leak:
+            self.leaks.append(_clip(url))
+            return f"request carries {leak} before the approved submission"
+        if urlsplit(url).query or url.endswith("?"):
+            return "new request with a query string after filling began, before the approved submission"
+        if request.resource_type not in _STATIC_TYPES:
+            return f"new {request.resource_type} request after filling began, before the approved submission"
+        if key not in self.new_urls and len(self.new_urls) >= self.new_asset_budget:
+            return "too many new requests after filling began, before the approved submission"
+        return None
+
+    def _allow(self, url: str) -> None:
+        key = _url_key(url)
+        if not self.locked:
+            self.known_urls.add(key)
+        elif not self.released and key not in self.known_urls:
+            self.new_urls.add(key)
+        return None
 
     # -- Playwright callbacks -------------------------------------------- #
     def on_route(self, route: "Route", request: "Request") -> None:
@@ -497,7 +562,7 @@ class _Guard:
             return
         problem = self.policy.navigation_problem(request.url)
         if problem and (main_nav or request.method.upper() not in _SAFE_METHODS):
-            self.violations.append((request.url, f"redirect: {problem}"))
+            self.violations.append((_clip(request.url), f"redirect: {problem}"))
 
     def on_new_page(self, new_page: "Page") -> None:
         # New windows/tabs/popups: every request from them is aborted; close them unused.
@@ -545,14 +610,38 @@ class PlaywrightApplicationPage:
         self.check_navigation()
         return self._call(lambda: forms.inspect_form(self._page))
 
+    def _begin_filling(self) -> None:
+        """Before the first value is typed: remember what the page references, then lock the guard."""
+        if self._guard.locked:
+            return
+        from playwright.sync_api import Error as PlaywrightError
+
+        try:
+            referenced = self._page.evaluate(_REFERENCED_URLS_JS) or []
+        except PlaywrightError as exc:
+            log.debug("referenced urls: %s", forms.first_line(exc))
+            referenced = []
+        self._guard.lock([str(u) for u in referenced])
+
     def fill(self, fld: FormField, value: str) -> None:
-        self._guard.lock()
+        self._begin_filling()
         self.check_navigation()
+        # Registered before typing: the page's listeners run while the value is entered.
+        self._guard.protect_value(value)
+        for part in (value.split(";") if fld.type in {"checkbox_group", "select-multiple"} else [value]):
+            option = match_option(part, fld.options) if fld.options else None
+            if option is not None:
+                self._guard.protect_value(option.value)
+                self._guard.protect_value(option.label)
         forms.fill_field(self._page, fld, value, timeout_ms=min(self._timeout_ms, 10_000))
 
     def attach_file(self, fld: FormField, path: Path) -> None:
-        self._guard.lock()
+        self._begin_filling()
         self.check_navigation()
+        try:
+            self._guard.protect_file(path.read_bytes(), path.name)
+        except OSError as exc:
+            raise FillError(f"{fld.key}: could not read {path.name} ({exc.strerror or exc})") from exc
         forms.attach_file(self._page, fld, path, timeout_ms=min(self._timeout_ms, 10_000))
 
     def read_value(self, fld: FormField) -> str | None:
@@ -605,6 +694,11 @@ class PlaywrightApplicationPage:
     def blocked_requests(self) -> list[tuple[str, str, str]]:
         """Every aborted request / WebSocket: (method, scheme://host/path, reason)."""
         return list(self._guard.blocked)
+
+    @property
+    def blocked_leaks(self) -> list[str]:
+        """Requests aborted because they carried typed data or file content (scheme://host/path only)."""
+        return list(self._guard.leaks)
 
 
 class PlaywrightBrowser:

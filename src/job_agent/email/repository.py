@@ -125,9 +125,10 @@ def upsert_association(db: Database, *, email_id: int, job_id: int | None, appli
 
 
 def thread_associations(db: Database, thread_id: str, *, exclude_email_id: int | None = None) -> list[sqlite3.Row]:
-    """Trusted associations (confirmed, or >= 0.8) of earlier messages in the same Gmail thread."""
+    """Trusted associations (confirmed, or >= 0.8) of earlier messages in the same Gmail thread, with their sender."""
     return db.query_all(
-        "SELECT ea.job_id, ea.application_id, ea.confidence, ea.confirmed_by_user FROM email_associations ea "
+        "SELECT ea.job_id, ea.application_id, ea.confidence, ea.confirmed_by_user, em.from_domain "
+        "FROM email_associations ea "
         "JOIN email_messages em ON em.id = ea.email_id WHERE em.gmail_thread_id = ? AND em.id IS NOT ? "
         "AND (ea.confirmed_by_user = 1 OR ea.confidence >= 0.8)",
         (thread_id, exclude_email_id),
@@ -145,9 +146,9 @@ def association_targets(db: Database) -> list[sqlite3.Row]:
 
 
 def confirmed_sender_domains(db: Database) -> list[sqlite3.Row]:
-    """Sender domains of emails you linked to a job yourself, with that job's employer."""
+    """Senders (domain and address) of emails you linked to a job yourself, with that job's employer."""
     return db.query_all(
-        "SELECT DISTINCT em.from_domain, j.employer FROM email_associations ea "
+        "SELECT DISTINCT em.from_domain, em.from_address, j.employer FROM email_associations ea "
         "JOIN email_messages em ON em.id = ea.email_id JOIN jobs j ON j.id = ea.job_id "
         "WHERE ea.confirmed_by_user = 1 AND em.from_domain IS NOT NULL"
     )
