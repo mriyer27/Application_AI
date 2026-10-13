@@ -30,8 +30,9 @@ def set_env_var(env_path: Path, key: str, value: str) -> None:
         lines.append(new_line)
     env_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = env_path.with_name(env_path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    # O_BINARY: on Windows a text-mode fd would turn each \n written below into \r\r\n.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
     os.replace(tmp, env_path)
     try:

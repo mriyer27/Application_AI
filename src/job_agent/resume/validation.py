@@ -414,7 +414,7 @@ def check_numbers(text: str, source_text: str) -> list[Issue]:
 
 
 def _skill_variants(text: str) -> list[str]:
-    """``text`` plus forms with joining punctuation turned into spaces / removed ("Power-BI" -> "Power BI", "PowerBI")."""
+    """``text`` plus forms with joining punctuation as spaces / removed ("Power-BI" -> "Power BI", "PowerBI")."""
     return list(dict.fromkeys([text, _JOINER.sub(" ", text), _GLUE.sub("", text)]))
 
 
@@ -446,8 +446,8 @@ def check_skills(text: str, source_facts: Sequence[Fact], profile: CandidateProf
     with punctuation ("Power-BI", "Snow-flake"); ``profile.skills`` phrases that
     the lexicon does not know ("AI-assisted development") are tools too.
     """
-    source_texts = [claim_text(t) for t in [*(f.text for f in source_facts), *(s for f in source_facts for s in f.skills),
-                                            *extra_allowed]]
+    raw_sources = [*(f.text for f in source_facts), *(s for f in source_facts for s in f.skills), *extra_allowed]
+    source_texts = [claim_text(t) for t in raw_sources]
     source_allowed = _skills_in(source_texts)
     source_blob = "\n".join(source_texts)
     profile_allowed = _skills_in(profile.skills)

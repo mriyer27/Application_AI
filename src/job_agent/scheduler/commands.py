@@ -34,6 +34,9 @@ def _print_startup(report: "DaemonStartup") -> None:
         recovered.append(f"stale lock(s) released: {', '.join(report.released_locks)}")
     if report.expired_approvals:
         recovered.append(f"{report.expired_approvals} approval(s) expired")
+    if report.recovered_submissions:
+        recovered.append(f"{report.recovered_submissions} interrupted submission(s) marked unknown outcome — "
+                         "check email/portal, then `job-agent applications show`")
     console.print("  Initialization: [green]ok[/green]" + (f" ({'; '.join(recovered)})" if recovered else ""))
     console.print(f"  Database: [green]ok[/green] (integrity {report.db_integrity})")
     if report.paused:

@@ -51,6 +51,7 @@ class FakeForm:
     outcome: str = "confirm"
     redirect_to: str | None = None
     refuse_fill: set[str] = field(default_factory=set)
+    blocked_leaks: list[str] = field(default_factory=list)  # requests the data-loss guard would abort
 
     def __post_init__(self) -> None:
         if self.outcome not in OUTCOMES:
@@ -69,6 +70,10 @@ class FakePage:
     @property
     def url(self) -> str:
         return self._url
+
+    @property
+    def blocked_leaks(self) -> list[str]:
+        return list(self.form.blocked_leaks)
 
     def snapshot(self) -> PageSnapshot:
         f = self.form

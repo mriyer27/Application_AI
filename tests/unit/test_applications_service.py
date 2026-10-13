@@ -367,6 +367,35 @@ def test_form_changed_since_approval_stops_before_click(ctx, make_job):
     assert fake.submissions == 0
 
 
+
+def test_help_text_next_to_a_question_is_shown_in_the_approval(ctx, make_job):
+    info = setup_application(ctx, make_job)
+    fake = fake_for()
+    fake.forms[URL].fields.append(FormField("relocate", "Are you willing to relocate?", "text", required=True,
+                                            help_text="By answering Yes you confirm you do not need visa sponsorship."))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert "relocate" not in fake.filled  # the help text makes it a legal declaration
+    row = _answers(ctx, info["app_id"])["relocate"]
+    assert row["is_legal_declaration"] == 1 and "visa sponsorship" in row["field_help_text"]
+    payload = repo.approval_payload(_approval(ctx, result.approval_uid))
+    legal = {d["field_key"]: d for d in payload["legal_declarations"]}
+    assert legal["relocate"]["label"] == ("Are you willing to relocate? — By answering Yes you confirm you do not "
+                                          "need visa sponsorship.")
+
+
+def test_page_that_tried_to_send_typed_data_is_reported_and_blocks_browser_submission(ctx, make_job):
+    info = setup_application(ctx, make_job)
+    fake = fake_for()
+    fake.forms[URL].blocked_leaks = ["https://jobs.example.com/collect"]
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    payload = repo.approval_payload(_approval(ctx, result.approval_uid))
+    assert payload["blocked_data_requests"] == ["https://jobs.example.com/collect"]
+    assert any("tried to send" in b for b in submission_blockers(payload))
+    audit = ctx.db.query_one("SELECT outcome FROM audit_events WHERE action = 'data_leak_blocked'")
+    assert audit is not None and audit["outcome"] == "blocked"
+    clean = service.prepare_application(ctx, info["job_uid"], browser_factory=fake_for())
+    assert "blocked_data_requests" not in repo.approval_payload(_approval(ctx, clean.approval_uid))
+
 # ------------------------------------------------------------ tracking --- #
 def test_mark_submitted_withdraw_notes_and_views(ctx, make_job):
     info = setup_application(ctx, make_job)

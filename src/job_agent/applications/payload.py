@@ -78,6 +78,13 @@ def chosen_documents(db: Database, app: Any, answers: list[Any]) -> tuple[docs.D
     return result[0], result[1]
 
 
+def _with_help(row: Any) -> str:
+    """The question as the page shows it: the label plus any help text next to it."""
+    label = str(row["field_label"])
+    help_text = row["field_help_text"] if "field_help_text" in row.keys() else None
+    return f"{label} — {help_text}" if help_text and help_text not in label else label
+
+
 def build_payload(db: Database, application_id: int) -> dict[str, Any]:
     app = repo.get_application(db, application_id)
     if app is None:
@@ -89,8 +96,8 @@ def build_payload(db: Database, application_id: int) -> dict[str, Any]:
 
     filled, legal, unanswered, review, agreements, blank = [], [], [], [], [], []
     for row in answers:
-        key, label = row["field_key"], row["field_label"]
-        category = classify_field(label, key, row["field_type"])
+        key, label = row["field_key"], _with_help(row)
+        category = classify_field(row["field_label"], key, row["field_type"])
         value = _fill_value(row)
         source = row["answer_source"]
         if value is not None:
@@ -135,6 +142,8 @@ def build_payload(db: Database, application_id: int) -> dict[str, Any]:
         "screenshot": prepared.get("screenshot"),
         "prepared_at": app["prepared_at"],
         "work_authorization_reference": prepared.get("eligibility_reference") or {},
+        **({"blocked_data_requests": blocked} if (blocked := list(prepared.get("blocked_data_requests") or []))
+           else {}),
     }
 
 
@@ -166,6 +175,9 @@ def submission_blockers(payload: dict[str, Any]) -> list[str]:
         if not item.get("verified"):
             problems.append(f"legal declaration not answered from a verified source: {item['label']} "
                             f"[{item['field_key']}]")
+    if payload.get("blocked_data_requests"):
+        problems.append("the page tried to send what was typed or uploaded before submission (blocked); submit it "
+                        "yourself only if you trust the site")
     if payload.get("validation_errors"):
         problems.append("the form showed validation errors when it was prepared")
     return list(dict.fromkeys(problems))
@@ -218,6 +230,7 @@ def approval_view(db: Database, approval_uid: str) -> dict[str, Any]:
             "agreements": num(list(payload.get("agreements") or [])),
             "left_blank_by_you": num(list(payload.get("left_blank_by_you") or [])),
             "validation_errors": list(payload.get("validation_errors") or []),
+            "blocked_data_requests": list(payload.get("blocked_data_requests") or []),
             "screenshot": payload.get("screenshot"),
             "work_authorization_reference": payload.get("work_authorization_reference") or {},
         },

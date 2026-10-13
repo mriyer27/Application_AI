@@ -282,8 +282,15 @@ def approval_decide(request: Request, approval_uid: str, decision: str = Form(""
         log.info("approval %s decision refused: %s", approval_uid, exc)
         return _review_page(request, session, ctx, approval_uid, error=f"Not recorded: {exc}", status_code=409)
     log.info("approval %s %sd via dashboard (%s)", approval_uid, decision, handler)
-    flash(request, session, "ok", "Approved. Nothing is submitted until the agent consumes this approval."
-          if decision == "approve" else "Rejected.")
+    if decision != "approve":
+        message = "Rejected."
+    elif ctx.config.applications.browser_submission_enabled:
+        message = (f"Approved. Nothing is sent until you run `job-agent applications submit {approval_uid}` "
+                   "on your computer.")
+    else:
+        message = ("Approved. Nothing is sent by the agent: submit the application yourself on the employer's "
+                   "site, then run `job-agent applications mark-submitted <application-uid>`.")
+    flash(request, session, "ok", message)
     return redirect(f"/approvals/{approval_uid}")
 
 

@@ -94,15 +94,17 @@ def save_mapped_answers(db: Database, application_id: int, mapped: list[MappedAn
             db.execute("DELETE FROM application_answers WHERE application_id = ?", (application_id,))
         for m in mapped:
             db.execute(
-                "INSERT INTO application_answers (application_id, field_key, field_label, field_type, required,"
-                " answer, answer_source, confidence, requires_review, is_legal_declaration, review_reason, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO application_answers (application_id, field_key, field_label, field_help_text, field_type,"
+                " required, answer, answer_source, confidence, requires_review, is_legal_declaration, review_reason,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(application_id, field_key) DO UPDATE SET field_label = excluded.field_label,"
+                " field_help_text = excluded.field_help_text,"
                 " field_type = excluded.field_type, required = excluded.required, answer = excluded.answer,"
                 " answer_source = excluded.answer_source, confidence = excluded.confidence,"
                 " requires_review = excluded.requires_review, is_legal_declaration = excluded.is_legal_declaration,"
                 " review_reason = excluded.review_reason, updated_at = excluded.updated_at",
-                (application_id, m.key, m.field.label, m.field.type, int(m.field.required), m.answer, m.source,
+                (application_id, m.key, m.field.label, getattr(m.field, "help_text", None) or None, m.field.type,
+                 int(m.field.required), m.answer, m.source,
                  m.confidence, int(m.requires_review), int(m.is_legal), m.review_reason, now),
             )
 

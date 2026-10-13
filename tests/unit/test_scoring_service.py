@@ -180,7 +180,7 @@ def test_analyzer_runs_only_for_top_rules_jobs(ctx, db, jobs):
     assert summary.llm_scored == 1 and summary.scored == 2
     rows = _scores(db, jobs["strong"])
     assert [(r["used_llm"], r["is_current"]) for r in rows] == [(0, 0), (1, 1)]
-    assert rows[1]["scoring_version"] == "rules-1.0+llm" and rows[1]["llm_model"] == "test-model:1b"
+    assert rows[1]["scoring_version"] == "rules-1.1+llm" and rows[1]["llm_model"] == "test-model:1b"
     assert score_repo.current_score(db, jobs["weak"])["used_llm"] is False
     # unchanged next run: the LLM score stays current and the analyzer is not called again
     calls.clear()
@@ -197,7 +197,7 @@ def test_analyzer_failure_falls_back_to_rules(ctx, db, jobs):
     errors = db.query_all("SELECT * FROM errors WHERE component = 'scoring:llm'")
     assert len(errors) == 2 and "ollama crashed" in errors[0]["message"]
     current = score_repo.current_score(db, jobs["strong"])
-    assert current["used_llm"] is False and current["scoring_version"] == "rules-1.0"
+    assert current["used_llm"] is False and current["scoring_version"] == "rules-1.1"
     assert _row(db, jobs["strong"])["pipeline_state"] == "shortlisted"
 
 

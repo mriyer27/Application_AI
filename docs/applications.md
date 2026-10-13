@@ -131,6 +131,28 @@ action says: *check your email/portal before doing anything else*. The agent
 will never submit that application again on its own (even after a new
 approval). If it went through, run `mark-submitted`; otherwise apply manually.
 
+The same happens when the submitting process is interrupted after the click
+(Ctrl+C, the window closed, the laptop shutting down) or killed outright: the
+outcome is recorded as unknown before the process exits, or — if it was
+killed — the next `apply`, `applications set-status`/`withdraw` or daemon
+start marks it unknown (immediately when the process is gone, otherwise after
+15 minutes). `job-agent applications show` then shows a banner.
+
+`job-agent apply <job-uid>` refuses to prepare an application with an unknown
+outcome. Once you have checked your email and the employer's portal and are
+sure nothing was received, run `job-agent apply <job-uid>
+--confirm-not-submitted`; this is recorded in the audit log, and the browser
+still never submits that application — you submit it yourself.
+
+Approvals that are still open are closed (`superseded`) when you record a
+submission, withdraw, or change the status yourself, and `approvals reject`
+withdraws an approved request that was not used yet. A résumé or cover letter
+you rejected is never uploaded; preparing falls back to your latest version
+that is not rejected, or asks you to run `job-agent prepare`.
+
+If Chromium does not close after a Ctrl+C during a submission, press Ctrl+C a
+second time; the outcome is already saved.
+
 ## Manual fallback
 
 Whenever automation stops (CAPTCHA, "verify you are human", Cloudflare,
@@ -152,6 +174,16 @@ no readable form, closed listing, browser failure), the application moves to
   the URL contains the job's board identifier.
 - Form posts are blocked unless armed for the single approved click, so
   preparing cannot submit a form even if the page tries to.
+- Once the agent starts typing, page scripts cannot send what was typed or
+  uploaded anywhere — not even to the employer's own host — before your
+  approved click: requests carrying your answers or document contents
+  (also percent-, base64- or hex-encoded) are blocked, and so are new
+  navigations, new URLs with a query string and new non-asset requests. A
+  blocked attempt is listed in the approval request and the audit log, and
+  the browser will then not submit that application (you still can, if you
+  trust the site). This is a
+  heuristic content check plus structural limits, not a guarantee against a
+  determined hostile page.
 - New windows are closed and stop the session; dialogs are dismissed.
 - One browser at a time (`max_concurrent_browsers`), timeouts from config,
   no downloads, service workers blocked.
@@ -172,7 +204,11 @@ used; `JOB_AGENT_CHROMIUM_PATH` forces a specific executable. Headed mode
   labels, `aria-label(ledby)`, nearby question text, placeholders and names;
   categories come from keyword rules. Unusual wording can be misclassified —
   which is why everything not clearly verified goes to review and you approve
-  the exact answers.
+  the exact answers. Help text shown next to a question (`aria-describedby`,
+  hints, tooltips) is read too: if it mentions a legal topic, the field is
+  treated as a legal declaration, and the approval shows the question as
+  "label — help text". Only text a person can see on the page counts when
+  detecting a confirmation page.
 - **Tested only against local fixture pages** (`tests/fixtures/forms/`: a
   generic form, Greenhouse-like and Lever-like field names, a reCAPTCHA page, a
   login wall, validation errors, a hanging submit, a thank-you page). Real ATS

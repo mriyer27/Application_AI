@@ -78,6 +78,11 @@ def _print_approval_view(view: dict[str, Any]) -> None:
         console.print("[bold red]Validation errors shown by the form:[/bold red]")
         for err in s["validation_errors"]:
             console.print(f"  • {_e(err)}")
+    if s.get("blocked_data_requests"):
+        console.print("[bold red]The page tried to send what was typed or uploaded before submission "
+                      "(blocked):[/bold red]")
+        for url in s["blocked_data_requests"]:
+            console.print(f"  • {_e(url)}")
     if s["work_authorization_reference"]:
         ref = ", ".join(f"{k}={v}" for k, v in s["work_authorization_reference"].items())
         console.print(f"[dim]Work-authorization reference from your profile (display only, never used to answer): "
@@ -173,6 +178,8 @@ def apply_cmd(
     if result.validation_errors:
         console.print("[red]The form shows validation errors:[/red] " + _e("; ".join(result.validation_errors)))
     console.print(f"[bold]Next:[/bold] {_e(result.message)}")
+    if result.status.value == "needs_manual_action":
+        raise typer.Exit(1)  # scripts can tell that automation stopped and you must act
     console.print("[dim]Nothing was submitted.[/dim]")
 
 

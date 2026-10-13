@@ -131,7 +131,7 @@ read the listing yourself.**
 
 ## Local AI (Ollama), and what it cannot do
 
-Without an analyzer, scoring is rules-only (`rules-1.0`). When
+Without an analyzer, scoring is rules-only (`rules-1.1`). When
 `scoring.use_llm` and `llm.enabled` are true and `job_agent.llm.analysis.make_analyzer`
 returns an analyzer, a run works like this:
 
@@ -149,7 +149,7 @@ returns an analyzer, a run works like this:
    * `sponsorship_statements` are passed through the same eligibility rules;
    * `fit_explanation` is appended to the domain_relevance explanation as
      "Local AI analysis: …".
-3. The score is saved as `rules-1.0+llm` with `used_llm = 1` and `llm_model`.
+3. The score is saved as `rules-1.1+llm` with `used_llm = 1` and `llm_model`.
    If the analyzer raises or returns invalid data, the error is recorded
    (`errors`, component `scoring:llm`) and the rules score stays current.
 

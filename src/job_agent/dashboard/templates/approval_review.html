@@ -2,7 +2,7 @@
 {% import "_macros.html" as m with context %}
 {% block title %}Review approval{% endblock %}
 {% block content %}
-{% set warn_keys = ["legal_declarations", "validation_errors", "unanswered_required", "requires_review"] %}
+{% set warn_keys = ["legal_declarations", "blocked_data_requests", "validation_errors", "unanswered_required", "requires_review"] %}
 {% set main_keys = ["employer", "role", "application_url", "resume", "cover_letter", "answers", "agreements"] %}
 <p class="small"><a href="/approvals">&larr; Approvals</a></p>
 <h1>Review: {{ approval.summary }}</h1>

@@ -269,12 +269,14 @@ def _make_drafter(ctx: "AppContext") -> tuple[Drafter | None, Callable[[], None]
 
     facts = ctx.profile.all_facts()
     valid_ids = {f.id for f in facts}
+    skills = list(ctx.profile.skills)
 
     def drafter(question: str) -> SuggestedAnswer | None:
         # The label comes from the employer's page (untrusted). draft_answer wraps it with
         # security.untrusted.wrap_untrusted itself and refuses legal/eligibility questions.
         try:
-            result = draft_answer(client, question=clean_untrusted(question, max_chars=1500), facts=facts)
+            result = draft_answer(client, question=clean_untrusted(question, max_chars=1500), facts=facts,
+                                  profile_skills=skills)
         except JobAgentError as exc:
             repo.record_error(ctx.db, component="applications:draft", error=exc)
             return None
@@ -613,6 +615,7 @@ def prepare_application(ctx: "AppContext", job_ref: str | int, *, browser_factor
             page.check_navigation()
             validation_errors = page.validation_errors()
             shot = _screenshot(ctx, page, app_uid, "prepared")
+            blocked_leaks = list(getattr(page, "blocked_leaks", None) or [])[:20]
     except ChallengeDetected as exc:
         repo.record_error(db, component="applications:prepare", error=exc, application_id=app_id, job_id=job["id"])
         return manual(f"A {exc.challenge_kind.replace('_', ' ')} blocks automation ({exc.detail}); it was not "
@@ -648,7 +651,11 @@ def prepare_application(ctx: "AppContext", job_ref: str | int, *, browser_factor
             "filled": filled,
             "fill_failures": failures,
             "fields_found": len(fields),
+            "blocked_data_requests": blocked_leaks,
         })
+        if blocked_leaks:
+            repo.audit(db, actor="browser", action="data_leak_blocked", entity_type="application", entity_id=app_id,
+                       outcome="blocked", details={"requests": blocked_leaks})
         arepo.update_application(db, app_id, {"prepared_at": utcnow_iso(), "application_url": url})
         payload = build_payload(db, app_id)
         approval_uid = repo.create_approval(db, ApprovalType.SUBMIT_APPLICATION, payload, summary=summary_line(payload),

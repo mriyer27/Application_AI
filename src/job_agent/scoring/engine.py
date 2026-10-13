@@ -41,7 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from job_agent.config import AppConfig
     from job_agent.profile import CandidateProfile
 
-SCORING_VERSION = "rules-1.0"
+SCORING_VERSION = "rules-1.1"
 LLM_VERSION_SUFFIX = "+llm"
 #: Descriptions shorter than this are "insufficient information" -> needs_review.
 MIN_DESCRIPTION_CHARS = 300

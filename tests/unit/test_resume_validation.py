@@ -564,7 +564,8 @@ SPLIT_TOOLS = [  # (fact id, text, code)
      "skill_not_in_source_fact"),
     ("agency_dashboards", "Supported IBM Cognos and Power.BI dashboards and reporting using DB2.",
      "skill_not_in_source_fact"),
-    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and Snow_flake.", "unverified_skill"),
+    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and Snow_flake.",
+     "unverified_skill"),
     ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and My-SQL.",
      "skill_not_in_source_fact"),
     # a profile skill the lexicon does not know is still a skill of another fact

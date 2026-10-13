@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from job_agent.applications import commands, service
 from job_agent.browser.forms import FormField
 from job_agent.database import repo
-from test_applications_support import add_sponsorship_answer, fake_for, setup_application, simple_fields
+from test_applications_support import URL, add_sponsorship_answer, fake_for, setup_application, simple_fields
 
 runner = CliRunner()
 
@@ -52,6 +52,14 @@ def test_apply_prepares_and_prints_approval(cli, ctx, make_job, fake):
     assert cli("apply", info["job_uid"], "--headed").exit_code == 0
     assert fake.options.headless is False
 
+
+
+def test_apply_exits_non_zero_when_manual_action_is_needed(cli, ctx, make_job, fake):
+    info = setup_application(ctx, make_job)
+    fake.forms[URL].markers = (".h-captcha",)
+    result = cli("apply", info["job_uid"])
+    assert result.exit_code == 1, result.output
+    assert "needs_manual_action" in result.output and fake.submissions == 0
 
 def test_apply_without_documents_explains(cli, ctx, make_job, fake):
     job_id = make_job()

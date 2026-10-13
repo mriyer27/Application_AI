@@ -29,8 +29,8 @@ pass ``validation.validate_claim`` against them (with the verified entry
 context such as "Student Intern, Example State Agency"). Every first-person
 sentence is a claim. Sentences are judged and kept in their normalized form
 (``validation.claim_text``); one with full-width, look-alike or invisible
-characters the cited facts do not contain is rejected. Pure letter boilerplate ("Thank you for your time.") is
-dropped in favour of the template's own wording. Any other sentence, or any
+characters the cited facts do not contain is rejected. Pure letter boilerplate
+("Thank you for your time.") is dropped in favour of the template's own wording. Any other sentence, or any
 failure, means the whole template letter is used. Cover letters are always
 ``needs_review``.
 """
