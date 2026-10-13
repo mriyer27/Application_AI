@@ -163,8 +163,8 @@ def test_confirmation_from_submission_attempted(gctx, make_job):
 
 def test_rejection_by_sender_domain(gctx, make_job):
     db = gctx.db
-    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health", title="Data Analyst",
-                      title_normalized="data analyst", job_url="https://careers.umbrellahealth.com/jobs/77")
+    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health",
+                      job_url="https://careers.umbrellahealth.com/jobs/77")
     app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
     sync_gmail(gctx, service=fake_service("s-domain-reject-1"))
     assert repo.get_application(db, app_id)["status"] == "rejected"
@@ -172,18 +172,43 @@ def test_rejection_by_sender_domain(gctx, make_job):
     assert assoc["method"] == "domain" and assoc["confidence"] >= 0.8
 
 
+def test_rejection_naming_no_role_waits_for_you(gctx, make_job):
+    """Even from the job's own domain, an email that does not name the role is only flagged for you."""
+    db = gctx.db
+    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health",
+                      job_url="https://careers.umbrellahealth.com/jobs/77")
+    app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
+    result = sync_gmail(gctx, service=fake_service("s-domain-reject-untitled"))
+    assert result.status_updates == 0 and repo.get_application(db, app_id)["status"] == "submitted"
+    email = _email(db, "s-domain-reject-untitled")
+    assoc = _assoc(db, email["id"])[0]
+    assert assoc["method"] == "domain" and assoc["confidence"] < 0.8 and email["requires_attention"] == 1
+    review = db.query_one("SELECT details FROM audit_events WHERE action = 'email_status_needs_review'")
+    assert "does not name this application's role" in " ".join(from_json(review["details"])["reasons"])
+    res = associate_email(gctx, email["id"], application_ref=repo.get_application(db, app_id)["application_uid"],
+                          apply_status=True)
+    assert res.status_applied == "rejected"
+
+
 def test_thread_association_and_own_messages_ignored(gctx, make_job):
     db = gctx.db
     job_id = make_job(employer="Initech", employer_normalized="initech", title="Data Analyst",
                       title_normalized="data analyst", job_url="https://careers.initech.com/jobs/da-1")
     app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
-    result = sync_gmail(gctx, service=fake_service("s-thread-first", "s-thread-reply", "s-sent-1"))
+    result = sync_gmail(gctx, service=fake_service("s-thread-first", "s-thread-reply", "s-thread-reply-same",
+                                                   "s-sent-1"))
     assert repo.get_application(db, app_id)["status"] == "interview_requested"
     assert result.status_updates == 1
+    # A reply from the employer's own domain inherits the thread's link.
+    same = _assoc(db, _email(db, "s-thread-reply-same")["id"])
+    assert same and same[0]["method"] == "thread" and same[0]["application_id"] == app_id
+    assert same[0]["confidence"] >= 0.8 and same[0]["status_applied"] is None  # already interview_requested
+    # A message from another domain (here a personal gmail.com address) in the thread is only a suggestion.
     reply = _email(db, "s-thread-reply")
     assoc = _assoc(db, reply["id"])
-    assert assoc and assoc[0]["method"] == "thread" and assoc[0]["application_id"] == app_id
-    assert assoc[0]["confidence"] >= 0.8 and assoc[0]["status_applied"] is None  # already interview_requested
+    assert assoc and assoc[0]["method"] == "thread_other_sender" and assoc[0]["application_id"] == app_id
+    assert assoc[0]["confidence"] <= 0.6 and assoc[0]["status_applied"] is None
+    assert reply["requires_attention"] == 1
     sent = _email(db, "s-sent-1")
     assert sent["classifier"] == "skipped:own_message" and sent["requires_attention"] == 0
     assert _assoc(db, sent["id"]) == []

@@ -212,7 +212,7 @@ def _verified_variants(db: Database, documents_dir: Path, document_id: int | Non
         return []
     base = usable_document(db, stored)
     if base is None:
-        label = stored.doc_type.replace("_", " ")
+        label = {"resume": "résumé", "cover_letter": "cover letter"}.get(stored.doc_type, stored.doc_type)
         raise HumanActionRequired(
             f"you rejected the {label} {stored.file_name} and there is no other version you have not rejected; "
             "it will never be uploaded",

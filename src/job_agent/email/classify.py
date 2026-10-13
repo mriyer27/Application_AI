@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from job_agent.errors import PermanentError
 from job_agent.models import EmailCategory, EmailClassification
+from job_agent.security import textnorm
 from job_agent.security.untrusted import clean_untrusted
 
 C = EmailCategory
@@ -121,8 +122,8 @@ RULES: tuple[_Rule, ...] = (
     _r(C.OFFER,
        r"\b(?:pleased|delighted|happy|excited|thrilled) to (?:extend|make|present) (?:to )?(?:you )?(?:an?|the|this) "
        r"(?:formal |written |verbal |conditional )?(?:job |employment )?offer\b", 4.0, 4.0),
-    _r(C.OFFER, r"\b(?:pleased|delighted|happy|excited|thrilled) to offer you (?:(?:the|a|an) (?:position|role|job)|"
-                r"(?:full-time |part-time )?employment)\b", 4.0, 4.0),
+    _r(C.OFFER, r"\b(?:pleased|delighted|happy|excited|thrilled) to offer you (?:(?:the|a|an|this|our) "
+                r"(?:[\w-]+ ){0,4}?(?:position|role|job)|(?:full-time |part-time )?employment)\b", 4.0, 4.0),
     # Never a bare "your offer": shops and banks send "your offer is ready" all the time.
     _r(C.OFFER, r"\b(?:offer letter|offer of employment|employment offer|job offer)\b", 3.5, 2.0),
     # -- interview invitation -------------------------------------------------------
@@ -200,7 +201,7 @@ _OFFER_TO_OTHER = re.compile(
     r"the\s+selected|the\s+successful|the\s+chosen|the|a|an)\s+(?:[a-z-]+\s+){0,3}?"
     r"(?:candidate|applicant|individual|person|finalist)s?\b"
     r"|\b(?:extended|made|presented|given)\s+(?:an?|the|our|this|that)\s+(?:job\s+|employment\s+|final\s+)?offer"
-    r"(?:\s+of\s+employment)?\s+to\s+(?!you\b|yourself\b)[a-z]"
+    r"(?:\s+of\s+employment)?\s+to\s+(?!your?\b|yourself\b)[a-z]"
     r"|\b(?:candidate|applicant|individual|person|finalist)s?,?\s+(?:who|that)\s+(?:has\s+|have\s+)?"
     r"(?:since\s+|already\s+|now\s+)?accepted\b"
     r"|\b(?:position|role|opening|vacancy|job|req(?:uisition)?)\s+(?:has|have|had|was|is)\s+(?:now\s+|already\s+|since\s+)?"
@@ -252,7 +253,9 @@ _NOREPLY = re.compile(r"(?:no-?reply|do-?not-?reply|donotreply|notifications?)",
 
 
 def _norm(text: str | None) -> str:
-    text = (text or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    """Shared Unicode normalization (look-alike letters, invisible characters), typographic quotes, whitespace."""
+    text = textnorm.normalize_text(text or "")
+    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -291,7 +294,12 @@ def _unconditional(pattern: re.Pattern[str], text: str) -> bool:
 
 def offer_negated(text: str) -> bool:
     """An offer that is declined, rescinded, not extended, or made to someone else (conditionals do not count)."""
-    return _unconditional(_OFFER_NEGATED, text) or _unconditional(_OFFER_TO_OTHER, text)
+    return _unconditional(_OFFER_NEGATED, text) or offer_to_other(text)
+
+
+def offer_to_other(text: str) -> bool:
+    """The offer went to someone else ("extended an offer to another candidate", "the position has been filled")."""
+    return _unconditional(_OFFER_TO_OTHER, text)
 
 
 def offer_to_reader(text: str) -> bool:
@@ -331,7 +339,8 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
             conflict = True  # "pleased to extend you an offer" next to "unable to extend an offer": ask the user
         else:
             # "pleased to extend an offer to another candidate" is a rejection
-            negated_offer_only = scores[C.OFFER] > 0 and scores[C.REJECTION] < 3.5
+            to_other = offer_to_other(subj) or offer_to_other(text)
+            negated_offer_only = (scores[C.OFFER] > 0 or to_other) and scores[C.REJECTION] < 3.5
             scores[C.OFFER] = 0.0
         scores[C.REJECTION] += 3.5
     elif scores[C.OFFER] > 0 and not _EMPLOYMENT_CONTEXT.search(both):

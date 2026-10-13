@@ -309,3 +309,103 @@ def test_is_promotional():
     assert email_classify.is_promotional(subject="Get 20% off", body="")
     assert not email_classify.is_promotional(subject="Offer letter - Business Analyst",
                                              body="We are pleased to extend you an offer for the position.")
+
+
+# ------------------------------------------- RFC 8601 Authentication-Results ---- #
+_INJECTED_MAILFROM = '"x;dmarc=pass header.from=acmeanalytics.com;dkim=pass header.i=@acmeanalytics.com"@evil.io'
+
+
+@pytest.mark.parametrize("value,reason", [
+    # E5: results written inside a quoted smtp.mailfrom local part; Gmail's real verdict is dmarc=fail
+    (f"mx.google.com; dkim=pass header.i=@evil.io header.s=s1 header.b=AbC; spf=pass (google.com: domain of "
+     f"{_INJECTED_MAILFROM} designates 192.0.2.7 as permitted sender) smtp.mailfrom={_INJECTED_MAILFROM}; "
+     "dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=acmeanalytics.com", "dmarc=fail"),
+    # ... and without any dmarc result: the quoted text still adds nothing
+    (f"mx.google.com; dkim=pass header.i=@evil.io; spf=pass smtp.mailfrom={_INJECTED_MAILFROM}",
+     "no DKIM/DMARC pass"),
+    # a quoted reason / comment holding results
+    ('mx.google.com; dkim=neutral reason="x; dkim=pass header.i=@acmeanalytics.com"', "no DKIM/DMARC pass"),
+    # RFC 5322: a quote inside a comment is ordinary text, so ')' ends the comment and a quote is left open
+    ("mx.google.com; dkim=neutral (bad; \"quoted ) paren\"; dkim=pass header.i=@acmeanalytics.com)",
+     "could not be parsed"),
+    # unbalanced quoting / comments fail closed
+    ('mx.google.com; spf=pass smtp.mailfrom="x; dmarc=pass header.from=acmeanalytics.com', "could not be parsed"),
+    ("mx.google.com; dkim=pass (unterminated; dmarc=pass header.from=acmeanalytics.com", "could not be parsed"),
+    # two DMARC verdicts, or one for another domain
+    ("mx.google.com; dmarc=pass header.from=acmeanalytics.com; dmarc=fail header.from=acmeanalytics.com",
+     "several dmarc results"),
+    ("mx.google.com; dkim=pass header.i=@acmeanalytics.com; dmarc=pass header.from=evil.io",
+     "different From domain"),
+    # a property value that is not a domain
+    ('mx.google.com; dkim=pass header.i="@acmeanalytics.com;evil"; dmarc=none', "no DKIM/DMARC pass"),
+])
+def test_sender_auth_rfc8601_lexing_fails_closed(value, reason):
+    result = _auth(value)
+    assert not result.authenticated and reason in result.reason, result
+
+
+def test_sender_auth_rfc8601_legitimate_forms_still_verify():
+    assert _auth(GMAIL_PASS).authenticated
+    # quoted property values, versioned methods, nested comments and extra results are all fine
+    assert _auth('mx.google.com 1; dkim/1=pass (2048-bit key; unprotected (nested)) header.i="@acmeanalytics.com" '
+                 'header.s=s1; spf=pass smtp.mailfrom="hr"@acmeanalytics.com; dmarc=pass (p=REJECT) '
+                 'header.from="acmeanalytics.com"; arc=none').authenticated
+    # several DKIM signatures (employer + mail provider) are normal
+    assert _auth("mx.google.com; dkim=pass header.i=@acmeanalytics.com; dkim=pass header.i=@sendgrid.info; "
+                 "spf=pass smtp.mailfrom=bounces@sendgrid.net; dmarc=pass header.from=acmeanalytics.com").authenticated
+
+
+def test_several_from_headers_are_never_verified():
+    s = spec("m-offer-1")
+    msg = build_message(s)
+    msg["payload"]["headers"].insert(1, {"name": "From", "value": "Evil <hr@evil.example>"})
+    p = parse_message(msg, body_char_limit=4000)
+    assert not p.auth.authenticated and "several From headers" in p.auth.reason
+
+
+# --------------------------------------------- offers to someone else (E3) ---- #
+@pytest.mark.parametrize("body", [
+    "We were pleased to extend an offer to another candidate, who has accepted it. We wish you the best.",
+    "After careful consideration, we were happy to make an offer to another candidate for the Business Analyst "
+    "position.",
+    "We were thrilled to extend an offer to a candidate whose experience more closely matched the role.",
+    "Thank you for your time. We are pleased to extend this offer to the candidate we selected for the position.",
+    "We have extended an offer to Jordan for the Business Analyst position.",
+    "We are pleased to extend an offer to anоther candidate for the position.",  # Cyrillic о
+])
+def test_offer_to_another_candidate_is_never_a_confident_offer(body):
+    result = _classify("Business Analyst position update", body)
+    assert result.category != EmailCategory.OFFER, result
+    assert result.category == EmailCategory.REJECTION
+    assert result.confidence < RULES_CONFIDENT  # a misread offer must never be filed away by itself
+
+
+@pytest.mark.parametrize("body", [
+    "We are delighted to offer you the position of applicant in our talent community for future roles.",
+    "We are pleased to extend an offer for the Business Analyst position.",  # not addressed to you
+])
+def test_offer_not_clearly_made_to_you_needs_review(body):
+    result = _classify("Business Analyst position update", body)
+    assert result.confidence < RULES_CONFIDENT, result
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Offer letter - Business Analyst", "We are pleased to extend you an offer for the Business Analyst position."),
+    ("Your offer", "We are pleased to extend an offer of employment to you for the Business Analyst position."),
+    ("Offer", "We are delighted to offer you the Business Analyst position, with a base salary of [x]."),
+    ("Offer", "We are pleased to offer you employment as a Business Analyst. Your start date is Monday."),
+    ("Business Analyst", "We are pleased to extend an offer for the position. Your offer letter is attached."),
+])
+def test_offers_made_to_you_stay_confident(subject, body):
+    result = _classify(subject, body)
+    assert result.category == EmailCategory.OFFER and result.confidence >= RULES_CONFIDENT, result
+
+
+def test_explicit_rejections_with_offer_words_stay_confident():
+    for body in ("Unfortunately, the position has been filled.",
+                 "Unfortunately we have moved forward with another candidate for the Business Analyst role."):
+        result = _classify("Business Analyst position update", body)
+        assert result.category == EmailCategory.REJECTION and result.confidence >= RULES_CONFIDENT, result
+    welcome = _classify("Welcome aboard", "We're thrilled that you have accepted our offer for the Business Analyst "
+                                          "position! Your start date is Monday.")
+    assert welcome.category != EmailCategory.REJECTION

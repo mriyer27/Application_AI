@@ -19,8 +19,16 @@ Deterministic rules only (no LLM decides anything here):
 * agreements / certifications / consents are never checked automatically;
 * salary / start date / relocation / notice period need review unless a
   non-legal verified answer matches;
+* a verified answer fills a field only when its pattern plus neutral filler
+  ("are you", "for this role", "if hired") covers the WHOLE label and
+  placeholder. Any other clause -- in any language, with any typo, legal-looking
+  or not -- sends the field to review (``unrecognized_clause``), so a missed
+  legal clause can never be answered by a non-legal verified answer;
 * open-ended questions need review; an optional local-LLM draft is stored as a
-  *suggestion* (confidence ``uncertain``) and never entered;
+  *suggestion* (confidence ``uncertain``) and never entered. Legal, sensitive
+  (compensation / EEO / identity) and unrecognized-clause questions are never
+  sent to the LLM, and drafts that are a bare yes/no or make a legal statement
+  are dropped;
 * anything unrecognized needs review.
 
 Only answers with confidence ``verified`` are ever typed into a form.
@@ -29,7 +37,6 @@ Only answers with confidence ``verified`` are ever typed into a form.
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Callable, Mapping
@@ -37,7 +44,8 @@ from typing import Any, Callable, Mapping
 from job_agent.applications.documents import DocumentRef, pick_variant
 from job_agent.browser.forms import TEXT_TYPES, FormField, match_option
 from job_agent.profile import CandidateProfile, Education, VerifiedAnswer
-from job_agent.security.legal_text import is_legal_question
+from job_agent.security import legal_text
+from job_agent.security.legal_text import is_legal_question, is_never_drafted
 
 _PLACEHOLDER_RE = re.compile(r"<[^<>]+>")
 
@@ -151,12 +159,28 @@ of for to at on by with this that any please explain answer indicate select spec
 present future time point some work working employment employed employer job position role company us u s usa
 united states america american legally lawfully visa status required
 """.split())
+#: Words that may surround a NON-legal verified answer's pattern ("are you" + "willing to relocate" +
+#: "for this role"). Deliberately free of work / visa / status / employer words: whatever else a label
+#: says, in any language or spelling, means the pattern does not cover the question.
+_NEUTRAL_FILLER = frozenset("""
+a an the are you your yourself do does will would could can shall should be is am have has need needs require
+requires required now or and in of for to at on by with this that these any please answer indicate select specify
+confirm currently presently present future time point some job position role company team opportunity us our here
+""".split())
+#: Neutral phrases removed before the remainder check ("If hired, when can you start?").
+_NEUTRAL_PHRASES = re.compile(
+    r"\b(?:if|once) (?:you are |you re |you were )?(?:hired|selected|offered (?:the |this |a )?(?:position|role|job))\b")
+#: Placeholder wording that adds nothing to the question ("Select...", "Type your answer here").
+_PLACEHOLDER_NEUTRAL = _NEUTRAL_FILLER | frozenset(
+    "select choose pick one option options enter type here start typing search your answer response text value "
+    "yes no e g eg example".split())
 #: Words that invert or qualify a question; a pattern never answers a question that adds one.
 _NEGATIONS = frozenset({"not", "never", "no", "without", "t", "cannot", "nor", "neither", "unable", "unwilling",
                         "none", "nobody", "nothing"})
 _LABEL_NOISE = re.compile(
     r"\((?:e\.?\s?g\.?|i\.?\s?e\.?|for example|such as|ex\.)[^)]*\)|\((?:optional|required|not required|if applicable|"
     r"yes ?/ ?no|yes or no)\)", re.I)
+_LABEL_TAGS = re.compile(r"\((?:optional|required|not required|if applicable|yes ?/ ?no|yes or no)\)", re.I)
 _YES_NO = re.compile(r"\byes (?:or )?no\b")
 UPLOADS = frozenset({"resume", "cover_letter_file", "other_upload"})
 _MONTHS = {m: i for i, m in enumerate(
@@ -165,8 +189,8 @@ _MONTHS = {m: i for i, m in enumerate(
 
 
 def normalize(text: str | None) -> str:
-    ascii_text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_text.lower()).split())
+    """Lowercase ASCII words (after ``security.textnorm.normalize_text``: full-width / look-alike letters folded)."""
+    return legal_text.normalize(text)
 
 
 def classify_field(label: str, key: str = "", field_type: str = "text") -> FieldCategory:
@@ -266,6 +290,9 @@ class MappedAnswer:
     is_legal: bool
     review_reason: str | None = None
     document: DocumentRef | None = None
+    #: A verified answer matched only part of the label: the rest is an unrecognized clause
+    #: (never auto-filled, never sent to the LLM drafter).
+    unrecognized_clause: bool = False
 
     @property
     def key(self) -> str:
@@ -296,28 +323,53 @@ def map_fields(fields: list[FormField], inputs: MappingInputs) -> list[MappedAns
 
 def field_is_legal(fld: FormField) -> bool:
     """Does the label, field name / id, placeholder, help text or an option mention a legal topic?"""
-    texts = [fld.label, fld.key, fld.name, fld.element_id, fld.placeholder,
-             getattr(fld, "help_text", None), getattr(fld, "description", None)]
+    texts = _field_texts(fld)
     if fld.type in {"select", "radio", "checkbox", "checkbox_group", "select-multiple"}:
         texts += [o.label for o in fld.options]
     return any(is_legal_question(str(t)) for t in texts if t)
 
 
+def _field_texts(fld: FormField) -> list[str]:
+    texts = [fld.label, fld.key, fld.name, fld.element_id, fld.placeholder,
+             getattr(fld, "help_text", None), getattr(fld, "description", None)]
+    return [str(t) for t in texts if t]
+
+
+def may_draft(m: MappedAnswer) -> bool:
+    """May the local LLM suggest an answer for this field?
+
+    Only unanswered open-ended free-text questions with nothing legal, sensitive
+    (compensation / EEO / identity), unreadable or unrecognized in them.
+    """
+    return (m.category is FieldCategory.OPEN_ENDED and m.answer is None and m.source is None
+            and m.field.type in TEXT_TYPES and not m.is_legal and not m.unrecognized_clause
+            and not field_is_legal(m.field) and not any(is_never_drafted(t) for t in _field_texts(m.field)))
+
+
+def draft_problem(answer: str) -> str | None:
+    """Why a drafted answer is dropped: a yes/no answer or a legal statement (None = keep as a suggestion)."""
+    if legal_text.is_yes_no_answer(answer):
+        return "is a yes/no answer"
+    if legal_text.mentions_legal_matter(answer):
+        return "makes a legal statement"
+    return None
+
+
 def apply_drafts(mapped: list[MappedAnswer], drafter: Drafter | None, *, max_drafts: int = 3) -> list[MappedAnswer]:
     """Attach local-LLM *suggestions* to unanswered open-ended questions (never filled).
 
-    Legal / eligibility questions are never sent to the drafter.
+    Legal / eligibility, sensitive and unrecognized-clause questions are never
+    sent to the drafter (``may_draft``); bare yes/no or legal drafts are dropped.
     """
     if drafter is None or max_drafts <= 0:
         return mapped
     out: list[MappedAnswer] = []
     left = max_drafts
     for m in mapped:
-        if (left > 0 and m.category is FieldCategory.OPEN_ENDED and m.answer is None and m.source is None
-                and m.field.type in TEXT_TYPES and not m.is_legal and not field_is_legal(m.field)):
+        if left > 0 and may_draft(m):
             left -= 1
             draft = drafter(m.field.label)
-            if draft is not None and draft.answer.strip():
+            if draft is not None and draft.answer.strip() and draft_problem(draft.answer) is None:
                 facts = ",".join(draft.fact_ids) or "none"
                 m = replace(m, answer=draft.answer.strip(), source="llm_draft", confidence="uncertain",
                             requires_review=True,
@@ -382,12 +434,19 @@ def _auto(fld: FormField, cat: FieldCategory, inputs: MappingInputs) -> MappedAn
         return _missing(fld, cat, "no cover letter text available; paste it yourself if you want to")
     if cat in EDUCATION:
         return _education(fld, cat, profile.education[0] if profile.education else None)
-    matches = matching_verified_answers(fld.label, profile.verified_answers)
-    if len(matches) == 1:
-        return _from_verified(fld, cat, matches[0])
-    if len(matches) > 1:
-        ids = ", ".join(m.id for m in matches)
+    covering = covering_verified_answers(fld, profile.verified_answers)
+    partial = [a for a in matching_verified_answers(fld.label, profile.verified_answers) if a not in covering]
+    if len(covering) == 1 and not any(a.answer.strip().casefold() != covering[0].answer.strip().casefold()
+                                      for a in partial):
+        return _from_verified(fld, cat, covering[0])
+    if covering:
+        ids = ", ".join(a.id for a in [*covering, *partial])
         return _review(fld, cat, f"several verified answers match this question ({ids}); choose one yourself")
+    if partial:
+        ids = ", ".join(a.id for a in partial)
+        return replace(_review(fld, cat, f"verified answer(s) {ids} match only part of this question: it adds "
+                                         "wording they do not cover (another clause, condition, language or "
+                                         "spelling) -- answer it yourself"), unrecognized_clause=True)
     if cat is FieldCategory.LOGISTICS:
         return _review(fld, cat, "salary / availability / relocation question: answer it yourself "
                                  "(or save a verified answer in your profile)")
@@ -536,18 +595,22 @@ def _remainder(label_norm: str, pattern_norm: str) -> list[str] | None:
     return (padded[:idx] + " " + padded[idx + len(needle):]).split()
 
 
-def matching_verified_answers(label: str, answers: list[VerifiedAnswer], *,
-                              strict: bool = False) -> list[VerifiedAnswer]:
+def matching_verified_answers(label: str, answers: list[VerifiedAnswer], *, strict: bool = False,
+                              filler: frozenset[str] | None = None) -> list[VerifiedAnswer]:
     """Verified answers with a pattern that occurs in the label as whole words.
 
     A pattern never matches a label that adds a negation ("not", "without", ...)
-    around it. ``strict`` (legal declarations) also requires every other word of
-    the label to be neutral filler (``_LEGAL_FILLER``), so "require visa
-    sponsorship" answers "Will you now or in the future require visa sponsorship?"
-    but not a question that adds another clause, a condition, a past tense or
-    another country.
+    around it. ``strict`` also requires every other word of the label to be
+    neutral ``filler`` (default ``_LEGAL_FILLER``, for legal declarations), so
+    "require visa sponsorship" answers "Will you now or in the future require
+    visa sponsorship?" but not a question that adds another clause, a
+    condition, a past tense or another country.
     """
-    text = _YES_NO.sub(" ", normalize(_LABEL_NOISE.sub(" ", label or "")))
+    if strict and filler is not None:  # non-legal answers: example lists are part of the question too
+        text = _NEUTRAL_PHRASES.sub(" ", _YES_NO.sub(" ", normalize(_LABEL_TAGS.sub(" ", label or ""))))
+    else:
+        text = _YES_NO.sub(" ", normalize(_LABEL_NOISE.sub(" ", label or "")))
+    allowed = _LEGAL_FILLER if filler is None else filler
     out: list[VerifiedAnswer] = []
     for answer in answers:
         for pattern in answer.question_patterns:
@@ -555,11 +618,32 @@ def matching_verified_answers(label: str, answers: list[VerifiedAnswer], *,
             rest = _remainder(text, needle) if needle else None
             if rest is None or any(w in _NEGATIONS and w not in needle.split() for w in rest):
                 continue
-            if strict and any(w not in _LEGAL_FILLER for w in rest):
+            if strict and any(w not in allowed for w in rest):
                 continue
             out.append(answer)
             break
     return out
+
+
+def covering_verified_answers(fld: FormField, answers: list[VerifiedAnswer]) -> list[VerifiedAnswer]:
+    """Verified answers whose pattern plus neutral filler covers the field's whole label and placeholder.
+
+    This is the structural guard for every non-legal field: a label that adds any
+    clause the pattern does not cover -- a sponsorship question with a typo, a
+    question in another language, a condition -- is never answered automatically,
+    whether or not the legal-question detector recognized the extra clause.
+    """
+    out = matching_verified_answers(fld.label, answers, strict=True, filler=_NEUTRAL_FILLER)
+    extra = [t for t in (fld.placeholder, getattr(fld, "help_text", None), getattr(fld, "description", None)) if t]
+    if not extra or not out:
+        return out
+    covered: list[VerifiedAnswer] = []
+    for answer in out:
+        if all(set(normalize(t).split()) <= _PLACEHOLDER_NEUTRAL
+               or answer in matching_verified_answers(str(t), [answer], strict=True, filler=_NEUTRAL_FILLER)
+               for t in extra):
+            covered.append(answer)
+    return covered
 
 
 def _legal(fld: FormField, answers: list[VerifiedAnswer]) -> MappedAnswer:

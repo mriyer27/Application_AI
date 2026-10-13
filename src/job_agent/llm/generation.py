@@ -4,11 +4,15 @@ Every function takes an ``OllamaClient`` first, wraps untrusted text (job
 listings, emails, form questions) with ``wrap_untrusted``, asks for JSON
 validated by Pydantic, and raises ``LLMUnavailable`` / ``JobAgentError``
 subclasses on failure. A few cheap deterministic guards run here (numbers
-preserved, unknown fact ids dropped, legal questions refused before any model
-call, reply / follow-up drafts rejected when they disclose, commit, make a
-work-authorization statement or claim numbers, tools or leadership that are not
-in the verified facts -- see ``security.legal_text``); callers still perform
-their own factual validation before using any text.
+preserved, unknown fact ids dropped, legal / sensitive / unreadable questions
+refused before any model call, reply / follow-up / answer drafts rejected when
+they disclose, commit, make a work-authorization or other legal statement --
+also misspelled or in another language --, use non-ASCII numerals or claim
+numbers, tools or leadership that are not in the verified facts -- see
+``security.legal_text``); callers still perform their own factual validation
+before using any text. Drafts are validated and returned as
+``security.textnorm.normalize_text`` output, so the text stored is exactly the
+text that was checked.
 
 Nothing here sends, submits or schedules anything: outputs are drafts for the
 human to review.
@@ -30,6 +34,7 @@ from job_agent.models import EmailCategory, EmailClassification
 from job_agent.profile import Fact
 from job_agent.security import legal_text
 from job_agent.security.redaction import redact_text
+from job_agent.security.textnorm import has_non_ascii_numerals, normalize_text
 from job_agent.security.untrusted import wrap_untrusted
 
 _NUMBER_RE = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)*%?")
@@ -168,16 +173,21 @@ def unsafe_draft_problems(text: str, *, facts: Sequence[Fact | str] | None = Non
     provided) every first-person experience claim with numbers, tools or
     leadership is rejected. Numbers in ``context`` (trusted application data such
     as the date you applied) may be repeated outside experience claims.
+
+    Checks run on ``normalize_text(text)`` (plus a check for non-ASCII numerals in
+    ``text`` itself); store that normalized text, not ``text``.
     """
-    problems = [reason for pattern, reason in _UNSAFE_DRAFT_PATTERNS if pattern.search(text or "")]
+    norm = normalize_text(text)
+    problems = [reason for pattern, reason in _UNSAFE_DRAFT_PATTERNS if pattern.search(norm)]
     problems += legal_text.draft_claim_problems(text, facts=facts, skills=profile_skills, context=context)
     return list(dict.fromkeys(problems))
 
 
 def is_legal_question(question: str) -> bool:
-    """Questions the LLM never drafts: legal / eligibility (``security.legal_text.is_legal_question``)
-    plus compensation, EEO and identity questions."""
-    return legal_text.is_legal_question(question) or legal_text.is_sensitive_question(question)
+    """Questions the LLM never drafts: legal / eligibility (``security.legal_text.is_legal_question``,
+    including misspelled, non-English and unreadable-script wording) plus compensation, EEO and
+    identity questions."""
+    return legal_text.is_never_drafted(question)
 
 
 def clean_multiline(text: str, max_len: int) -> str:
@@ -254,8 +264,13 @@ def classify_email(client: OllamaClient, *, subject: str, sender: str, body: str
 
 def _checked_draft(text: str, kind: str, *, facts: Sequence[Fact | str] | None = None,
                    profile_skills: Sequence[str] | None = None, context: Sequence[str] = ()) -> str:
-    draft = clean_multiline(text, 2500)
-    problems = unsafe_draft_problems(draft, facts=facts, profile_skills=profile_skills, context=context)
+    """The normalized draft (exactly the text that was checked), or ``LLMInvalidOutput``."""
+    draft = clean_multiline(normalize_text(text), 2500)
+    problems = []
+    if has_non_ascii_numerals(text):
+        problems.append("uses numerals that are not plain digits (circled, roman, superscript or other scripts)")
+    problems += unsafe_draft_problems(draft, facts=facts, profile_skills=profile_skills, context=context)
+    problems = list(dict.fromkeys(problems))
     if problems:
         raise LLMInvalidOutput(f"{kind} draft rejected: {', '.join(problems)}",
                                human_action="Write this message yourself (a template is available).")
@@ -278,7 +293,8 @@ def draft_email_reply(client: OllamaClient, *, category: str, subject: str, body
     out = client.generate_json(system=prompts.EMAIL_REPLY_SYSTEM,
                                prompt=prompts.email_reply_prompt(category, wrapped, candidate_name),
                                schema=ReplyOut, model=model, max_tokens=400)
-    return _checked_draft(out.reply, "reply", facts=facts, profile_skills=profile_skills)
+    return _checked_draft(out.reply, "reply", facts=facts, profile_skills=profile_skills,
+                          context=(candidate_name,))
 
 
 def draft_followup(client: OllamaClient, *, employer: str, job_title: str, context: str, candidate_name: str,
@@ -294,17 +310,20 @@ def draft_followup(client: OllamaClient, *, employer: str, job_title: str, conte
     out = client.generate_json(system=prompts.FOLLOWUP_SYSTEM, prompt=prompts.followup_prompt(wrapped, candidate_name),
                                schema=FollowupOut, model=model, max_tokens=350)
     return _checked_draft(out.message, "follow-up", facts=facts, profile_skills=profile_skills,
-                          context=(employer, job_title, context))
+                          context=(employer, job_title, context, candidate_name))
 
 
 def draft_answer(client: OllamaClient, *, question: str, facts: list[Fact], model: str | None = None,
                  profile_skills: Sequence[str] | None = None) -> AnswerDraft:
     """Answer an ordinary (non-legal) form question from verified facts.
 
-    Legal / eligibility / compensation / EEO questions are refused before any
-    model call (``LegalQuestionRefused``, a ``PermanentError``). Answers that make
-    a legal statement or claim numbers, tools or leadership absent from the facts
-    are rejected (``LLMInvalidOutput``).
+    Legal / eligibility / compensation / EEO / identity questions -- also
+    misspelled, in another language or in a script the checks cannot read -- are
+    refused before any model call (``LegalQuestionRefused``, a
+    ``PermanentError``). Answers that are a bare yes/no, make a legal statement,
+    use non-ASCII numerals or claim numbers, tools or leadership absent from the
+    facts are rejected (``LLMInvalidOutput``). The returned answer is the
+    normalized text that was checked.
     """
     if is_legal_question(question):
         raise LegalQuestionRefused("this question concerns legal, eligibility or compensation matters and must be "
@@ -313,7 +332,12 @@ def draft_answer(client: OllamaClient, *, question: str, facts: list[Fact], mode
     block = prompts.facts_block((f.id, f.text) for f in facts)
     out = client.generate_json(system=prompts.ANSWER_SYSTEM, prompt=prompts.answer_prompt(wrapped, block),
                                schema=AnswerOut, model=model, max_tokens=300)
-    answer = clean_multiline(out.answer, 1500)
+    if has_non_ascii_numerals(out.answer):
+        raise LLMInvalidOutput("answer uses numerals that are not plain digits")
+    answer = clean_multiline(normalize_text(out.answer), 1500)
+    if legal_text.is_yes_no_answer(answer):
+        raise LLMInvalidOutput("answer is a bare yes/no; open-ended questions are answered from facts, and yes/no "
+                               "questions by you")
     extra = unverified_numbers(answer, [f.text for f in facts])
     if extra:
         raise LLMInvalidOutput(f"answer contains numbers not found in verified facts: {extra}")

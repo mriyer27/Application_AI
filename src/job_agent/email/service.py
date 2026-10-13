@@ -22,7 +22,13 @@ from typing import TYPE_CHECKING, Any, Callable
 from job_agent.database import repo
 from job_agent.email import auth
 from job_agent.email import repository as email_repo
-from job_agent.email.associate import AUTO_THRESHOLD, AssociationCandidate, find_candidates, store_candidates
+from job_agent.email.associate import (
+    AUTO_THRESHOLD,
+    VERIFIED_METHODS,
+    AssociationCandidate,
+    find_candidates,
+    store_candidates,
+)
 from job_agent.email.classify import (
     ACTIONABLE,
     RULES_CONFIDENT,
@@ -343,6 +349,9 @@ def auto_update_blockers(parsed: ParsedEmail, cls: EmailClassification, *, suspi
         detail = "; ".join(best.reasons[-2:])
         reasons.append(f"link to the application is uncertain ({best.confidence:.2f}" + (f": {detail})" if detail
                                                                                           else ")"))
+    elif best.method != "thread" and (best.method not in VERIFIED_METHODS or best.title_status != "match"):
+        # Defence in depth: associate already caps these below the threshold.
+        reasons.append("the link is not from a verified sender naming this application's role")
     return reasons
 
 

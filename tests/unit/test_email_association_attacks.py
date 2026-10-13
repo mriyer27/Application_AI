@@ -465,14 +465,33 @@ def test_longer_company_name_is_not_the_employer(gctx, make_job):
 
 
 def test_platform_mail_naming_the_full_employer_still_links(gctx, make_job):
+    """Genuine Greenhouse mail about a job posted on Greenhouse, naming the employer and the role."""
+    db = gctx.db
+    job = make_job(employer="Mercury", employer_normalized="mercury", title="Data Analyst",
+                   title_normalized="data analyst", job_url="https://boards.greenhouse.io/mercury/jobs/1")
+    app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("m5b", "Mercury Careers <no-reply@us.greenhouse-mail.io>", "Your application to Mercury",
+                          "Thank you for applying for the Data Analyst position at Mercury. Unfortunately, we will "
+                          "not be moving forward with your application.",
+                          auth=gmail_ar("us.greenhouse-mail.io", dkim_domain="greenhouse-mail.io")))
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+    assert assocs(db, "m5b")[0]["method"] == "platform"
+
+
+def test_platform_mail_for_a_job_posted_elsewhere_waits_for_you(gctx, make_job):
+    """The job is on Ashby; a Greenhouse account calling itself "Mercury" proves nothing."""
     db = gctx.db
     job = make_job(employer="Mercury", employer_normalized="mercury", title="Data Analyst",
                    title_normalized="data analyst", job_url="https://jobs.ashbyhq.com/mercury/1")
     app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
-    res = sync(gctx, mail("m5b", "Mercury Careers <no-reply@us.greenhouse-mail.io>", "Your application to Mercury",
+    res = sync(gctx, mail("m5d", "Mercury Careers <no-reply@us.greenhouse-mail.io>", "Your application to Mercury",
                           "Thank you for applying for the Data Analyst position at Mercury. Unfortunately, we will "
-                          "not be moving forward with your application."))
-    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+                          "not be moving forward with your application.",
+                          auth=gmail_ar("us.greenhouse-mail.io", dkim_domain="greenhouse-mail.io")))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+    top = assocs(db, "m5d")[0]
+    assert top["confidence"] <= UNVERIFIED_CAP and email_row(db, "m5d")["requires_attention"] == 1
+    assert any("not posted on greenhouse" in r for r in review_reasons(db, "m5d"))
 
 
 def test_names_employer_rules():
@@ -553,3 +572,246 @@ def test_verified_sender_offer_applies(gctx, make_job):
 
 def test_unverified_cap_constant_matches():
     assert associate.UNVERIFIED_CAP == UNVERIFIED_CAP < AUTO_THRESHOLD
+
+
+# --------------------------------------------------------------------------- #
+# 7. Round-2 attacks (final verification): each message passes Gmail's DKIM/DMARC for its own domain
+# --------------------------------------------------------------------------- #
+GH_AUTH = gmail_ar("us.greenhouse-mail.io", dkim_domain="greenhouse-mail.io")
+
+
+@pytest.mark.parametrize("employer,other", [("Mercury", "Blue Mercury"), ("Express", "American Express")])
+def test_ats_mail_from_a_longer_company_ending_in_the_employer_name(gctx, make_job, employer, other):
+    """E1: 'Blue Mercury' is not Mercury, even on the ATS the Mercury job was posted on."""
+    db = gctx.db
+    job = make_job(employer=employer, employer_normalized=employer.lower(), title="Data Analyst",
+                   title_normalized="data analyst", job_url=f"https://boards.greenhouse.io/{employer.lower()}/jobs/1")
+    app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("r2-e1", f"{other} <no-reply@us.greenhouse-mail.io>", f"Your application to {other}",
+                          f"Thank you for applying to the Data Analyst position at {other}. Unfortunately, we will "
+                          "not be moving forward with your application at this time.", auth=GH_AUTH))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+    assert all(a["confidence"] < AUTO_THRESHOLD for a in assocs(db, "r2-e1"))
+
+
+def test_ats_mail_with_look_alike_letters_in_the_longer_name(gctx, make_job):
+    """'Вlue Mercury' with a Cyrillic В must not lose its first word and become 'Mercury'."""
+    db = gctx.db
+    job = make_job(employer="Mercury", employer_normalized="mercury", title="Data Analyst",
+                   title_normalized="data analyst", job_url="https://boards.greenhouse.io/mercury/jobs/1")
+    app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
+    sync(gctx, mail("r2-e1h", "Вlue Mercury <no-reply@us.greenhouse-mail.io>", "Your application to Вlue Mercury",
+                    "Thank you for applying to the Data Analyst position at Вlue Mercury. Unfortunately, we "
+                    "will not be moving forward.", auth=GH_AUTH))
+    assert app_status(db, app) == "submitted"
+
+
+def test_self_serve_ats_account_named_like_the_employer(gctx, make_job):
+    """E2: a Workable account's display name is whatever its holder typed; the job is on Acme's own site."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("r2-e2", "Acme Analytics <noreply@candidates.workablemail.com>",
+                          "Your application to Acme Analytics",
+                          "Thank you for applying for the Business Analyst position. Unfortunately, we have decided "
+                          "to move forward with other candidates.",
+                          auth=gmail_ar("candidates.workablemail.com", dkim_domain="workablemail.com")))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+    assert all(a["confidence"] <= UNVERIFIED_CAP for a in assocs(db, "r2-e2"))
+    assert email_row(db, "r2-e2")["requires_attention"] == 1
+    assert any("anyone with an account there" in r for r in review_reasons(db, "r2-e2"))
+
+
+def test_ats_account_of_the_job_posting_is_trusted_and_another_account_is_not(gctx, make_job):
+    """Workday: the job is on acme's Workday site; acme@myworkday.com is that account, globex@myworkday.com is not."""
+    db = gctx.db
+    job = make_job(employer="Acme", employer_normalized="acme", title="Data Analyst", title_normalized="data analyst",
+                   job_url="https://acme.wd5.myworkdayjobs.com/en-US/External/job/NYC/Data-Analyst_R123")
+    app = make_application(db, job, "submitted", submitted_at=SUBMITTED_AT)
+    text = ("Thank you for applying for the Data Analyst position at Acme. Unfortunately, we will not be moving "
+            "forward with your application.")
+    sync(gctx, mail("r2-wd-other", "Acme <globex@myworkday.com>", "Your Data Analyst application at Acme", text,
+                    auth=gmail_ar("myworkday.com"), received="2026-10-10T12:00:00Z"))
+    assert app_status(db, app) == "submitted"
+    assert any("not the one the job was posted by" in r for r in review_reasons(db, "r2-wd-other"))
+    res = sync(gctx, mail("r2-wd", "Acme <acme@myworkday.com>", "Your Data Analyst application at Acme", text,
+                          auth=gmail_ar("myworkday.com")))
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+    assert assocs(db, "r2-wd")[0]["method"] == "platform"
+
+
+def test_ats_account_you_confirmed_is_trusted_afterwards(gctx, make_job):
+    """acmeanalytics.icims.com for a job on Acme's own site: ask once, then trust that account (and only it)."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    first = mail("r2-icims-1", "Acme Analytics <no-reply@acmeanalytics.icims.com>",
+                 "Thank you for applying to Acme Analytics", CONFIRM[1], received="2026-10-05T12:00:00Z",
+                 auth=gmail_ar("acmeanalytics.icims.com", dkim_domain="icims.com"))
+    assert sync(gctx, first).status_updates == 0 and app_status(db, app) == "submitted"
+    associate_email(gctx, email_row(db, "r2-icims-1")["id"], application_ref=repo.get_application(db, app)[
+        "application_uid"], apply_status=True)
+    assert app_status(db, app) == "confirmation_received"
+    later = mail("r2-icims-2", "Acme Analytics <no-reply@acmeanalytics.icims.com>", *REJECT,
+                 auth=gmail_ar("acmeanalytics.icims.com", dkim_domain="icims.com"))
+    res = sync(gctx, later)
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+    assert assocs(db, "r2-icims-2")[0]["method"] == "confirmed_platform"
+
+
+@pytest.mark.parametrize("body", [
+    "Thank you for interviewing for the Business Analyst position. We were pleased to extend an offer to another "
+    "candidate, who has accepted it. We wish you the best in your search.",
+    "After careful consideration, we were happy to make an offer to another candidate for the Business Analyst "
+    "position.",
+    "We were thrilled to extend an offer to a candidate whose experience more closely matched the role.",
+    "Thank you for your time. We are pleased to extend this offer to the candidate we selected for the position.",
+    "We are delighted to offer you the position of applicant in our talent community for future roles.",
+    "We are pleased to extend an offer to anоther candidate for the Business Analyst position.",  # Cyrillic о
+])
+def test_offer_made_to_someone_else_never_sets_offer_received(gctx, make_job, body):
+    """E3: these come from the job's own domain and name the role; none is an offer to you."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    sync(gctx, mail("r2-e3", "Acme Talent <talent@acmeanalytics.com>", "Business Analyst position update", body))
+    assert app_status(db, app) == "submitted"
+    row = email_row(db, "r2-e3")
+    assert row["requires_attention"] == 1
+    assert row["category"] != "offer" or row["category_confidence"] < 0.8
+
+
+def test_position_filled_rejection_still_applies(gctx, make_job):
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("r2-filled", "Acme Talent <talent@acmeanalytics.com>", "Business Analyst position update",
+                          "Thank you for your interest in the Business Analyst position. Unfortunately, the position "
+                          "has been filled."))
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+
+
+@pytest.mark.parametrize("subject,body", [
+    ("Senior Data Engineer (Req 7781) - next steps",
+     "Thank you for your interest in joining Acme Analytics as a Senior Data Engineer. Unfortunately, we will not be "
+     "moving forward with your candidacy."),
+    ("Re: Req 7781 / Senior Data Engineer",
+     "Hi Test, the Senior Data Engineer opening (req 7781) has been closed and we have decided not to move forward."),
+    ("Your application", "Unfortunately, we will not be moving forward with your candidacy."),
+    ("Your application", "Thank you for applying for the Business Analyst position. We have decided to move forward "
+                         "with other candidates for the Senior Data Engineer role."),
+])
+def test_email_must_name_this_role_to_change_its_status(gctx, make_job, subject, body):
+    """E4: another role named in an unusual way, no role at all, or two roles: you decide."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("r2-e4", "Acme Talent <talent@acmeanalytics.com>", subject, body))
+    assert res.status_updates == 0 and app_status(db, app) == "submitted"
+    assert assocs(db, "r2-e4")[0]["confidence"] < AUTO_THRESHOLD
+    assert email_row(db, "r2-e4")["requires_attention"] == 1
+    reasons = " ".join(review_reasons(db, "r2-e4"))
+    assert "role" in reasons
+
+
+def test_role_named_only_in_the_subject_still_applies(gctx, make_job):
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    res = sync(gctx, mail("r2-subj", "Acme Talent <talent@acmeanalytics.com>", "Business Analyst - next steps",
+                          "Hi Test, unfortunately we will not be moving forward with your candidacy."))
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+
+
+def test_authentication_results_injection_via_quoted_mailfrom(gctx, make_job):
+    """E5: ';dmarc=pass ...' inside a quoted smtp.mailfrom local part is not a result; dmarc=fail stands."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"),
+                           "interview_requested", submitted_at=SUBMITTED_AT)
+    inj = '"x;dmarc=pass header.from=acmeanalytics.com;dkim=pass header.i=@acmeanalytics.com"@evil.io'
+    ar = (f"mx.google.com; dkim=pass header.i=@evil.io header.s=s1 header.b=AbC; spf=pass (google.com: domain of "
+          f"{inj} designates 192.0.2.7 as permitted sender) smtp.mailfrom={inj}; dmarc=fail (p=NONE sp=NONE "
+          f"dis=NONE) header.from=acmeanalytics.com")
+    res = sync(gctx, mail("r2-e5", "Acme HR <hr@acmeanalytics.com>", *OFFER, auth=ar))
+    assert res.status_updates == 0 and app_status(db, app) == "interview_requested"
+    assert any(r.startswith("sender not verified") and "dmarc=fail" in r for r in review_reasons(db, "r2-e5"))
+
+
+def test_message_from_another_domain_in_a_linked_thread_is_not_trusted(gctx, make_job):
+    """A genuine Acme thread; a later, authenticated evil.io message in it changes nothing."""
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    sync(gctx, mail("r2-t1", "Acme Careers <careers@acmeanalytics.com>", *CONFIRM, thread="T1",
+                    received="2026-10-09T15:00:00Z"))
+    assert app_status(db, app) == "confirmation_received"
+    res = sync(gctx, mail("r2-t2", "Recruiting <jobs@evil.io>", "Re: Your application to Acme Analytics",
+                          "Unfortunately, we will not be moving forward with your Business Analyst application.",
+                          thread="T1"))
+    assert res.status_updates == 0 and app_status(db, app) == "confirmation_received"
+    rows = assocs(db, "r2-t2")
+    assert rows and all(a["confidence"] < AUTO_THRESHOLD and a["method"] != "thread" for a in rows)
+    assert email_row(db, "r2-t2")["requires_attention"] == 1
+
+
+def test_reply_from_the_same_domain_in_a_linked_thread_needs_no_role(gctx, make_job):
+    db = gctx.db
+    app = make_application(db, acme_job(make_job, job_url="https://careers.acmeanalytics.com/jobs/1"), "submitted",
+                           submitted_at=SUBMITTED_AT)
+    sync(gctx, mail("r2-t3", "Acme Careers <careers@acmeanalytics.com>", *CONFIRM, thread="T2",
+                    received="2026-10-09T15:00:00Z"))
+    res = sync(gctx, mail("r2-t4", "Jo Smith <jo.smith@mail.acmeanalytics.com>", "Re: Thank you for applying",
+                          "Hi Test, unfortunately we will not be moving forward.", thread="T2"))
+    assert res.status_updates == 1 and app_status(db, app) == "rejected"
+    assert assocs(db, "r2-t4")[0]["method"] == "thread"
+
+
+# ---------------------------------------------------------------- helpers ---- #
+def test_names_employer_checks_the_word_before():
+    assert not associate.names_employer("Your application to Blue Mercury", "Mercury")
+    assert not associate.names_employer("American Express <no-reply@us.greenhouse-mail.io>", "Express")
+    assert not associate.names_employer("BLUE MERCURY CAREERS", "Mercury")
+    assert not associate.names_employer("Blue-Mercury recruiting", "Mercury")
+    assert not associate.names_employer("Thank you for applying to Bank of America.", "America")
+    assert not associate.names_employer("Ernst & Young careers", "Ernst")
+    assert not associate.names_employer("Вlue Mercury", "Mercury")  # Cyrillic В
+    assert not associate.names_employer("蓝 Mercury", "Mercury")  # another script's word before
+    assert associate.employer_mention("Thanks from Blue Mercury", "Mercury") == "other"
+    assert associate.employer_mention("Thanks from Acme", "Mercury") == "none"
+    for text in ("Thank You For Applying To Mercury", "Welcome to Express!", "Join Mercury’s team",
+                 "Hi Test,\nMercury will review it.", "Your Data Analyst application at Mercury",
+                 "Update From Mercury", "Re: Mercury - next steps", "Mercury Careers"):
+        assert associate.names_employer(text, "Mercury" if "Express" not in text else "Express"), text
+
+
+def test_title_extraction_beyond_the_common_phrasings():
+    titles = associate.mentioned_titles
+    assert "Senior Data Engineer" in titles("Senior Data Engineer (Req 7781) - next steps", "")
+    assert "Senior Data Engineer" in titles("Re: Req 7781 / Senior Data Engineer", "")
+    assert "Senior Data Engineer" in titles("Update", "joining Acme Analytics as a Senior Data Engineer. Thanks")
+    assert "Data Engineer" in titles("Update", "for the position of Data Engineer in our team.")
+    assert titles("Offer letter - Business Analyst", "") == ["Business Analyst"]
+    assert titles("Thank you for applying to Acme Analytics", "") == []
+
+    def status(body, subject="x"):
+        return associate.title_status("Business Analyst", "Acme Analytics", titles(subject, body), subject=subject,
+                                      body=body)[0]
+
+    assert status("Thank you for applying for the Business Analyst position.") == "match"
+    assert status("Thank you for applying for the Business Analyst position. We are hiring for the Data Engineer "
+                  "role instead.") == "mixed"
+    assert status("Unfortunately we will not move forward.") == "none"
+    assert status("", subject="Senior Business Analyst - update") == "mismatch"
+
+
+def test_platform_tenant_helpers():
+    assert associate.url_tenant("https://boards.greenhouse.io/acmeanalytics/jobs/101") == ("greenhouse", "acmeanalytics")
+    assert associate.url_tenant("https://boards.greenhouse.io/embed/job_app?for=acme&token=1") == ("greenhouse", "acme")
+    assert associate.url_tenant("https://acme.wd5.myworkdayjobs.com/en-US/External/job/1") == ("workday", "acme")
+    assert associate.url_tenant("https://careers-acme.icims.com/jobs/1234/job") == ("icims.com", "acme")
+    assert associate.url_tenant("https://careers.acmeanalytics.com/jobs/1") is None
+    assert associate.platform_family("us.greenhouse-mail.io") == associate.platform_family("boards.greenhouse.io")
+    assert associate.sender_tenants("us.greenhouse-mail.io", "no-reply") == set()
+    assert associate.sender_tenants("candidates.workablemail.com", "noreply") == set()
+    assert associate.sender_tenants("myworkday.com", "acmecareers") == {"acme"}
+    assert associate.sender_tenants("mercuryinsurance.icims.com", "no-reply") == {"mercuryinsurance"}

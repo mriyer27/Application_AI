@@ -6,7 +6,10 @@ authorization / sponsorship, or claim experience (numbers, tools, leadership)
 that is not in the verified profile; they use placeholders such as
 ``[your availability]`` that the user fills in. An optional local-LLM draft is
 accepted only if it passes the same deterministic checks
-(``security.legal_text``), otherwise the template is used.
+(``security.legal_text``: also misspelled or non-English work-authorization
+statements, clearance claims and non-ASCII numerals), otherwise the template is
+used. Checks run on ``security.textnorm.normalize_text`` output, and that
+normalized text is what gets stored.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from typing import Any, Callable
 
 from job_agent.models import EmailCategory
 from job_agent.security.legal_text import draft_claim_problems
+from job_agent.security.textnorm import normalize_text
 from job_agent.security.untrusted import clean_untrusted
 
 C = EmailCategory
@@ -84,16 +88,20 @@ def reply_problems(text: str, *, facts: Iterable[Any] | None = None, skills: Ite
     experience claim with numbers, tools or leadership is rejected. ``context``
     is trusted application data whose numbers (e.g. the date you applied) may be
     repeated. The incoming email is never a source of allowed claims.
+
+    Everything is checked on ``normalize_text(text)`` (non-ASCII numerals in
+    ``text`` itself are a problem too); offer that normalized text, not ``text``.
     """
+    norm = normalize_text(text)
     problems: list[str] = []
-    if not text.strip():
+    if not norm.strip():
         problems.append("is empty")
-    if len(text) > MAX_REPLY_CHARS:
+    if len(norm) > MAX_REPLY_CHARS:
         problems.append(f"is longer than {MAX_REPLY_CHARS} characters")
-    if _FORBIDDEN.search(text):
+    if _FORBIDDEN.search(norm):
         problems.append("accepts, commits, negotiates or discloses sensitive information")
-    problems += draft_claim_problems(text, facts=facts, skills=skills, context=context)
-    return problems
+    problems += draft_claim_problems(text, facts=facts, skills=skills, context=tuple(context))
+    return list(dict.fromkeys(problems))
 
 
 def reply_is_safe(text: str, *, facts: Iterable[Any] | None = None, skills: Iterable[str] | None = None,
@@ -106,7 +114,9 @@ def suggest_reply(category: EmailCategory, *, candidate_name: str | None, subjec
                   profile_skills: Iterable[str] | None = None) -> tuple[str | None, str]:
     """Return ``(draft, source)`` where source is ``template`` / ``llm`` / ``none``.
 
-    ``facts`` / ``profile_skills`` are only used to check the LLM draft.
+    ``facts`` / ``profile_skills`` are only used to check the LLM draft. An
+    accepted LLM draft is returned normalized (``normalize_text``): exactly the
+    text that passed the checks.
     """
     if category not in REPLY_CATEGORIES:
         return None, "none"
@@ -115,7 +125,8 @@ def suggest_reply(category: EmailCategory, *, candidate_name: str | None, subjec
         draft = llm_draft(category=category.value, subject=subject, body=body,
                           candidate_name=candidate_name or "[your name]")
         cleaned = clean_untrusted(str(draft or ""), max_chars=MAX_REPLY_CHARS * 2)
-        if "[" in cleaned and reply_is_safe(cleaned, facts=None if facts is None else list(facts),
-                                            skills=profile_skills):
-            return cleaned, "llm"
+        normalized = normalize_text(cleaned)
+        if "[" in normalized and reply_is_safe(cleaned, facts=None if facts is None else list(facts),
+                                               skills=profile_skills, context=(candidate_name or "",)):
+            return normalized, "llm"
     return fallback, "template"

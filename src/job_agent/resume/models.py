@@ -217,3 +217,5 @@ class PreparedDocuments(_M):
     cover_letter_version: int | None = None
     generator: str = "rules"
     next_step: str = ""
+    #: False when the application was already submitted and keeps pointing at the documents actually used.
+    documents_linked: bool = True

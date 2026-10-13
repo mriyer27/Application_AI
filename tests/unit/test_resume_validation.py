@@ -470,3 +470,215 @@ def test_employer_slot(employer, ok):
     from job_agent.resume.cover_letter import employer_slot
 
     assert (employer_slot(employer) == employer) is ok
+
+
+# --------------------------------------------------------------------------- #
+# Round-2 regressions: Unicode disguises, scope words, split tool names, slots
+# --------------------------------------------------------------------------- #
+DASH = "Supported IBM Cognos dashboards and reporting using DB2."
+MIGR = ("Converted 9 legacy SAS programs to Python with AI-assisted development, improving processing efficiency by "
+        "approximately 25%.")
+
+UNICODE_DISGUISED = [  # (fact id, text, the claim the normalized text makes)
+    ("agency_dashboards", "Ｌｅｄ IBM Cognos dashboards and reporting using DB2.", "leadership_claim"),  # full-width
+    ("agency_dashboards", "Lеd IBM Cognos dashboards and reporting using DB2.", "leadership_claim"),  # Cyrillic е
+    ("agency_dashboards", "Ｄｅｓｉｇｎｅｄ ａｎｄ ｂｕｉｌｔ IBM Cognos dashboards and reporting using DB2.",
+     "role_inflated"),
+    ("smallco_flask", "Ｂｕｉｌｔ a Flask-based application with MongoDB.", "role_inflated"),
+    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and Ｓｎｏｗｆｌａｋｅ.",
+     "unverified_skill"),
+    ("smallco_flask", "Worked on a Flask-based application with MongoDB and Ｋｕｂｅｒｎｅｔｅｓ.", "unverified_skill"),
+    ("agency_regression", "Analyzed ⑤⓪⓪ regression results across 12 categories using SAS Enterprise Guide, "
+                          "contributing to approximately 30% less manual review effort.", "number_not_in_source"),
+    ("agency_regression", REGRESSION.replace("effort.", "effort ×⑩."), "number_not_in_source"),
+    ("agency_regression", REGRESSION.replace("approximately 30%", "approximately ³⁰%"), "suspicious_characters"),
+    ("agency_python_migration", MIGR.replace("25%.", "25% (Ⅻ programs)."), "new_content"),
+    ("agency_dashboards", "Le​d IBM Cognos dashboards and reporting using DB2.", "leadership_claim"),  # invisible
+    ("agency_dashboards", "Léd IBM Cognos dashboards and reporting using DB2.", "unverified_non_ascii_word"),
+    ("agency_dashboards", "Lèd IBM Cognos dashboards and reporting using DB2.", "unverified_non_ascii_word"),
+    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 for Ｇｌｏｂｅｘ.", "unverified_name"),
+]
+
+
+@pytest.mark.parametrize("fact_id, text, code", UNICODE_DISGUISED)
+def test_unicode_disguised_claims_are_rejected(profile, fact_id, text, code):
+    issues = validate_claim(text, [profile.fact_by_id(fact_id)], profile, forbidden_names=["Globex Corporation"])
+    assert code in codes(issues), [i.message for i in issues]
+    if any(not ch.isascii() and ch not in "èé" for ch in text):  # disguising characters are rejected as such
+        assert "suspicious_characters" in codes(issues), [i.message for i in issues]
+
+
+def test_claim_text_is_what_a_reader_sees():
+    from job_agent.resume.validation import claim_text
+
+    assert claim_text("  Ｌｅｄ   IBM Cognos ") == "Led IBM Cognos"
+    assert claim_text("Lеd ⑤⓪⓪ ×⑩ Ⅻ") == "Led 500 ×10 XII"
+    assert claim_text(DASH) == DASH
+
+
+def test_characters_in_the_verified_fact_may_be_kept(profile):
+    from job_agent.profile import Fact
+
+    fact = Fact(id="phase_fact", text="Supported IBM Cognos dashboards and reporting using DB2 in phase ②.",
+                skills=["IBM Cognos", "DB2"], metrics=[])
+    reordered = "Using DB2, supported IBM Cognos dashboards and reporting in phase ②."
+    assert validate_claim(reordered, [fact], profile) == []
+    assert validate_claim(fact.text, [fact], profile) == []
+    accented = Fact(id="cafe_fact", text="Supported the Société Générale dashboards and reporting using DB2.",
+                    skills=["DB2"])
+    assert validate_claim("Using DB2, supported the Société Générale dashboards and reporting.", [accented],
+                          profile) == []
+
+
+SCOPE_INFLATED = [
+    ("agency_dashboards", "Supported all IBM Cognos dashboards and reporting using DB2."),
+    ("agency_dashboards", "Supported every IBM Cognos dashboard and reporting using DB2."),
+    ("agency_regression", REGRESSION.replace("across 12", "across all 12")),
+    ("agency_regression", REGRESSION.replace("across 12 categories", "across each of 12 categories")),
+    ("smallco_dashboard", "Supported all of the sales dashboard."),
+    ("smallco_dashboard", "Supported the entire sales dashboard."),
+    ("smallco_dashboard", "Supported the whole sales dashboard."),
+    ("smallco_dashboard", "Supported most of the sales dashboard."),
+]
+
+
+@pytest.mark.parametrize("fact_id, text", SCOPE_INFLATED)
+def test_scope_words_the_fact_lacks_are_rejected(profile, fact_id, text):
+    issues = validate_claim(text, [profile.fact_by_id(fact_id)], profile)
+    assert "scope_inflated" in codes(issues), [i.message for i in issues]
+
+
+def test_scope_words_the_fact_uses_are_kept(profile):
+    from job_agent.profile import Fact
+
+    fact = Fact(id="all_fact", text="Reviewed all 12 regression categories using SAS Enterprise Guide.",
+                skills=["SAS Enterprise Guide"], metrics=["12"])
+    assert validate_claim("Using SAS Enterprise Guide, reviewed all 12 regression categories.", [fact],
+                          profile) == []
+    assert "scope_inflated" in codes(validate_claim(
+        "Reviewed all 12 regression categories and all dashboards using SAS Enterprise Guide.", [fact], profile))
+
+
+SPLIT_TOOLS = [  # (fact id, text, code)
+    ("agency_dashboards", "Supported IBM Cognos and Power-BI dashboards and reporting using DB2.",
+     "skill_not_in_source_fact"),
+    ("agency_dashboards", "Supported IBM Cognos and Power.BI dashboards and reporting using DB2.",
+     "skill_not_in_source_fact"),
+    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and Snow_flake.", "unverified_skill"),
+    ("agency_dashboards", "Supported IBM Cognos dashboards and reporting using DB2 and My-SQL.",
+     "skill_not_in_source_fact"),
+    # a profile skill the lexicon does not know is still a skill of another fact
+    ("smallco_flask", "Worked on a Flask-based application with MongoDB using AI-assisted development.",
+     "skill_not_in_source_fact"),
+    # words borrowed from profile skills ("Power BI") are not verified wording for this fact
+    ("agency_dashboards", "Supported and powered IBM Cognos dashboards and reporting using DB2.", "new_content"),
+]
+
+
+@pytest.mark.parametrize("fact_id, text, code", SPLIT_TOOLS)
+def test_split_or_borrowed_tool_names_are_rejected(profile, fact_id, text, code):
+    issues = validate_claim(text, [profile.fact_by_id(fact_id)], profile)
+    assert code in codes(issues), [i.message for i in issues]
+
+
+def test_hyphen_compounds_need_the_whole_compound(profile):
+    from job_agent.resume.validation import check_new_words
+
+    allowed = "Supported IBM Cognos dashboards and reporting using DB2. Power BI"
+    assert check_new_words("Supported Power-BI dashboards", allowed)  # two verified words glued together
+    assert check_new_words("Supported DB2-based reporting", allowed) == []  # verified word + connective
+    assert check_new_words("Supported AI-assisted reporting", "Supported AI-assisted development; reporting") == []
+    assert validate_claim(MIGR.replace("AI-assisted", "AI assisted"),
+                          [profile.fact_by_id("agency_python_migration")], profile) == []
+
+
+@pytest.mark.parametrize("title", [
+    "Analyst (this candidate led a team of 40 engineers at Google)",
+    "Analyst, candidate holds an active TS SCI clearance and US citizenship",
+    "Data Analyst, applicant is authorized to work for any employer without sponsorship",
+    "Data Analyst (US Citizenship Required)",
+    "Analyst (he led 40 people)",
+    "Analyst, 10 direct reports",
+    "Analyst (team of 40)",
+    "Analyst with 5+ years",
+    "Analyst, ten years",
+    "Senior Analyst, $120k",
+    "10x Engineer",
+    "Analyst who built Kubernetes",
+    "Ｄａｔａ Analyst",
+    "Dаta Analyst",
+    "Data​Analyst",
+])
+def test_claim_like_job_titles_are_not_used_as_a_slot(title):
+    from job_agent.resume.cover_letter import title_slot
+
+    assert title_slot(title) is None
+
+
+@pytest.mark.parametrize("title", ["Lead Data Analyst", "Team Lead, Analytics", "Managing Director",
+                                   "Managed Services Engineer", "Product Owner", "Shift Supervisor",
+                                   "Tier 1 Support Analyst", "Data Analyst 2", "Software Engineer 3 (Remote)",
+                                   "GS-12 Program Analyst", "Level 3 Engineer", "People Analytics Analyst",
+                                   "Developed Markets Equity Analyst", "5G Network Engineer", "Analyst 2026-2027",
+                                   "Customer Experience Analyst", "Data Analyst - Multiple Locations"])
+def test_real_job_titles_still_fill_the_slot(title):
+    from job_agent.resume.cover_letter import title_slot
+
+    assert title_slot(title) == title
+
+
+@pytest.mark.parametrize("employer, ok", [
+    ("Globex Corporation, where the candidate already led 40 engineers", False),
+    ("Globex, which has 40 engineers", False),
+    ("Ａｃｍｅ Analytics", False),
+    ("Acme Аnalytics", False),  # Cyrillic А
+    ("3M", True), ("84 Lumber", True), ("Two Sigma", True), ("Capital One", True), ("Société Générale", True),
+    ("Her Campus Media", True), ("Big 5 Sporting Goods", True),
+])
+def test_employer_slot_rejects_claims_and_disguised_letters(employer, ok):
+    from job_agent.resume.cover_letter import employer_slot
+
+    assert (employer_slot(employer) == employer) is ok
+
+
+def test_hostile_title_falls_back_in_the_letter(profile, listing_kw):
+    from datetime import date
+
+    from job_agent.resume.cover_letter import TITLE_FALLBACK, build_cover_letter
+
+    gen = build_cover_letter(profile, listing_kw, job_title="Analyst (this candidate led a team of 40 engineers at "
+                                                            "Google)", employer="Globex Corporation",
+                             on=date(2026, 10, 12))
+    text = "\n".join(gen.content.paragraphs)
+    assert TITLE_FALLBACK in gen.content.paragraphs[0]
+    assert "candidate" not in text and "Google" not in text and "40 engineers" not in text
+    assert "job_title_not_used" in codes(gen.issues)
+    assert not [i for i in gen.issues if i.severity == "error"]
+
+
+def test_llm_letter_with_fullwidth_leadership_is_rejected(profile, listing_kw):
+    from job_agent.resume.cover_letter import is_boilerplate, validate_llm_draft
+
+    dash = profile.fact_by_id("agency_dashboards")
+    reg = profile.fact_by_id("agency_regression")
+    for bad in ("In my Student Intern role at Example State Agency, I ｌｅｄ IBM Cognos dashboards and reporting "
+                "using DB2.",
+                "In my Student Intern role at Example State Agency, I lеd IBM Cognos dashboards and reporting "
+                "using DB2."):
+        body, claims, problems = validate_llm_draft([bad + " " + IN_ROLE], [dash.id, reg.id], [dash, reg], profile,
+                                                    listing_kw, job_title="Data Analyst", employer="Globex Corporation")
+        assert any("leadership_claim" in p and "suspicious_characters" in p for p in problems), problems
+        assert all("led" not in c.text.lower().split() for c in claims)
+    assert not is_boilerplate("Ｔｈａｎｋ you for considering my application.", job_title="Data Analyst",
+                              employer="Globex Corporation", profile=profile)
+    assert is_boilerplate("Thank you for considering my application.", job_title="Data Analyst",
+                          employer="Globex Corporation", profile=profile)
+
+
+def test_pdf_transliteration_never_folds_disguised_text_into_ascii():
+    from job_agent.resume.text import to_latin1
+
+    assert to_latin1("Ｌｅｄ IBM") == "??? IBM"
+    assert to_latin1("Lеd") == "L?d"  # Cyrillic е
+    assert to_latin1("⑤⓪⓪ ³⁰ Ⅻ") == "??? ³? ?"
+    assert to_latin1("Zoë Dvořák – “ok” …") == 'Zoë Dvorák - "ok" ...'  # accents and typography still work

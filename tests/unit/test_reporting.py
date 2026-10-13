@@ -251,7 +251,8 @@ def test_trend_counts(db, seeded):
     assert by_date["2026-10-10"]["submitted"] == 1 and by_date["2026-10-10"]["interviews"] == 1
     assert by_date["2026-10-05"]["rejections"] == 1
     assert sum(t["submitted"] for t in trend) == 5
-    assert set(trend[0]) == {"date", "discovered", "applications", "submitted", "interviews", "rejections", "offers"}
+    assert set(trend[0]) == {"date", "discovered", "applications", "submitted", "interviews", "rejections", "offers",
+                             "emails"}
     with pytest.raises(ValueError):
         q.trend_counts(db, 0)
 
@@ -568,3 +569,161 @@ def test_counts_with_real_repo_state_machine(ctx, make_job):
     assert c["awaiting_approval"] == 1 and c["approvals_pending"] == 1
     assert c["applications_prepared_today"] == 3 and c["applications_total"] == 4
     assert c["new_jobs_today"] == 4
+
+
+# --------------------------------------------------------------------------- #
+# r2: user corrections, missed-report catch-up, DST-aware trends
+# --------------------------------------------------------------------------- #
+def _submitted_app(ctx, make_job):
+    from job_agent.database import repo
+    from job_agent.models import PipelineState as S
+
+    app_id = repo.create_application(ctx.db, make_job(), actor="system")
+    repo.transition_application(ctx.db, app_id, S.DOCUMENTS_READY, actor="system")
+    repo.transition_application(ctx.db, app_id, S.SUBMITTED, actor="user")
+    return app_id, repo.get_application(ctx.db, app_id)["application_uid"]
+
+
+def _today_counts(ctx):
+    from job_agent.utils.time import local_today
+
+    s, e = q.local_day_bounds(local_today(ctx.config.app.timezone), ctx.config.app.timezone)
+    return q.dashboard_counts(ctx.db, s, e), s, e
+
+
+def test_corrected_rejection_is_not_counted(ctx, make_job):
+    """r2: an email wrongly marked an application rejected; after your correction it was still counted."""
+    from job_agent.applications import service
+    from job_agent.database import repo
+    from job_agent.models import PipelineState as S
+    from job_agent.reporting.data import collect_report_data
+    from job_agent.utils.time import local_today
+
+    app_id, uid = _submitted_app(ctx, make_job)
+    repo.transition_application(ctx.db, app_id, S.REJECTED, actor="email",
+                                evidence={"type": "email", "gmail_message_id": "m1"})
+    assert _today_counts(ctx)[0]["rejections"] == 1
+    assert service.set_status(ctx, uid, "submitted", note="rejection email was for another role") == S.REJECTED
+    c, s, e = _today_counts(ctx)
+    assert c["rejections"] == 0 and c["submitted"] == 1
+    assert q.milestones(ctx.db, q.REJECTION_STATES, s, e) == []
+    today = local_today(ctx.config.app.timezone)
+    assert sum(t["rejections"] for t in q.trend_counts(ctx.db, 3, tz_name=ctx.config.app.timezone,
+                                                       end_date=today)) == 0
+    data = collect_report_data(ctx, today)
+    assert data.counts["rejections"] == 0 and data.rejection_milestones == []
+
+
+def test_corrected_interview_is_not_counted_but_new_status_is(ctx, make_job):
+    from job_agent.applications import service
+
+    app_id, uid = _submitted_app(ctx, make_job)
+    service.set_status(ctx, uid, "interview_requested")
+    service.set_status(ctx, uid, "confirmation_received", note="it was only the confirmation")
+    c, s, e = _today_counts(ctx)
+    assert c["interviews"] == 0 and c["confirmations"] == 1
+    assert q.milestones(ctx.db, q.INTERVIEW_STATES, s, e) == []
+    assert [r["id"] for r in q.confirmations(ctx.db, s, e)] == [app_id]
+
+
+def test_corrected_confirmation_is_not_counted(ctx, make_job):
+    from job_agent.applications import service
+    from job_agent.database import repo
+    from job_agent.models import PipelineState as S
+
+    app_id, uid = _submitted_app(ctx, make_job)
+    repo.transition_application(ctx.db, app_id, S.CONFIRMATION_RECEIVED, actor="email",
+                                evidence={"type": "email", "gmail_message_id": "m2"})
+    assert _today_counts(ctx)[0]["confirmations"] == 1
+    service.set_status(ctx, uid, "submitted", note="the confirmation was for another job")
+    c, s, e = _today_counts(ctx)
+    assert c["confirmations"] == 0 and c["submitted"] == 1
+    assert q.confirmations(ctx.db, s, e) == []
+
+
+def test_genuine_milestones_still_counted(ctx, make_job):
+    """Normal progress (not a correction) keeps every milestone: interview -> scheduled -> rejected -> closed."""
+    from job_agent.applications import service
+    from job_agent.database import repo
+    from job_agent.models import PipelineState as S
+
+    app_id, uid = _submitted_app(ctx, make_job)
+    email = {"type": "email", "gmail_message_id": "m3"}
+    repo.transition_application(ctx.db, app_id, S.INTERVIEW_REQUESTED, actor="email", evidence=email)
+    repo.transition_application(ctx.db, app_id, S.INTERVIEW_SCHEDULED, actor="email", evidence=email)
+    repo.transition_application(ctx.db, app_id, S.REJECTED, actor="email", evidence=email)
+    service.set_status(ctx, uid, "closed")
+    second, uid2 = _submitted_app(ctx, make_job)
+    service.set_status(ctx, uid2, "offer_received")
+    c, s, e = _today_counts(ctx)
+    assert c["interviews"] == 1 and c["rejections"] == 1 and c["offers"] == 1 and c["submitted"] == 2
+    assert len(q.milestones(ctx.db, q.INTERVIEW_STATES, s, e)) == 1
+
+
+def _seed_job_on(db, make_job, local_day: date, tz: str = "America/New_York"):
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    at = datetime.combine(local_day, time(12, 0), tzinfo=ZoneInfo(tz)).astimezone(ZoneInfo("UTC")).isoformat()
+    return make_job(discovered_at=at)
+
+
+def test_missed_report_is_caught_up_after_midnight(ctx, make_job, monkeypatch):
+    """r2: a 21:30 report caught up after local midnight only produced the new day; the missed day had none."""
+    from job_agent.reporting import service as rs
+    from job_agent.tasks import run_task
+
+    monkeypatch.setattr(rs, "local_today", lambda tz_name: date(2026, 10, 13))
+    _seed_job_on(ctx.db, make_job, date(2026, 10, 12))
+    result = run_task(ctx, "report", trigger="startup")  # the daemon's start-up catch-up
+    assert result.summary["caught_up_reports"] == ["2026-10-12"], result.error
+    assert result.summary["report_date"] == "2026-10-13"
+    days = {r["report_date"]: r for r in ctx.db.query_all("SELECT * FROM reports")}
+    assert set(days) == {"2026-10-12", "2026-10-13"}
+    assert days["2026-10-12"]["xlsx_file"] == "Job_Search_Report_2026-10-12.xlsx"
+    x12, md12 = report_paths(ctx.config, date(2026, 10, 12))
+    assert x12.is_file() and md12.is_file()
+    assert json.loads(days["2026-10-12"]["stats"])["counts"]["new_jobs_today"] == 1
+    # Later runs that day do not regenerate the missed day again.
+    again = run_task(ctx, "report", trigger="scheduled")
+    assert again.summary["caught_up_reports"] == []
+    assert ctx.db.scalar("SELECT generation_count FROM reports WHERE report_date = '2026-10-12'") == 1
+    assert ctx.db.scalar("SELECT generation_count FROM reports WHERE report_date = '2026-10-13'") == 2
+
+
+def test_no_previous_day_report_without_earlier_data(ctx, make_job, monkeypatch):
+    """Fresh install: nothing happened before today, so only today's report is written."""
+    from job_agent.reporting import service as rs
+    from job_agent.tasks import run_task
+
+    monkeypatch.setattr(rs, "local_today", lambda tz_name: date(2026, 10, 13))
+    _seed_job_on(ctx.db, make_job, date(2026, 10, 13))
+    result = run_task(ctx, "report", trigger="startup")
+    assert result.summary["caught_up_reports"] == []
+    assert [r["report_date"] for r in ctx.db.query_all("SELECT report_date FROM reports")] == ["2026-10-13"]
+
+
+def test_existing_previous_day_report_is_left_alone(ctx, seeded, monkeypatch):
+    from job_agent.reporting import service as rs
+    from job_agent.tasks import run_task
+
+    monkeypatch.setattr(rs, "local_today", lambda tz_name: date(2026, 10, 11))
+    generate_daily_report(ctx, D)  # 2026-10-10 already generated (at 21:30)
+    result = run_task(ctx, "report", trigger="scheduled")
+    assert result.summary["caught_up_reports"] == [] and result.summary["report_date"] == "2026-10-11"
+    assert ctx.db.scalar("SELECT generation_count FROM reports WHERE report_date = '2026-10-10'") == 1
+
+
+def test_trend_counts_bucket_by_each_days_own_offset(db, make_job):
+    """r2: across a DST change the dashboard (today's offset) and the report disagreed on the local day."""
+    make_job(discovered_at="2026-09-29T13:30:00+00:00")  # 23:30 AEST, before Sydney's 2026-10-04 DST start
+    trend = q.trend_counts(db, 30, tz_name="Australia/Sydney", end_date=date(2026, 10, 13))
+    assert {t["date"]: t["discovered"] for t in trend if t["discovered"]} == {"2026-09-29": 1}
+
+
+def test_trend_counts_emails(db):
+    db.insert("email_messages", {"gmail_message_id": "g1", "gmail_thread_id": "t1",
+                                 "received_at": "2026-10-10T15:00:00+00:00",
+                                 "processed_at": "2026-10-10T15:05:00+00:00", "category": "recruiter_message"})
+    trend = q.trend_counts(db, 3, tz_name="America/New_York", end_date=D)
+    assert {t["date"]: t["emails"] for t in trend} == {"2026-10-08": 0, "2026-10-09": 0, "2026-10-10": 1}

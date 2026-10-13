@@ -421,8 +421,11 @@ def test_submit_hang_is_unknown_outcome_and_never_retried(ctx, make_job, server)
     assert ctx.db.scalar("SELECT COUNT(*) FROM errors WHERE application_id = ? AND error_kind = 'unknown_outcome'",
                          (info["app_id"],)) == 1
     ctx.config.applications.browser_timeout_seconds = 10
-    # A fresh prepare + answer + approval still cannot trigger another automatic submission.
-    service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory)
+    # Re-preparing is refused until you confirm it was not submitted ...
+    with pytest.raises(HumanActionRequired, match="UNKNOWN outcome"):
+        service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory)
+    # ... and even then a fresh prepare + answer + approval cannot trigger another automatic submission.
+    service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory, confirm_not_submitted=True)
     fresh = service.set_answer(ctx, info["app_uid"], "certify", "yes")
     service.decide(ctx, fresh, approve=True, actor="cli")
     with pytest.raises(service.SubmissionBlocked, match="unknown outcome"):

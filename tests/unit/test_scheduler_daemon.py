@@ -274,6 +274,51 @@ def test_startup_marks_dead_runs_interrupted_and_releases_their_locks(ctx, fake,
     assert db.scalar("SELECT lock_owner FROM scheduled_tasks WHERE task_name = 't_ok'") is None
 
 
+def _attempted_application(db, make_job, *, minutes_ago: int) -> int:
+    from job_agent.models import ApprovalType, PipelineState as S
+
+    app_id = repo.create_application(db, make_job(), actor="system")
+    repo.transition_application(db, app_id, S.DOCUMENTS_READY, actor="system")
+    repo.transition_application(db, app_id, S.AWAITING_APPROVAL, actor="system")
+    payload = {"application_id": app_id}
+    uid = repo.create_approval(db, ApprovalType.SUBMIT_APPLICATION, payload, summary="Submit", actor="system",
+                               application_id=app_id)
+    repo.decide_approval(db, uid, approve=True, actor="user")
+    repo.transition_application(db, app_id, S.SUBMISSION_ATTEMPTED, actor="browser", approval_uid=uid,
+                                approved_payload=payload)
+    db.execute("UPDATE applications SET status_updated_at = ? WHERE id = ?",
+               (to_iso(utcnow() - timedelta(minutes=minutes_ago)), app_id))
+    return app_id
+
+
+def test_startup_records_interrupted_submissions_as_unknown_outcomes(ctx, fake, config, make_job):
+    """r2 HIGH: a submission killed mid-way stayed in submission_attempted forever; the daemon now recovers it."""
+    config.scheduler.tasks = {"t_ok": ScheduleEntry(cron=_cron_hours_ago(0))}
+    db = ctx.db
+    stuck = _attempted_application(db, make_job, minutes_ago=60)
+    running = _attempted_application(db, make_job, minutes_ago=0)  # may still be in progress elsewhere
+    with DaemonThread(ctx.fork()) as d:
+        assert d.report.recovered_submissions == 1
+    assert repo.get_application(db, stuck)["status"] == "needs_manual_action"
+    assert repo.get_application(db, running)["status"] == "submission_attempted"
+    err = db.query_one("SELECT * FROM errors WHERE application_id = ?", (stuck,))
+    assert err["error_kind"] == "unknown_outcome" and err["requires_human_action"] == 1
+    started = db.query_one("SELECT details FROM audit_events WHERE action = 'daemon_started'")
+    assert '"recovered_submissions": 1' in started["details"]
+    # A second start finds nothing more to recover.
+    with DaemonThread(ctx.fork()) as d:
+        assert d.report.recovered_submissions == 0
+
+
+def test_run_once_recovers_interrupted_submissions(ctx, fake, config, make_job):
+    config.scheduler.tasks = {"t_ok": ScheduleEntry(cron="0 3 * * *")}
+    stuck = _attempted_application(ctx.db, make_job, minutes_ago=60)
+    daemon_mod.run_once(ctx)
+    assert repo.get_application(ctx.db, stuck)["status"] == "needs_manual_action"
+    details = ctx.db.scalar("SELECT details FROM audit_events WHERE action = 'daemon_run_once'")
+    assert '"recovered_submissions": 1' in details
+
+
 def test_catch_up_runs_missed_daily_task_once(ctx, fake, config):
     config.scheduler.tasks = {"t_fail": ScheduleEntry(cron=_cron_hours_ago(3))}
     db = ctx.db

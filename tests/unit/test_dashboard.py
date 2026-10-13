@@ -846,6 +846,37 @@ def test_trends_counts_recent_days(db, make_job, config):
     assert series["applications"].total == 0
 
 
+def test_trends_match_report_trends_across_dst(db, make_job, config, monkeypatch):
+    """r2: dashboard trends bucketed by today's UTC offset and disagreed with the report after a DST change."""
+    from datetime import date
+
+    from job_agent.reporting import queries as rq
+
+    cfg = config.model_copy(deep=True)
+    cfg.app.timezone = "Australia/Sydney"  # DST started 2026-10-04 (UTC+10 -> UTC+11)
+    monkeypatch.setattr(queries, "local_today", lambda tz_name: date(2026, 10, 13))
+    make_job(discovered_at="2026-09-29T13:30:00+00:00")  # 23:30 local on 2026-09-29 (AEST)
+    series = {s.key: s for s in queries.trends(db, cfg)}
+    dash = {d: n for d, n in series["jobs"].points if n}
+    report = {r["date"]: r["discovered"] for r in rq.trend_counts(db, 30, tz_name="Australia/Sydney",
+                                                                  end_date=date(2026, 10, 13)) if r["discovered"]}
+    assert dash == report == {"2026-09-29": 1}
+    assert series["jobs"].points[-1][0] == "2026-10-13" and len(series["jobs"].points) == 30
+
+
+def test_trends_count_only_evidenced_submissions(db, make_job, config):
+    """The dashboard's "Applications submitted" series uses the report's evidence-based definition."""
+    from job_agent.models import PipelineState as S
+
+    unproven = repo.create_application(db, make_job(), actor="system")
+    db.execute("UPDATE applications SET submitted_at = ? WHERE id = ?", (utcnow_iso(), unproven))
+    reported = repo.create_application(db, make_job(), actor="system")
+    repo.transition_application(db, reported, S.DOCUMENTS_READY, actor="system")
+    repo.transition_application(db, reported, S.SUBMITTED, actor="user")
+    series = {s.key: s for s in queries.trends(db, config)}
+    assert series["applications"].total == 1
+
+
 def test_default_factory_loads_environment_once_and_forks(home, monkeypatch, no_service_modules):
     with pytest.raises(HumanActionRequired):
         create_app()

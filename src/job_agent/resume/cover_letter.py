@@ -14,16 +14,22 @@ title-like job title / employer slot, or a verified fact):
 
 The job title / employer come from the untrusted listing. They are used only
 when they look like a plain title / name (no sentence punctuation, no
-first-person words, no instructions, at most 12 words); otherwise the letter
-says "the advertised position" / "your organization" and a ``review`` issue is
-added. They are never a source for any claim.
+first-person words, no instructions, at most 12 words, no full-width /
+look-alike / invisible characters, and nothing claim-like: no words about a
+person such as "candidate" or "he", no verbs such as "led" / "is" / "holds",
+no counts of people / years / money, no work-authorization wording; a job
+title's numbers may only be years, versions or level numerals). Otherwise the
+letter says "the advertised position" / "your organization" and a ``review``
+issue is added. They are never a source for any claim.
 
 With the LLM (``job_agent.llm.generation.draft_cover_letter``), the opening,
 motivation and closing paragraphs stay the deterministic template. The draft
 may only supply body sentences: each must restate fact(s) the draft cites and
 pass ``validation.validate_claim`` against them (with the verified entry
 context such as "Student Intern, Example State Agency"). Every first-person
-sentence is a claim. Pure letter boilerplate ("Thank you for your time.") is
+sentence is a claim. Sentences are judged and kept in their normalized form
+(``validation.claim_text``); one with full-width, look-alike or invisible
+characters the cited facts do not contain is rejected. Pure letter boilerplate ("Thank you for your time.") is
 dropped in favour of the template's own wording. Any other sentence, or any
 failure, means the whole template letter is used. Cover letters are always
 ``needs_review``.
@@ -72,12 +78,76 @@ _SLOT_FIRST_PERSON = re.compile(
     re.IGNORECASE)
 _SLOT_US = re.compile(r"(?<![A-Za-z])us(?![A-Za-z])")  # lower-case "us" only; "US" is a country
 _PRONOUN_I = re.compile(r"(?<![A-Za-z'’])I(?![A-Za-z'’])")
+#: Words about a person ("this candidate led ...", "applicant is authorized ...").
+_SLOT_PEOPLE = re.compile(r"(?<![A-Za-z'’])(?:candidates?|applicants?|this\s+person|the\s+person|himself|herself|"
+                          r"themselves|yourself)(?![A-Za-z'’])", re.IGNORECASE)
+_SLOT_PRONOUNS = re.compile(r"(?<![A-Za-z'’])(?:he|she|him|his|her|hers|they|them|their|theirs|you|your|yours)"
+                            r"(?![A-Za-z'’])", re.IGNORECASE)  # job titles only ("Her Campus" is an employer)
+#: Verbs, relative pronouns and experience words that make a slot a statement rather than a name.
+_SLOT_CLAIM_WORDS = re.compile(
+    r"(?<![A-Za-z'’-])(?:is|are|was|were|am|been|being|has|have|had|hold|holds|held|will|would|can|could|should|"
+    r"does|did|who|whom|whose|which|where|led|oversaw|overseen|spearheaded|supervised|mentored|architected|founded|"
+    r"co-founded|owned|headed|championed|pioneered|orchestrated|built|designed|created|launched|deployed|"
+    r"implemented|delivered|drove|shipped|achieved|increased|reduced|improved|saved|earned|won|grew|grown|"
+    r"generated|received|awarded|completed|graduated|years?|yrs|decades?|developed(?!\s+markets?)|"
+    r"managed(?!\s+(?:services?|care|security|cloud|hosting|networks?|it|print|detection|accounts?|markets?|futures|"
+    r"funds?|portfolios?|solutions?|infrastructure)))(?![A-Za-z'’-])",
+    re.IGNORECASE)
+#: A count of people / time / money ("40 engineers", "ten years", "team of 40").
+_SLOT_QUANTITY = re.compile(
+    r"(?<![A-Za-z0-9])(?:\d[\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|"
+    r"thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|dozens?|several|numerous|many)"
+    r"\s*(?:\+|plus)?\s+(?:of\s+)?(?:years?|yrs|months?|decades?|engineers|developers|people|persons|staff|"
+    r"employees|members|direct\s+reports|reports|analysts|scientists|designers|clients|customers|users|projects|"
+    r"programs|teams|dollars|usd|million|billion|percent)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:team|group|staff|department|organization)\s+of\s+\d"
+    r"|[$£€%]|\d\s*\+|(?<![A-Za-z])percent(?![A-Za-z])",
+    re.IGNORECASE)
+_SLOT_MULTIPLIER = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[kKmMbBxX](?![A-Za-z0-9])")
+_SLOT_NUMBER = re.compile(r"(?<![A-Za-z0-9.,])\d+(?:[.,]\d+)*(?![A-Za-z0-9])")
+_LEVEL_WORDS = frozenset("level tier grade band step class phase gs ic".split())
 
 
-def _slot(text: str | None, *, max_len: int) -> str | None:
-    """A title-like single line, or None when the text could carry a sentence / claim / instruction."""
+def _title_numbers_ok(cleaned: str) -> bool:
+    """Numbers in a job title may only be years, versions or level numerals ("Analyst 2", "Tier 1", "Web 2.0")."""
+    if _SLOT_MULTIPLIER.search(cleaned):
+        return False
+    for m in _SLOT_NUMBER.finditer(cleaned):
+        num = m.group(0)
+        if re.fullmatch(r"(?:19|20)\d{2}", num) or re.fullmatch(r"\d+\.\d+", num):
+            continue
+        before = re.findall(r"[A-Za-z]+", cleaned[: m.start()])
+        if before and before[-1].lower() in _LEVEL_WORDS:
+            continue
+        after = cleaned[m.end():]
+        if len(num) <= 2 and (not after.strip() or re.match(r"\s*[-–—|/(),&]", after)):
+            continue
+        return False
+    return True
+
+
+def _claim_like(cleaned: str, *, title: bool) -> bool:
+    """True when slot text states something about a person (claims, counts, legal status) instead of naming."""
+    if _SLOT_PEOPLE.search(cleaned) or _SLOT_CLAIM_WORDS.search(cleaned) or _SLOT_QUANTITY.search(cleaned):
+        return True
+    if validation.work_authorization_terms(cleaned):
+        return True
+    if title:
+        return bool(_SLOT_PRONOUNS.search(cleaned)) or not _title_numbers_ok(cleaned)
+    return False
+
+
+def _slot(text: str | None, *, max_len: int, title: bool = False) -> str | None:
+    """A title-like single line, or None when the text could carry a sentence / claim / instruction.
+
+    The text must not contain characters that could disguise words (full-width,
+    look-alike or invisible characters); the returned slot is normalized text.
+    """
+    if validation.unexpected_characters(normalize_space(text)):
+        return None
     cleaned = normalize_space(clean_untrusted(text or "", max_chars=max_len * 4))
     cleaned = normalize_space(re.sub(r"[<>{}\[\]\\`]", "", cleaned)).strip(" ,-–—|/")
+    cleaned = validation.claim_text(cleaned)
     if not cleaned or len(cleaned) > max_len:
         return None
     if re.search(r"[!?;:…\"“”]", cleaned) or validation._LINK.search(cleaned):
@@ -100,14 +170,14 @@ def _slot(text: str | None, *, max_len: int) -> str | None:
         if not rest.strip() or re.match(r"^\s*[-–—|/(),&]", rest):  # roman numeral level: "Analyst I"
             continue
         return None
-    if injection_suspected(cleaned):
+    if injection_suspected(cleaned) or _claim_like(cleaned, title=title):
         return None
     return cleaned
 
 
 def title_slot(job_title: str | None) -> str | None:
     """The job title if it looks like a plain job title, else None (use ``TITLE_FALLBACK``)."""
-    return _slot(job_title, max_len=120)
+    return _slot(job_title, max_len=120, title=True)
 
 
 def employer_slot(employer: str | None) -> str | None:
@@ -301,7 +371,9 @@ _CLAIM_MARKERS = (validation._CREDENTIAL, validation._LEADERSHIP, validation._BU
 def is_boilerplate(sentence: str, *, job_title: str | None, employer: str | None,
                    profile: CandidateProfile) -> bool:
     """Claim-free letter boilerplate ("Thank you for your time.") that the template wording replaces."""
-    text = _GREETING_PREFIX.sub("", normalize_space(sentence))
+    if validation.unexpected_characters(normalize_space(sentence)):
+        return False  # full-width / look-alike / invisible characters: judged as a claim (and rejected)
+    text = _GREETING_PREFIX.sub("", validation.claim_text(sentence))
     if not _BOILERPLATE_START.match(text):
         return False
     masked = validation._mask_phrases(text, [job_title or "", employer or "", profile.personal.full_name])
@@ -350,17 +422,19 @@ def validate_llm_draft(paragraphs: Sequence[str], fact_ids_used: Sequence[str], 
     claims: list[Claim] = []
     for para in paras:
         kept: list[str] = []
-        for sentence in split_sentences(para):
-            if is_boilerplate(sentence, job_title=title, employer=company, profile=profile):
+        for raw_sentence in split_sentences(para):
+            if is_boilerplate(raw_sentence, job_title=title, employer=company, profile=profile):
                 continue
+            # Judged (and kept) in normalized form; the raw form is checked for disguising characters.
+            sentence = validation.claim_text(raw_sentence)
             mapped = [f for f in cited if _maps_to(sentence, f)]
             if not mapped:
                 kind = "first-person statement" if _FIRST_PERSON.search(sentence) else "sentence"
                 problems.append(f"'{sentence[:80]}': unsupported_claim: this {kind} restates no cited verified fact")
                 continue
-            issues = validation.validate_body_claim(sentence, mapped, profile, employer=company,
+            issues = validation.validate_body_claim(raw_sentence, mapped, profile, employer=company,
                                                     listing_text=kw.text)
-            source = "\n".join(f.text for f in mapped)
+            source = "\n".join(validation.claim_text(f.text) for f in mapped)
             for m in sorted({m.group(0).lower() for m in _PROFICIENCY.finditer(sentence)}):
                 if not mentions(source, m):
                     issues.append(Issue(code="unverified_proficiency",
@@ -379,13 +453,14 @@ def validate_llm_draft(paragraphs: Sequence[str], fact_ids_used: Sequence[str], 
 
 
 def _maps_to(sentence: str, fact: Fact) -> bool:
-    fact_words = content_set(fact.text)
+    fact_text = validation.claim_text(fact.text)
+    fact_words = content_set(fact_text)
     if not fact_words:
         return False
     shared = content_set(sentence) & fact_words
     if len(shared) / len(fact_words) >= 0.3:
         return True
-    fact_numbers = {n[1] for n in validation._numbers(fact.text)}
+    fact_numbers = {n[1] for n in validation._numbers(fact_text)}
     return bool(fact_numbers & {n[1] for n in validation._numbers(sentence)})
 
 
@@ -402,13 +477,17 @@ def build_cover_letter(profile: CandidateProfile, kw: JobKeywords, *, job_title:
     if title is None and normalize_space(job_title or ""):
         issues.append(Issue(code="job_title_not_used", severity="review", document="cover_letter",
                             message="The listing's job title does not look like a plain job title (sentence "
-                                    "punctuation, first-person words, instructions or more than "
-                                    f"{MAX_SLOT_WORDS} words), so the letter says '{TITLE_FALLBACK}'. "
-                                    "Check the listing and edit the letter if needed."))
+                                    "punctuation, first- or third-person wording, claims such as counts of "
+                                    "people or years, leadership verbs or legal-status words, unusual "
+                                    f"characters, instructions or more than {MAX_SLOT_WORDS} words), so the "
+                                    f"letter says '{TITLE_FALLBACK}'. Check the listing and edit the letter if "
+                                    "needed."))
     if company is None and normalize_space(employer or ""):
         issues.append(Issue(code="employer_not_used", severity="review", document="cover_letter",
-                            message="The listing's employer name does not look like a plain organization name, so "
-                                    f"the letter says '{EMPLOYER_FALLBACK}'. Check the listing."))
+                            message="The listing's employer name does not look like a plain organization name "
+                                    "(sentence punctuation, claims about a person, unusual characters or "
+                                    f"instructions), so the letter says '{EMPLOYER_FALLBACK}'. Check the "
+                                    "listing."))
     if injection_suspected(job_title) or injection_suspected(employer):
         issues.append(Issue(code="listing_text_suspicious", severity="review", document="cover_letter",
                             message="The job title or employer name contains instruction-like text; check the "

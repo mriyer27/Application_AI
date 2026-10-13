@@ -9,6 +9,12 @@ Heuristics (documented limitations):
   document if there is no ``<form>``; forms inside iframes are not inspected;
 * labels come from ``aria-labelledby``, ``<label for>``, a wrapping ``<label>``,
   ``aria-label``, nearby question text, ``placeholder``, ``title``, then ``name``;
+* help text (``FormField.help_text``) comes from ``aria-describedby`` /
+  ``aria-details`` / ``aria-description`` of the control and of its fieldset /
+  radiogroup, and from ``.help`` / ``.hint`` / ``.description`` / ``small`` ...
+  elements in the same question container or right next to the control (also
+  when they are hidden, e.g. tooltips);
+* page snapshots contain only rendered, visible text (see ``_VISIBLE_TEXT_JS``);
 * invisible controls are skipped (honeypots), except file inputs and styled
   radios/checkboxes whose label is visible; invisible *required* controls are
   reported with ``visible=False`` so they are routed to you;
@@ -60,6 +66,10 @@ class FormField:
     placeholder: str | None = None
     accept: str | None = None
     visible: bool = True
+    #: Help / hint / description text attached to the control or its question (``aria-describedby``,
+    #: ``.help`` / ``.hint`` / ``.description`` / ``small`` next to it). Legal wording here makes the
+    #: field a legal declaration (``field_mapping.field_is_legal``).
+    help_text: str | None = None
 
     def describe(self) -> dict[str, Any]:
         """Metadata persisted with the prepared form (no locators, no values)."""
@@ -70,6 +80,7 @@ class FormField:
             "options": [o.label for o in self.options],
             "accept": self.accept,
             "visible": self.visible,
+            "help_text": self.help_text,
         }
 
 
@@ -129,23 +140,236 @@ const chooseRoot = () => {
 };
 """
 
-_SNAPSHOT_JS = "(markers) => {" + _COMMON_JS + r"""
+#: Rendered, *visible* text only. A text node counts when its element is displayed, not
+#: ``visibility:hidden``, has an effective (multiplied) opacity of at least 0.1, a font size
+#: of at least 6px, a box of real size inside the page (not off-screen, not clipped away by
+#: ``overflow`` / ``clip`` / ``clip-path`` of itself or an ancestor), is not covered by an
+#: opaque element, and its colour differs from its background (contrast >= 1.25).
+_VISIBLE_TEXT_JS = r"""
+const VT_SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SELECT', 'TEXTAREA', 'IFRAME', 'OBJECT',
+                         'EMBED', 'HEAD', 'TITLE']);
+const _st = new Map();
+const st = (el) => { let s = _st.get(el); if (!s) { s = getComputedStyle(el); _st.set(el, s); } return s; };
+const up = (n) => n.parentElement || (n.parentNode && n.parentNode.host) || null;
+const within = (a, b) => { for (let n = b; n; n = up(n)) if (n === a) return true; return false; };
+const DE = document.documentElement, BD = document.body;
+const VW = innerWidth, VH = innerHeight;
+const rootClips = (axis) => [DE, BD].some(e => e && ['hidden', 'clip'].includes(st(e)[axis]));
+const DOC_H = Math.max(DE.scrollHeight, BD ? BD.scrollHeight : 0, VH);
+// Viewport coordinates of what can be seen of the page: the viewport width, the document height.
+const PAGE = {l: -scrollX, r: VW - scrollX, t: rootClips('overflowY') ? 0 : -scrollY,
+              b: rootClips('overflowY') ? VH : DOC_H - scrollY};
+const VIEW = {l: 0, r: VW, t: 0, b: VH};
+const _op = new Map();
+const filterOpacity = (f) => {
+  let v = 1; const re = /opacity\(\s*([\d.]+)(%?)\s*\)/g; let m;
+  while ((m = re.exec(f || ''))) v *= m[2] ? parseFloat(m[1]) / 100 : parseFloat(m[1]);
+  return v;
+};
+const opacityOf = (el) => {
+  if (!el || el.nodeType !== 1) return 1;
+  let v = _op.get(el);
+  if (v === undefined) {
+    const s = st(el), own = parseFloat(s.opacity);
+    v = (isNaN(own) ? 1 : own) * filterOpacity(s.filter) * opacityOf(up(el));
+    _op.set(el, v);
+  }
+  return v;
+};
+const rgba = (c) => {
+  const m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+)(%?))?\s*\)$/.exec(c || '');
+  if (!m) return null;
+  const a = m[4] === undefined ? 1 : (m[5] ? parseFloat(m[4]) / 100 : parseFloat(m[4]));
+  return [+m[1], +m[2], +m[3], a];
+};
+const lum = (c) => {
+  const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+};
+const backgroundOf = (el) => {  // composited background colour behind el's text; null = image / unknown
+  const layers = [];
+  for (let a = el; a; a = up(a)) {
+    const s = st(a);
+    if (s.backgroundImage && s.backgroundImage !== 'none') return null;
+    const c = rgba(s.backgroundColor);
+    if (c && c[3] > 0) { layers.push(c); if (c[3] >= 0.99) break; }
+  }
+  let out = [255, 255, 255];
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const [r, g, b, a] = layers[i];
+    out = [r * a + out[0] * (1 - a), g * a + out[1] * (1 - a), b * a + out[2] * (1 - a)];
+  }
+  return out;
+};
+const colorHidden = (el) => {
+  const s = st(el);
+  const fg = rgba(s.webkitTextFillColor) || rgba(s.color);
+  if (!fg) return false;
+  if (fg[3] < 0.1) return true;
+  if ((s.textShadow && s.textShadow !== 'none') || parseFloat(s.webkitTextStrokeWidth) > 0) return false;
+  const bg = backgroundOf(el);
+  if (!bg) return false;
+  const a = fg[3], eff = [0, 1, 2].map(i => fg[i] * a + bg[i] * (1 - a));
+  const l1 = lum(eff), l2 = lum(bg);
+  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05) < 1.25;
+};
+const lenOf = (v, ref) => { v = String(v || '0').trim(); return v.endsWith('%') ? parseFloat(v) / 100 * ref : (parseFloat(v) || 0); };
+const clipHides = (el, s) => {
+  if ((s.position === 'absolute' || s.position === 'fixed') && s.clip && s.clip !== 'auto') {
+    const m = /rect\(([^)]*)\)/.exec(s.clip);
+    if (m) {
+      const p = m[1].split(/[\s,]+/).filter(Boolean), r = el.getBoundingClientRect();
+      if (p.length === 4) {
+        const v = (x, d) => x === 'auto' ? d : parseFloat(x);
+        if (v(p[2], r.height) - v(p[0], 0) < 4 || v(p[1], r.width) - v(p[3], 0) < 2) return true;
+      }
+    }
+  }
+  const cp = s.clipPath;
+  if (!cp || cp === 'none') return false;
+  const r = el.getBoundingClientRect(), W = r.width, H = r.height;
+  let m;
+  if ((m = /^inset\(([^)]*)\)/.exec(cp))) {
+    const p = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/);
+    const t = lenOf(p[0], H), rr = lenOf(p[1] ?? p[0], W), b = lenOf(p[2] ?? p[0], H), l = lenOf(p[3] ?? p[1] ?? p[0], W);
+    return H - t - b < 4 || W - l - rr < 2;
+  }
+  if ((m = /^circle\(\s*([-\d.]+(?:px|%))/.exec(cp))) return lenOf(m[1], Math.hypot(W, H) / Math.SQRT2) < 2;
+  if ((m = /^ellipse\(\s*([-\d.]+(?:px|%))\s+([-\d.]+(?:px|%))/.exec(cp))) return lenOf(m[1], W) < 2 || lenOf(m[2], H) < 4;
+  if (/^(circle|ellipse)\(/.test(cp)) return false;  // keyword radius (closest-side, ...)
+  if ((m = /^polygon\(([^)]*)\)/.exec(cp))) {
+    const pts = m[1].replace(/^\s*(nonzero|evenodd)\s*,/, '').split(',').map(pt => pt.trim().split(/\s+/));
+    let area = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
+      area += lenOf(x1, W) * lenOf(y2, H) - lenOf(x2, W) * lenOf(y1, H);
+    }
+    return Math.abs(area) / 2 < 16;
+  }
+  return true;  // url(), path(), ...: cannot be measured, assume it may hide the text
+};
+const _reg = new Map();
+// The part of the viewport (viewport coordinates) where el's content can be painted; null = clipped away.
+const regionOf = (el) => {
+  if (!el || el === DE || el === BD || el.nodeType !== 1) return PAGE;
+  if (_reg.has(el)) return _reg.get(el);
+  const s = st(el);
+  let out;
+  if (s.position === 'fixed') out = VIEW;
+  else if (s.position === 'absolute') {
+    let cb = up(el);
+    while (cb && cb !== DE && cb !== BD && st(cb).position === 'static') cb = up(cb);
+    out = regionOf(cb);
+  } else out = regionOf(up(el));
+  if (out && clipHides(el, s)) out = null;
+  const paint = /paint|strict|content/.test(s.contain || '');
+  if (out && (s.overflowX !== 'visible' || s.overflowY !== 'visible' || paint)) {
+    const r = el.getBoundingClientRect();
+    const scrolls = (o) => o === 'auto' || o === 'scroll';
+    let {l, r: rr, t, b} = out;
+    if (s.overflowX !== 'visible' || paint) {
+      if (scrolls(s.overflowX) && !paint) l = Math.max(l, r.left - el.scrollLeft);
+      else { l = Math.max(l, r.left); rr = Math.min(rr, r.right); }
+    }
+    if (s.overflowY !== 'visible' || paint) {
+      if (scrolls(s.overflowY) && !paint) t = Math.max(t, r.top - el.scrollTop);
+      else { t = Math.max(t, r.top); b = Math.min(b, r.bottom); }
+    }
+    out = (rr - l >= 1 && b - t >= 1) ? {l, r: rr, t, b} : null;
+  }
+  _reg.set(el, out);
+  return out;
+};
+const opaqueBox = (a) => {
+  if (opacityOf(a) < 0.9) return false;
+  const s = st(a);
+  if (s.visibility !== 'visible') return false;
+  if (/^(IMG|VIDEO|CANVAS|IFRAME|OBJECT|EMBED)$/.test(a.tagName) || a.tagName.toLowerCase() === 'svg') return true;
+  if (s.backgroundImage && s.backgroundImage !== 'none') return true;
+  const c = rgba(s.backgroundColor);
+  return !!c && c[3] >= 0.9;
+};
+const occluded = (el, x, y) => {
+  if (st(el).pointerEvents === 'none') return false;  // hit testing would look through it
+  let hit = document.elementFromPoint(x, y);
+  while (hit && hit.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  if (!hit || within(el, hit) || within(hit, el)) return false;
+  for (let a = hit; a && !within(a, el); a = up(a)) if (opaqueBox(a)) return true;
+  return false;
+};
+const textShown = (node) => {
+  const el = up(node);
+  if (!el || !el.isConnected) return false;
+  const s = st(el);
+  if (s.visibility !== 'visible' || parseFloat(s.fontSize) < 6 || opacityOf(el) < 0.1) return false;
+  if (el.checkVisibility && !el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) return false;
+  const region = regionOf(el);
+  if (!region) return false;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  let shown = false;
+  for (const b of range.getClientRects()) {
+    if (b.width < 1 || b.height < 4) continue;
+    const l = Math.max(b.left, region.l), r = Math.min(b.right, region.r);
+    const t = Math.max(b.top, region.t), bt = Math.min(b.bottom, region.b);
+    if (r - l < 1 || bt - t < 4) continue;
+    const cx = (l + r) / 2, cy = (t + bt) / 2;
+    if (cx >= 0 && cx < VW && cy >= 0 && cy < VH && occluded(el, cx, cy)) continue;
+    shown = true;
+    break;
+  }
+  return shown && !colorHidden(el);
+};
+const _tv = new Map();
+const INLINE = /^(inline|contents|ruby)/;
+const blockOf = (el) => { let b = el; while (b && b !== DE && INLINE.test(st(b).display)) b = up(b); return b; };
+const visibleText = (root, skipSel) => {
+  const parts = [];
+  let last = null, nodes = 0, size = 0;
+  const visit = (node) => {
+    if (nodes > 60000 || size > 40000) return;
+    if (node.nodeType === 3) {
+      nodes++;
+      const data = node.data;
+      if (!data.trim()) { parts.push(' '); return; }
+      let ok = _tv.get(node);
+      if (ok === undefined) { ok = textShown(node); _tv.set(node, ok); }
+      if (!ok) return;
+      const blk = blockOf(up(node));
+      if (blk !== last) { parts.push('\n'); last = blk; }
+      parts.push(data);
+      size += data.length;
+      return;
+    }
+    if (node.nodeType === 1) {
+      if (VT_SKIP.has(node.tagName)) return;
+      if (node.tagName === 'BR') { parts.push('\n'); return; }
+      if (skipSel && node.matches(skipSel) && !node.querySelector('form, input, select, textarea')) return;
+      if (st(node).display === 'none') return;
+      if (node.shadowRoot) visit(node.shadowRoot);
+    } else if (node.nodeType !== 11) return;
+    for (let c = node.firstChild; c; c = c.nextSibling) visit(c);
+  };
+  if (root) visit(root);
+  return parts.join('').split('\n').map(l => l.replace(/[ \t\f\v\r ]+/g, ' ').trim()).filter(Boolean).join('\n');
+};
+"""
+
+_SNAPSHOT_JS = "(markers) => {" + _COMMON_JS + _VISIBLE_TEXT_JS + r"""
   const body = document.body;
-  const text = body ? (body.innerText || '') : '';
   const iframes = Array.from(document.querySelectorAll('iframe')).map(f => f.getAttribute('src') || '').filter(Boolean);
   const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.getAttribute('src') || '');
   const found = markers.filter(sel => { try { return !!document.querySelector(sel); } catch (e) { return false; } });
   const pw = Array.from(document.querySelectorAll('input[type="password"]')).filter(vis).length;
   const controls = document.querySelectorAll('input:not([type="hidden"]), select, textarea').length;
   const chrome = 'header, nav, footer, [role="banner"], [role="navigation"], [role="contentinfo"]';
+  const text = visibleText(body, null);
   const mainEl = Array.from(document.querySelectorAll('main, [role="main"]')).find(vis);
-  let mainText = mainEl ? (mainEl.innerText || '') : text;
-  if (!mainEl) {
-    for (const el of document.querySelectorAll(chrome)) {
-      const t = (el.innerText || '').trim();
-      if (t && !el.querySelector('form, input, select, textarea')) mainText = mainText.replace(t, ' ');
-    }
-  }
+  const mainText = mainEl ? visibleText(mainEl, null) : visibleText(body, chrome);
   const skip = ['hidden', 'submit', 'button', 'reset', 'image', 'search'];
   const visibleControls = Array.from(document.querySelectorAll('input, select, textarea'))
       .filter(el => !(el.tagName === 'INPUT' && skip.includes((el.getAttribute('type') || 'text').toLowerCase())))
@@ -224,6 +448,69 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
   const root = chooseRoot();
   const out = [];
   const groups = new Map();
+  const members = new Map();  // output entry -> its controls
+  // ---- help text: aria-describedby targets and hint / help / description elements of the question ----
+  const CONTROLS = 'input:not([type="hidden"]), select, textarea';
+  const HELP_SEL = ['.help', '.hint', '.description', '.help-text', '.helper-text', '.help-block', '.form-text',
+      '.instructions', '[class*="help"]', '[class*="hint"]', '[class*="description"]', '[class*="instruction"]',
+      '[id$="-help"]', '[id$="_help"]', '[id$="-hint"]', '[id$="_hint"]', '[id$="-description"]',
+      '[id$="_description"]', '[id$="-desc"]', 'small', '[role="note"]'].join(', ');
+  const described = (el) => [byIds(el.getAttribute('aria-describedby')), byIds(el.getAttribute('aria-details')),
+                             clean(el.getAttribute('aria-description'))];
+  const ownLabels = (el) => {
+    const outL = [];
+    if (el.id) document.querySelectorAll(`label[for="${q(el.id)}"]`).forEach(l => outL.push(l));
+    const w = el.closest('label');
+    if (w) outL.push(w);
+    return outL;
+  };
+  // The largest ancestor below the form whose controls all belong to this field.
+  const questionBox = (ms) => {
+    const set = new Set(ms);
+    let node = ms[0];
+    for (let d = 0; d < 6; d++) {
+      const p = node.parentElement;
+      if (!p || p === root || p === document.body || p === document.documentElement || p.tagName === 'FORM') break;
+      if (!Array.from(p.querySelectorAll(CONTROLS)).every(c => set.has(c))) break;
+      if ((p.textContent || '').length > 3000) break;
+      node = p;
+    }
+    return node;
+  };
+  const helpFor = (ms, label) => {
+    const texts = [];
+    const own = new Set();
+    for (const m of ms) { ownLabels(m).forEach(l => own.add(l)); texts.push(...described(m)); }
+    const grp = ms[0].closest('fieldset, [role="radiogroup"], [role="group"]');
+    if (grp && Array.from(grp.querySelectorAll(CONTROLS)).every(c => ms.includes(c))) {
+      texts.push(...described(grp));
+      const lg = grp.tagName === 'FIELDSET' ? grp.querySelector('legend') : null;
+      if (lg) own.add(lg);
+    }
+    const added = [];
+    const take = (h) => {
+      if (h.querySelector(CONTROLS) || h.closest('label') || added.some(a => a.contains(h))) return;
+      for (const o of own) if (o === h || o.contains(h)) return;
+      added.push(h);
+      texts.push(textOf(h));
+    };
+    const box = questionBox(ms);
+    if (!ms.includes(box)) box.querySelectorAll(HELP_SEL).forEach(take);
+    const sib = (n, dir) => {
+      for (let x = n[dir], i = 0; x && i < 3; x = x[dir], i++) {
+        if (x.matches(CONTROLS + ', label, fieldset, legend, button') || x.querySelector(CONTROLS)) break;
+        if (x.matches(HELP_SEL)) take(x);
+      }
+    };
+    sib(box, 'nextElementSibling');
+    sib(box, 'previousElementSibling');
+    const seen = new Set([clean(label).toLowerCase()]);
+    const uniq = [];
+    for (const t of texts.map(clean)) {
+      if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); uniq.push(t); }
+    }
+    return uniq.join(' ').slice(0, 1000);
+  };
   const els = Array.from(root.querySelectorAll('input, select, textarea'));
   els.forEach((el, index) => {
     const tag = el.tagName.toLowerCase();
@@ -247,7 +534,9 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
                visible: false};
           groups.set(gkey, g);
           out.push(g);
+          members.set(g, []);
         }
+        members.get(g).push(el);
         g.required = g.required || isRequired(el, g.label);
         g.visible = g.visible || visible;
         g.options.push({label: optLabel, value: el.value, locator: selectorOf(el)});
@@ -256,8 +545,10 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
       const label = labelFor(el) || clean(el.getAttribute('aria-label')) || byIds(el.getAttribute('aria-labelledby'))
           || nearbyText(el, 3) || clean(el.getAttribute('title')) || name;
       if (!visible && !isRequired(el, label)) return;
-      out.push({index, tag, type: 'checkbox', name, id: el.id || null, label, required: isRequired(el, label),
-                options: [], is_file: false, locator: selectorOf(el), placeholder: null, accept: null, visible});
+      const entry = {index, tag, type: 'checkbox', name, id: el.id || null, label, required: isRequired(el, label),
+                     options: [], is_file: false, locator: selectorOf(el), placeholder: null, accept: null, visible};
+      out.push(entry);
+      members.set(entry, [el]);
       return;
     }
     const visible = vis(el);
@@ -269,10 +560,15 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
       options = Array.from(el.options).filter(o => !o.disabled && o.value !== '')
           .map(o => ({label: clean(o.textContent), value: o.value, locator: null}));
     }
-    out.push({index, tag, type, name, id: el.id || null, label, required: isRequired(el, label), options,
-              is_file: type === 'file', locator: selectorOf(el), placeholder: el.getAttribute('placeholder'),
-              accept: el.getAttribute('accept'), visible: visible || type === 'file'});
+    const entry = {index, tag, type, name, id: el.id || null, label, required: isRequired(el, label), options,
+                   is_file: type === 'file', locator: selectorOf(el), placeholder: el.getAttribute('placeholder'),
+                   accept: el.getAttribute('accept'), visible: visible || type === 'file'};
+    out.push(entry);
+    members.set(entry, [el]);
   });
+  for (const entry of out) {
+    try { entry.help_text = helpFor(members.get(entry), entry.label) || null; } catch (e) { entry.help_text = null; }
+  }
   return out;
 }"""
 
@@ -354,6 +650,7 @@ def take_snapshot(page: "Page", status: int | None = None) -> PageSnapshot:
         form_control_count=int(raw.get("form_control_count") or 0),
         status=status,
         main_text=str(raw.get("main_text") or ""),
+        main_measured=True,
         visible_controls=tuple(str(x) for x in (raw.get("visible_controls") or ())),
     )
 
@@ -410,6 +707,7 @@ def build_fields(raw: list[dict[str, Any]]) -> list[FormField]:
             is_file=bool(r.get("is_file")) or ftype == "file", locator=str(r.get("locator") or ""), name=name,
             element_id=element_id, placeholder=r.get("placeholder") or None, accept=r.get("accept") or None,
             visible=bool(r.get("visible", True)),
+            help_text=" ".join(str(r.get("help_text") or "").split())[:1000] or None,
         ))
     return fields
 

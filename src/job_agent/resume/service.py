@@ -10,7 +10,12 @@
    renders DOCX/PDF (+ Markdown preview) and stores new versions;
 5. links the newest résumé/cover letter (PDF preferred) to the application and
    moves it to ``documents_ready`` -- unless the application is already further
-   along, in which case only a ``documents_regenerated`` event is added;
+   along, in which case only a ``documents_regenerated`` event is added. Once the
+   documents were (or may have been) sent -- ``submitted_at`` is set, the status
+   is ``submission_attempted`` or later, or a submission outcome is unknown and
+   not confirmed as "not submitted" -- the new versions are stored for your
+   records but the application keeps pointing at the documents actually used
+   (event ``documents_regenerated_not_linked``);
 6. on failure: ``failed`` + ``repo.record_error``; nothing half-written remains.
 """
 
@@ -68,6 +73,10 @@ __all__ = ["prepare_documents", "generate_resume", "list_documents", "get_docume
 _S = PipelineState
 #: Application states from which (re)generation moves the application to documents_ready.
 _READY_FROM = {_S.DOCUMENTS_PENDING, _S.FAILED, _S.NEEDS_MANUAL_ACTION}
+#: Application states in which the linked documents were (or may have been) sent to the employer.
+_SENT_STATES = {_S.SUBMISSION_ATTEMPTED, _S.SUBMITTED, _S.CONFIRMATION_RECEIVED, _S.ASSESSMENT_RECEIVED,
+                _S.INTERVIEW_REQUESTED, _S.INTERVIEW_SCHEDULED, _S.REJECTED, _S.OFFER_RECEIVED}
+NOT_LINKED_EVENT = "documents_regenerated_not_linked"
 
 
 # --------------------------------------------------------------------------- #
@@ -161,7 +170,8 @@ def prepare_documents(ctx: "AppContext", job_ref: int | str, *, use_llm: bool | 
     if app is None:  # pragma: no cover - create_application just returned it
         raise PermanentError(f"application for job {job.job_uid} could not be loaded")
     status = _S(app["status"])
-    submission_started = int(app["submission_attempts"] or 0) > 0 or bool(app["submitted_at"])
+    keep_links = documents_sent(db, app)  # the linked documents are the record of what was sent
+    submission_started = keep_links or int(app["submission_attempts"] or 0) > 0 or bool(app["submitted_at"])
     if status == _S.DOCUMENTS_READY and not submission_started:
         repo.transition_application(db, app_id, _S.DOCUMENTS_PENDING, actor="system",
                                     details={"reason": "regenerating documents"}, expected_current=status)
@@ -171,7 +181,8 @@ def prepare_documents(ctx: "AppContext", job_ref: int | str, *, use_llm: bool | 
     created: list[Path] = []
     try:
         result = _generate_and_store(ctx, job, profile, app_id=app_id, want_llm=want_llm, want_cover=want_cover,
-                                     status=status, moves_to_ready=moves_to_ready, actor=actor, created=created)
+                                     status=status, moves_to_ready=moves_to_ready, keep_links=keep_links, actor=actor,
+                                     created=created)
     except Exception as exc:
         for p in created:
             p.unlink(missing_ok=True)
@@ -184,9 +195,30 @@ def prepare_documents(ctx: "AppContext", job_ref: int | str, *, use_llm: bool | 
     return result
 
 
+def documents_sent(db: "Database", app: sqlite3.Row) -> bool:
+    """True once the application's linked documents were (or may have been) sent to the employer.
+
+    Then they are the record of what was submitted and must not be re-pointed:
+    ``submitted_at`` is set, the status is ``submission_attempted`` or later, or a
+    submission's outcome became unknown and you have not confirmed (``apply
+    --confirm-not-submitted``) that nothing was sent.
+    """
+    if app["submitted_at"] or _S(app["status"]) in _SENT_STATES:
+        return True
+    unknown = db.scalar(
+        "SELECT MAX(id) FROM application_events WHERE application_id = ? AND (event_type = ? OR "
+        "(from_status = ? AND to_status = ?))",
+        (app["id"], "submission_outcome_unknown", _S.SUBMISSION_ATTEMPTED.value, _S.NEEDS_MANUAL_ACTION.value))
+    if unknown is None:
+        return False
+    confirmed = db.scalar("SELECT MAX(id) FROM application_events WHERE application_id = ? AND event_type = ?",
+                          (app["id"], "confirmed_not_submitted"))
+    return confirmed is None or int(unknown) > int(confirmed)
+
+
 def _generate_and_store(ctx: "AppContext", job: JobListing, profile: CandidateProfile, *, app_id: int,
                         want_llm: bool, want_cover: bool, status: PipelineState, moves_to_ready: bool, actor: str,
-                        created: list[Path]) -> PreparedDocuments:
+                        created: list[Path], keep_links: bool = False) -> PreparedDocuments:
     db = ctx.db
     kw = keywords_for(job)
     profile_label = str(ctx.config.app.profile_path)
@@ -225,29 +257,42 @@ def _generate_and_store(ctx: "AppContext", job: JobListing, profile: CandidatePr
                 ctx, job=job, doc_type=DocumentType.COVER_LETTER, files=cover_files, status=cover.status,
                 claims=cover.claims, issues=cover.issues, generator=cover.generator, profile_hash=profile_hash,
                 on=today, created=created)
-        updates: dict[str, Any] = {"resume_document_id": preferred(resume_infos).id}  # type: ignore[union-attr]
-        if cover_infos:
-            updates["cover_letter_document_id"] = preferred(cover_infos).id  # type: ignore[union-attr]
-        db.update("applications", app_id, updates)
-        details = {
+        details: dict[str, Any] = {
             "resume_version": resume_infos[0].version,
             "cover_letter_version": cover_infos[0].version if cover_infos else None,
             "resume_status": resume.status.value,
             "generator": resume.generator,
             "document_ids": [i.id for i in resume_infos + cover_infos],
         }
-        if moves_to_ready:
-            repo.transition_application(
-                db, app_id, _S.DOCUMENTS_READY, actor="system", details=details, expected_current=status,
-                next_action=f"Review the generated documents (job-agent documents list {job.job_uid})")
+        if keep_links:  # already sent: the application keeps the documents actually used
+            current = repo.get_application(db, app_id)
+            details.update(linked=False,
+                           kept_resume_document_id=current["resume_document_id"] if current else None,
+                           kept_cover_letter_document_id=current["cover_letter_document_id"] if current else None)
+            repo.add_application_event(db, app_id, NOT_LINKED_EVENT, actor="system", details=details)
         else:
-            repo.add_application_event(db, app_id, "documents_regenerated", actor="system", details=details)
+            updates: dict[str, Any] = {"resume_document_id": preferred(resume_infos).id}  # type: ignore[union-attr]
+            if cover_infos:
+                updates["cover_letter_document_id"] = preferred(cover_infos).id  # type: ignore[union-attr]
+            db.update("applications", app_id, updates)
+            if moves_to_ready:
+                repo.transition_application(
+                    db, app_id, _S.DOCUMENTS_READY, actor="system", details=details, expected_current=status,
+                    next_action=f"Review the generated documents (job-agent documents list {job.job_uid})")
+            else:
+                repo.add_application_event(db, app_id, "documents_regenerated", actor="system", details=details)
         repo.audit(db, actor=actor, action="documents_generated", entity_type="job", entity_id=job.job_uid,
                    outcome="success", details={**details, "application_id": app_id,
                                                "issues": sum(1 for i in resume.issues if i.severity != "info")})
 
     app_row = repo.get_application(db, app_id)
     all_issues = resume.issues + (cover.issues if cover else [])
+    if keep_links:
+        all_issues.append(Issue(
+            code="documents_not_linked", severity="info", document="resume",
+            message=f"This application was already submitted (status {status.value}). The new "
+                    f"v{resume_infos[0].version} files are stored for your records only; the application still "
+                    "points at the documents that were actually used."))
     overall = DocumentStatus.NEEDS_REVIEW if (resume.status == DocumentStatus.NEEDS_REVIEW or cover) \
         else resume.status
     return PreparedDocuments(
@@ -258,8 +303,13 @@ def _generate_and_store(ctx: "AppContext", job: JobListing, profile: CandidatePr
         resume_version=resume_infos[0].version,
         cover_letter_version=cover_infos[0].version if cover_infos else None,
         generator=resume.generator,
-        next_step=_next_step(job.job_uid, resume, cover, resume_infos),
+        next_step=(_NOT_LINKED_STEP if keep_links else _next_step(job.job_uid, resume, cover, resume_infos)),
+        documents_linked=not keep_links,
     )
+
+
+_NOT_LINKED_STEP = ("Nothing to send: this application was already submitted, so it keeps the résumé/cover letter "
+                    "that were used. The new versions are only for your records (see `job-agent documents list`).")
 
 
 def _next_step(job_uid: str, resume: GeneratedResume, cover: GeneratedCoverLetter | None,

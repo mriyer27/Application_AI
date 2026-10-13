@@ -1,7 +1,7 @@
 """Pure-Python classification of page snapshots.
 
-The browser collects a ``PageSnapshot`` (URL, title, visible text, iframe and
-script sources, a few marker selectors); these functions decide whether the
+The browser collects a ``PageSnapshot`` (URL, title, rendered *visible* text,
+iframe and script sources, a few marker selectors); these functions decide whether the
 page is a security challenge / login wall, a closed listing, or a submission
 confirmation. Keeping this logic browser-free makes it unit-testable.
 
@@ -15,6 +15,11 @@ page's main content that was not on the form page, no "not yet / before it is
 submitted / review your application" wording anywhere, and the application
 form must be gone. A URL alone never confirms anything. Anything less is
 ambiguous and becomes an unknown outcome (``NEEDS_MANUAL_ACTION``).
+
+All text in a snapshot taken by the real browser is rendered, visible text
+(``forms._VISIBLE_TEXT_JS``): text that is off-screen, transparent, tiny,
+clipped away, covered or the colour of its background is not in it, so such
+text can never confirm a submission (or hide a challenge from the check).
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from dataclasses import dataclass
 class PageSnapshot:
     url: str
     title: str = ""
-    text: str = ""  # visible text (document.body.innerText), truncated
+    text: str = ""  # rendered, visible text of the whole page, truncated
     iframe_srcs: tuple[str, ...] = ()
     script_srcs: tuple[str, ...] = ()
     markers: tuple[str, ...] = ()  # CSS selectors of challenge widgets present in the DOM
@@ -35,10 +40,12 @@ class PageSnapshot:
     form_control_count: int = 0
     status: int | None = None  # HTTP status of the main document, when known
     #: Visible text of the main content (``<main>`` / ``[role=main]``, else the body
-    #: without header/nav/footer). Empty = unknown, ``text`` is used instead.
+    #: without header/nav/footer). Empty and not ``main_measured`` = unknown: ``text`` is used.
     main_text: str = ""
     #: name/id of every *visible* form control outside search boxes and page chrome.
     visible_controls: tuple[str, ...] = ()
+    #: ``main_text`` was measured by the browser: an empty value means "no visible main content".
+    main_measured: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,7 +186,7 @@ def detect_closed_listing(snap: PageSnapshot) -> str | None:
 def confirmation_wording(snap: PageSnapshot, baseline: PageSnapshot | None = None) -> str | None:
     """Strong confirmation wording in the main content that was not on the form page (context), or None."""
     base_text = ((baseline.text if baseline else "") or "").lower()
-    text = snap.main_text or snap.text or ""
+    text = snap.main_text if snap.main_measured else (snap.main_text or snap.text or "")
     for m in _CONFIRM_TEXT.finditer(text):
         if m.group(0).lower() not in base_text:
             return _context(text, m.start(), m.end())

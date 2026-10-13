@@ -4,8 +4,11 @@ import re
 
 import pytest
 
+from job_agent.models import MatchCategory
 from job_agent.scoring.eligibility import detect_eligibility_flags, has_blocker, needs_review
+from job_agent.scoring.engine import score_job
 from job_agent.scoring.text import sentences
+from job_agent.security.textnorm import normalize_text, suspicious_characters
 
 #: A flag message must never decide eligibility for the candidate.
 _CLAIMS = re.compile(r"\b(?:eligib\w*|ineligib\w*|qualif\w*|disqualif\w*|you\s+are|you're|you\s+cannot|you\s+can't|"
@@ -143,7 +146,7 @@ SEVERITY = {
     "work_authorization_required": "info",
     "sponsorship_available": "info",
 }
-ALL_CODES = set(SEVERITY) | {"graduation_timing"}
+ALL_CODES = set(SEVERITY) | {"graduation_timing", "eligibility_statement"}
 
 PROBE_CASES = [
     ("Candidates requiring H-1B now or in the future will not be considered.", {"no_sponsorship"}),

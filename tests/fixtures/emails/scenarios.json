@@ -37,6 +37,19 @@
       "headers": {
         "Authentication-Results": "mx.google.com; dkim=pass header.i=@umbrellahealth.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of talent@umbrellahealth.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=talent@umbrellahealth.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=umbrellahealth.com"
       },
+      "text": "Dear Test,\n\nThank you for your interest in the Business Analyst position at Umbrella Health. Unfortunately, we have decided to move forward with other candidates.\n\nUmbrella Health",
+      "expected": "rejection"
+    },
+    {
+      "id": "s-domain-reject-untitled",
+      "threadId": "t-domain-reject-untitled",
+      "received": "2026-10-09T09:00:00Z",
+      "from": "Umbrella Health Talent <talent@umbrellahealth.com>",
+      "subject": "Update on your application",
+      "snippet": "Unfortunately, we have decided to move forward with other candidates.",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@umbrellahealth.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of talent@umbrellahealth.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=talent@umbrellahealth.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=umbrellahealth.com"
+      },
       "text": "Dear Test,\n\nThank you for your interest in Umbrella Health. Unfortunately, we have decided to move forward with other candidates.\n\nUmbrella Health",
       "expected": "rejection"
     },
@@ -62,6 +75,19 @@
       "snippet": "Could you share a few times that work for you?",
       "headers": {
         "Authentication-Results": "mx.google.com; dkim=pass header.i=@gmail.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of pat.morgan.hiring@gmail.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=pat.morgan.hiring@gmail.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=gmail.com"
+      },
+      "text": "Hi,\n\nCould you share a few times that work for you this week? I can then send a calendar invite.\n\nPat",
+      "expected": "interview_invitation"
+    },
+    {
+      "id": "s-thread-reply-same",
+      "threadId": "t-thread-1",
+      "received": "2026-10-07T11:00:00Z",
+      "from": "Pat Morgan <pat.morgan@initech.com>",
+      "subject": "Re: Interview invitation",
+      "snippet": "Could you share a few times that work for you?",
+      "headers": {
+        "Authentication-Results": "mx.google.com; dkim=pass header.i=@initech.com header.s=s1 header.b=Ab12Cd34; spf=pass (google.com: domain of talent@initech.com designates 192.0.2.10 as permitted sender) smtp.mailfrom=talent@initech.com; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=initech.com"
       },
       "text": "Hi,\n\nCould you share a few times that work for you this week? I can then send a calendar invite.\n\nPat",
       "expected": "interview_invitation"

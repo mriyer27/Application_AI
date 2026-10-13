@@ -386,17 +386,6 @@ def _job_platforms(target: dict[str, Any]) -> dict[str, set[str]]:
     return out
 
 
-def _platform_identity(from_domain: str | None, local_part: str, compact: str) -> str | None:
-    """``"match"`` when the account is named like the employer, ``"other"`` when it names a longer company
-    containing the employer's name (``mercuryinsurance.icims.com`` / ``bluemercury`` for Mercury), else ``None``."""
-    names = sender_tenants(from_domain, local_part)
-    if compact in names:
-        return "match"
-    if any(n != compact and (n.startswith(compact) or n.endswith(compact)) for n in names):
-        return "other"
-    return None
-
-
 # --------------------------------------------------------------------------- #
 # Job titles
 # --------------------------------------------------------------------------- #

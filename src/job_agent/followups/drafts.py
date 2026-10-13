@@ -6,7 +6,8 @@ passes the same deterministic safety checks as suggested email replies: no
 commitments or sensitive data, no work-authorization statements, and no
 numbers, tools or leadership claims that are not in the verified profile
 (``ctx["facts"]`` / ``ctx["profile_skills"]`` when provided; otherwise any such
-experience claim is rejected).
+experience claim is rejected). The accepted draft is stored normalized
+(``security.textnorm.normalize_text``), exactly as it was checked.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any, Callable
 
 from job_agent.email.replies import reply_is_safe
 from job_agent.models import FollowupType
+from job_agent.security.textnorm import normalize_text
 from job_agent.security.untrusted import clean_untrusted
 
 T = FollowupType
@@ -77,5 +79,5 @@ def llm_followup_draft(draft_fn: Callable[..., str], ctx: dict[str, Any]) -> str
     cleaned = clean_untrusted(str(text or ""), max_chars=3000)
     facts = ctx.get("facts")
     safe = reply_is_safe(cleaned, facts=None if facts is None else list(facts), skills=ctx.get("profile_skills"),
-                         context=(context, employer, title))
-    return cleaned if safe else None
+                         context=(context, employer, title, ctx.get("candidate_name") or ""))
+    return normalize_text(cleaned) if safe else None

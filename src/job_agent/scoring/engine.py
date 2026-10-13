@@ -818,6 +818,7 @@ _FLAG_LABELS = {
     "graduation_timing": "Graduation / start-date timing stated",
     "sponsorship_available": "Sponsorship mentioned as available",
     "work_authorization_required": "Work-authorization requirement stated",
+    "eligibility_statement": "Eligibility-related wording (sponsorship, citizenship, clearance or export)",
 }
 
 

@@ -121,12 +121,16 @@ def _osa(a: str, b: str) -> int:
 
 
 @lru_cache(maxsize=4096)
-def _fuzzy_word(word: str) -> str | None:
-    """The key word ``word`` is (a near-miss of), or None."""
+def _fuzzy_word(word: str, split_at: int = 0) -> str | None:
+    """The key word ``word`` is (a near-miss of), or None.
+
+    ``split_at`` > 0: ``word`` was joined from two tokens and the first one
+    (``word[:split_at]``) must be too short to be the key word by itself.
+    """
     if len(word) < 3 or not word.isalpha() or word in _FUZZY_EXCLUDE or word.startswith(_FUZZY_EXCLUDE_PREFIXES):
         return None
     for stem, replacement, max_dist, whole in _FUZZY_STEMS:
-        if word[0] != stem[0] or len(word) < len(stem) - 1:
+        if word[0] != stem[0] or len(word) < len(stem) - 1 or (split_at and split_at >= len(stem) - 1):
             continue
         if whole:
             if abs(len(word) - len(stem)) <= max_dist and _osa(word, stem) <= max_dist:
@@ -147,7 +151,7 @@ def _corrected(norm: str) -> str:
         tok = tokens[i]
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         if len(tok) >= 2 and len(nxt) >= 2 and not _fuzzy_word(tok):
-            joined = _fuzzy_word(tok + nxt)  # a key word split in two ("sponser ship", "citi zen")
+            joined = _fuzzy_word(tok + nxt, len(tok))  # a key word split in two ("spon sorship", "citi zen")
             if joined:
                 out.append(joined)
                 i += 2
@@ -366,6 +370,21 @@ def mentions_work_authorization(text: str | None) -> bool:
 def mentions_legal_matter(text: str | None) -> bool:
     """Work-authorization statement or any legal topic (clearance, export control, criminal history, ...)."""
     return mentions_work_authorization(text) or is_legal_question(text)
+
+
+_YES_NO_WORDS = frozenset({"yes", "no", "nope", "yep", "yeah", "si", "oui", "non", "ja", "nein", "sim", "nao"})
+_YES_NO_START = re.compile(r"^\W*(?:yes|no|nope|yep|yeah|si|oui|non|ja|nein|sim|nao)\s*(?:[,.!;:]|\s[-–—]|[–—]|$)")
+
+
+def is_yes_no_answer(text: str | None) -> bool:
+    """Does a drafted answer start as a yes/no reply ("No, not now or in the future.", "Yes I can")?
+
+    An open-ended question never needs one; a draft that answers yes/no is
+    answering a (possibly legal) yes/no question and is dropped.
+    """
+    words = normalize(text).split()
+    folded = _folded(text).encode("ascii", "ignore").decode().casefold()
+    return bool(_YES_NO_START.match(folded) or (words and words[0] in _YES_NO_WORDS and len(words) <= 4))
 
 
 # --------------------------------------------------------------------------- #

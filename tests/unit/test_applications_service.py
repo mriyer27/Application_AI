@@ -320,9 +320,21 @@ def test_unknown_outcome_needs_manual_action_and_is_never_retried(ctx, make_job)
                            (info["app_id"],))
     assert err is not None and err["retryable"] == 0 and err["requires_human_action"] == 1
     assert fake.submissions == 1 and _approval(ctx, uid)["status"] == "consumed"
-    # Even a fresh prepare + approval cannot trigger another automatic submission.
-    fresh = service.prepare_application(ctx, info["job_uid"], browser_factory=fake).approval_uid
-    service.decide(ctx, fresh, approve=True, actor="cli")
+    # Preparing it again is refused: it may already have reached the employer (r2 finding).
+    with pytest.raises(HumanActionRequired, match="UNKNOWN outcome") as refused:
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert "--confirm-not-submitted" in refused.value.human_action
+    assert "mark-submitted" in refused.value.human_action and "email" in refused.value.human_action
+    assert status_of(ctx, info["app_id"]) == "needs_manual_action"
+    assert ctx.db.scalar("SELECT COUNT(*) FROM approval_requests WHERE status = 'pending'") == 0
+    # Even after you confirm it was not sent, a fresh prepare + approval cannot trigger another browser submission.
+    fresh = service.prepare_application(ctx, info["job_uid"], browser_factory=fake,
+                                        confirm_not_submitted=True).approval_uid
+    confirmed = ctx.db.query_one("SELECT * FROM application_events WHERE application_id = ? "
+                                 "AND event_type = 'confirmed_not_submitted'", (info["app_id"],))
+    assert confirmed is not None and confirmed["actor"] == "user"
+    decision = service.decide(ctx, fresh, approve=True, actor="cli")
+    assert "will never submit it again" in decision.next_action and "submit manually" in decision.next_action.lower()
     with pytest.raises(service.SubmissionBlocked, match="unknown outcome"):
         service.submit_approved(ctx, fresh, browser_factory=fake)
     assert fake.submissions == 1
@@ -364,7 +376,9 @@ def test_mark_submitted_withdraw_notes_and_views(ctx, make_job):
     app = repo.get_application(ctx.db, info["app_id"])
     assert app["status"] == "submitted" and app["confirmation_status"] == "user_reported"
     assert "Recruiter is Sam" in app["notes"]
-    assert _approval(ctx, uid)["status"] == "rejected"  # pending request closed by your report
+    closed = _approval(ctx, uid)
+    assert closed["status"] == "superseded"  # pending request closed by your report
+    assert "marked submitted by you" in closed["decision_note"]
 
     rows = service.list_applications(ctx.db)
     assert rows[0]["application_uid"] == info["app_uid"] and rows[0]["employer"] == "Acme Analytics"
@@ -419,3 +433,318 @@ def test_unapproved_documents_block_browser_submission():
     assert any("cover letter has not been approved" in b for b in blocked)
     assert submission_blockers({**base, "resume": {"document_id": 3, "status": "approved"},
                                 "cover_letter": None}) == []
+
+
+# ------------------------------------------- r2: interrupted submissions --- #
+def _unknown_rows(ctx, app_id):
+    events = ctx.db.scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ? "
+                           "AND event_type = 'submission_outcome_unknown'", (app_id,))
+    errors = ctx.db.scalar("SELECT COUNT(*) FROM errors WHERE application_id = ? AND error_kind = 'unknown_outcome' "
+                           "AND retryable = 0 AND requires_human_action = 1", (app_id,))
+    return events, errors
+
+
+@pytest.mark.parametrize("exc_type", [KeyboardInterrupt, SystemExit])
+def test_interrupt_after_click_records_unknown_outcome(ctx, make_job, monkeypatch, exc_type):
+    """r2 HIGH: Ctrl+C / SystemExit after the click left SUBMISSION_ATTEMPTED with no unknown-outcome record."""
+    from job_agent.browser.fakes import FakePage
+
+    info, fake, uid = _ready_simple(ctx, make_job, outcome="hang")
+    original = FakePage.click_submit
+
+    def click_then_interrupt(self, control):
+        original(self, control)  # the form was posted ...
+        raise exc_type()  # ... and the user pressed Ctrl+C while waiting
+
+    monkeypatch.setattr(FakePage, "click_submit", click_then_interrupt)
+    with pytest.raises(exc_type):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert fake.submissions == 1
+    app = repo.get_application(ctx.db, info["app_id"])
+    assert app["status"] == "needs_manual_action" and "Unknown outcome" in app["next_action"]
+    assert _unknown_rows(ctx, info["app_id"]) == (1, 1)
+    assert _approval(ctx, uid)["status"] == "consumed"
+    assert service.application_detail(ctx.db, info["app_uid"])["unknown_outcome"] is True
+    # You can now record either outcome yourself; nothing is retried.
+    service.set_status(ctx, info["app_uid"], "closed", note="it never arrived")
+    assert status_of(ctx, info["app_id"]) == "closed" and fake.submissions == 1
+
+
+def test_interrupt_while_polling_records_unknown_outcome(ctx, make_job, monkeypatch):
+    info, fake, uid = _ready_simple(ctx, make_job, outcome="hang")
+
+    def interrupted_poll(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service, "poll_outcome", interrupted_poll)
+    with pytest.raises(KeyboardInterrupt):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert status_of(ctx, info["app_id"]) == "needs_manual_action"
+    assert _unknown_rows(ctx, info["app_id"]) == (1, 1)
+    service.withdraw(ctx, info["app_uid"])
+    assert status_of(ctx, info["app_id"]) == "withdrawn"
+
+
+@pytest.mark.skipif(not hasattr(__import__("signal"), "SIGTERM") or __import__("os").name == "nt",
+                    reason="POSIX signals")
+def test_sigterm_while_waiting_for_outcome_is_recorded(ctx, make_job, monkeypatch):
+    """A stop signal (default action: die silently) during the wait becomes SystemExit, recorded first."""
+    import os
+    import signal
+    import time
+
+    info, fake, uid = _ready_simple(ctx, make_job, outcome="hang")
+
+    def poll_then_terminated(*args, **kwargs):
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(2)  # the handler raises before this returns
+        raise AssertionError("SIGTERM was not turned into an exception")
+
+    monkeypatch.setattr(service, "poll_outcome", poll_then_terminated)
+    with pytest.raises(SystemExit):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert status_of(ctx, info["app_id"]) == "needs_manual_action"
+    assert _unknown_rows(ctx, info["app_id"]) == (1, 1)
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL  # handler restored
+
+
+def test_interrupt_after_known_outcome_keeps_that_outcome(ctx, make_job, monkeypatch):
+    """Ctrl+C after the confirmation page was seen (e.g. during the screenshot) keeps the evidence."""
+    info, fake, uid = _ready_simple(ctx, make_job)
+    real_screenshot = service._screenshot
+
+    def screenshot(ctx_, page, app_uid, name):
+        if name.startswith("submit-"):
+            raise KeyboardInterrupt
+        return real_screenshot(ctx_, page, app_uid, name)
+
+    monkeypatch.setattr(service, "_screenshot", screenshot)
+    with pytest.raises(KeyboardInterrupt):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    app = repo.get_application(ctx.db, info["app_id"])
+    assert app["status"] == "submitted" and app["confirmation_status"] == "page_evidence"
+    assert _unknown_rows(ctx, info["app_id"]) == (0, 0)
+
+
+def _stuck_attempt(ctx, make_job, *, pid, minutes_ago=0):
+    """SUBMISSION_ATTEMPTED left behind by a process that was killed (kill -9 / power loss)."""
+    import socket
+    from datetime import timedelta
+
+    from job_agent.utils.time import to_iso, utcnow
+
+    info, fake, uid = _ready_simple(ctx, make_job)
+    repo.transition_application(ctx.db, info["app_id"], S.SUBMISSION_ATTEMPTED, actor="browser", approval_uid=uid,
+                                approved_payload=build_payload(ctx.db, info["app_id"]),
+                                details={"url": URL, "pid": pid, "host": socket.gethostname()})
+    if minutes_ago:
+        ctx.db.execute("UPDATE applications SET status_updated_at = ? WHERE id = ?",
+                       (to_iso(utcnow() - timedelta(minutes=minutes_ago)), info["app_id"]))
+    return info, fake, uid
+
+
+def _dead_pid():
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_killed_submission_process_can_be_resolved_by_you(ctx, make_job):
+    """r2 HIGH: after a kill, withdraw / set-status closed / apply each raised InvalidTransition forever."""
+    info, fake, uid = _stuck_attempt(ctx, make_job, pid=_dead_pid())
+    detail = service.application_detail(ctx.db, info["app_uid"])
+    assert detail["submission_abandoned"] is True and detail["application"]["status"] == "submission_attempted"
+    service.withdraw(ctx, info["app_uid"], note="checked: it never arrived")
+    assert status_of(ctx, info["app_id"]) == "withdrawn"
+    assert _unknown_rows(ctx, info["app_id"]) == (1, 1)
+    statuses = [(e["from_status"], e["to_status"]) for e in service.application_detail(ctx.db, info["app_uid"])
+                ["events"] if e["to_status"]]
+    assert ("submission_attempted", "needs_manual_action") in statuses
+    assert fake.submissions == 0
+
+
+def test_killed_submission_then_apply_needs_confirmation(ctx, make_job):
+    info, fake, uid = _stuck_attempt(ctx, make_job, pid=_dead_pid())
+    with pytest.raises(HumanActionRequired, match="UNKNOWN outcome"):
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert status_of(ctx, info["app_id"]) == "needs_manual_action"  # recorded first, then refused
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake, confirm_not_submitted=True)
+    assert result.status == S.AWAITING_APPROVAL and fake.submissions == 0
+
+
+def test_live_submission_process_is_not_taken_over(ctx, make_job):
+    import os
+
+    info, fake, uid = _stuck_attempt(ctx, make_job, pid=os.getppid())  # a running process
+    with pytest.raises(service.SubmissionInProgress, match="still in progress"):
+        service.withdraw(ctx, info["app_uid"])
+    with pytest.raises(service.SubmissionInProgress):
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert status_of(ctx, info["app_id"]) == "submission_attempted"
+    assert service.application_detail(ctx.db, info["app_uid"])["submission_abandoned"] is False
+    # You can still say it went through.
+    service.mark_submitted(ctx, info["app_uid"], note="confirmation email arrived")
+    assert status_of(ctx, info["app_id"]) == "submitted"
+
+
+def test_stale_submission_without_checkable_process_is_recovered(ctx, make_job):
+    import os
+
+    info, fake, uid = _stuck_attempt(ctx, make_job, pid=os.getppid(), minutes_ago=service.STUCK_SUBMISSION_MINUTES + 5)
+    service.set_status(ctx, info["app_uid"], "closed")
+    assert status_of(ctx, info["app_id"]) == "closed" and _unknown_rows(ctx, info["app_id"]) == (1, 1)
+
+
+def test_repo_recovered_submission_counts_as_unknown_outcome(ctx, make_job):
+    """repo.recover_stuck_submissions (daemon start-up) writes no browser event; it still blocks re-preparing."""
+    info, fake, uid = _stuck_attempt(ctx, make_job, pid=_dead_pid(), minutes_ago=30)
+    assert repo.recover_stuck_submissions(ctx.db) == [info["app_id"]]
+    assert service.has_unknown_outcome(ctx.db, info["app_id"])
+    assert service.application_detail(ctx.db, info["app_uid"])["unknown_outcome"] is True
+    with pytest.raises(HumanActionRequired, match="UNKNOWN outcome"):
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+
+
+def test_unknown_outcome_resolved_by_confirmation_still_works(ctx, make_job):
+    """Legitimate path: an unknown outcome resolved by you is a normal submitted application."""
+    info, fake, uid = _ready_simple(ctx, make_job, outcome="hang")
+    service.submit_approved(ctx, uid, browser_factory=fake)
+    service.set_status(ctx, info["app_uid"], "confirmation_received", note="email arrived")
+    assert status_of(ctx, info["app_id"]) == "confirmation_received"
+
+
+# ----------------------------------------------- r2: current URL, documents --- #
+def test_apply_uses_the_jobs_current_application_url(ctx, make_job):
+    """r2: the URL copied at `prepare` time was used even after discovery updated the job's apply URL."""
+    info = setup_application(ctx, make_job)
+    new_url = "https://jobs.example-employer.com/apply/123/form"
+    ctx.db.execute("UPDATE jobs SET application_url = ? WHERE id = ?", (new_url, info["job_id"]))
+    fake = fake_for(url=new_url)
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert fake.opened == [new_url] and result.url == new_url
+    assert repo.get_application(ctx.db, info["app_id"])["application_url"] == new_url
+    assert repo.approval_payload(_approval(ctx, result.approval_uid))["application_url"] == new_url
+
+
+def test_apply_falls_back_to_current_job_url(ctx, make_job):
+    info = setup_application(ctx, make_job)
+    listing = "https://jobs.example-employer.com/jobs/123"
+    ctx.db.execute("UPDATE jobs SET application_url = NULL, job_url = ? WHERE id = ?", (listing, info["job_id"]))
+    fake = fake_for(url=listing)
+    service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert fake.opened == [listing]
+
+
+def _reject(ctx, doc_id, note="wrong bullets"):
+    from job_agent.resume.service import set_document_status
+
+    set_document_status(ctx, doc_id, "rejected", actor="cli", note=note)
+
+
+def test_rejected_resume_is_never_uploaded(ctx, make_job):
+    """r2: `apply` uploaded a résumé you explicitly rejected and let you approve the request."""
+    add_sponsorship_answer(ctx)
+    info = setup_application(ctx, make_job)
+    _reject(ctx, info["resume_ids"]["pdf"])  # every format of the version
+    fake = fake_for(fields=simple_fields())
+    with pytest.raises(HumanActionRequired, match="rejected the résumé") as exc:
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert f"job-agent prepare {info['job_uid']}" in exc.value.human_action
+    assert fake.opened == [] and fake.uploaded == {} and status_of(ctx, info["app_id"]) == "documents_ready"
+    assert ctx.db.scalar("SELECT COUNT(*) FROM approval_requests") == 0
+
+
+def test_rejected_cover_letter_is_never_used(ctx, make_job):
+    info = setup_application(ctx, make_job)
+    _reject(ctx, info["cover_id"])
+    fake = fake_for()
+    with pytest.raises(HumanActionRequired, match="rejected the cover letter"):
+        service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert fake.opened == []
+
+
+def test_rejected_version_falls_back_to_latest_unrejected_version(ctx, make_job):
+    from test_applications_support import _write_doc
+
+    info = setup_application(ctx, make_job, formats=("pdf",))
+    v2 = _write_doc(ctx, info["job_id"], "resume", "pdf", b"%PDF-1.4 resume v2", version=2)
+    ctx.db.update("applications", info["app_id"], {"resume_document_id": v2})
+    _reject(ctx, v2)
+    fake = fake_for()
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    assert result.status == S.AWAITING_APPROVAL
+    assert fake.uploaded["resume"].name.endswith("_v1.pdf")
+    payload = repo.approval_payload(_approval(ctx, result.approval_uid))
+    assert payload["resume"]["document_id"] == info["resume_ids"]["pdf"] and payload["resume"]["status"] == "approved"
+
+
+def test_resume_rejected_after_request_cannot_be_approved_or_submitted(ctx, make_job):
+    add_sponsorship_answer(ctx)
+    info = setup_application(ctx, make_job)
+    fake = fake_for(fields=simple_fields())
+    service.prepare_application(ctx, info["job_uid"], browser_factory=fake)
+    uid = service.set_answer(ctx, info["app_uid"], "certify", "yes")
+    _reject(ctx, info["resume_ids"]["pdf"])
+    with pytest.raises(ApprovalError, match="you rejected"):
+        service.decide(ctx, uid, approve=True, actor="cli")
+    assert _approval(ctx, uid)["status"] == "pending"
+    assert service.decide(ctx, uid, approve=False, actor="cli", note="regenerate").status == S.DOCUMENTS_READY
+
+
+def test_resume_rejected_after_approval_is_not_submitted(ctx, make_job):
+    info, fake, uid = _ready_simple(ctx, make_job)
+    opened = len(fake.opened)
+    _reject(ctx, info["resume_ids"]["pdf"])
+    with pytest.raises(ApprovalError, match="changed after approval"):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert fake.submissions == 0 and len(fake.opened) == opened  # the form was never even opened
+
+
+def test_needs_review_resume_still_prepares(ctx, make_job):
+    """Legitimate: a résumé you have not reviewed yet is prepared (browser submission waits for approval)."""
+    info = setup_application(ctx, make_job)
+    ctx.db.execute("UPDATE document_versions SET status = 'needs_review' WHERE job_id = ?", (info["job_id"],))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=fake_for())
+    assert result.status == S.AWAITING_APPROVAL
+    blockers = submission_blockers(repo.approval_payload(_approval(ctx, result.approval_uid)))
+    assert any("not been approved by you yet" in b for b in blockers)
+
+
+# ------------------------------------------------ r2: approvals are closed --- #
+@pytest.mark.parametrize("action", ["mark_submitted", "withdraw", "set_status_closed", "set_status_submitted"])
+def test_approved_unused_approval_is_closed_when_you_record_the_outcome(ctx, make_job, action):
+    """r2: an approved, never-used approval stayed 'approved' after mark-submitted / withdraw / set-status."""
+    info, fake, uid = _ready_simple(ctx, make_job)
+    {"mark_submitted": lambda: service.mark_submitted(ctx, info["app_uid"], note="applied on the site"),
+     "withdraw": lambda: service.withdraw(ctx, info["app_uid"]),
+     "set_status_closed": lambda: service.set_status(ctx, info["app_uid"], "closed"),
+     "set_status_submitted": lambda: service.set_status(ctx, info["app_uid"], "submitted")}[action]()
+    row = _approval(ctx, uid)
+    assert row["status"] == "superseded" and "by you" in row["decision_note"]
+    with pytest.raises(ApprovalError, match="no longer valid"):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert fake.submissions == 0
+
+
+def test_you_can_withdraw_an_approval_before_it_is_used(ctx, make_job):
+    info, fake, uid = _ready_simple(ctx, make_job)
+    result = service.decide(ctx, uid, approve=False, actor="cli", note="changed my mind")
+    assert result.status == S.DOCUMENTS_READY and "withdrawn" in result.next_action
+    row = _approval(ctx, uid)
+    assert row["status"] == "superseded" and "changed my mind" in row["decision_note"]
+    with pytest.raises(ApprovalError):
+        service.submit_approved(ctx, uid, browser_factory=fake)
+    assert fake.submissions == 0
+    with pytest.raises(ApprovalError, match="not pending"):  # an approval cannot be re-approved
+        service.decide(ctx, uid, approve=True, actor="cli")
+
+
+def test_consumed_approval_cannot_be_withdrawn(ctx, make_job):
+    info, fake, uid = _ready_simple(ctx, make_job)
+    service.submit_approved(ctx, uid, browser_factory=fake)
+    with pytest.raises(ApprovalError, match="consumed"):
+        service.decide(ctx, uid, approve=False, actor="cli", note="too late")
+    assert _approval(ctx, uid)["status"] == "consumed" and status_of(ctx, info["app_id"]) == "submitted"

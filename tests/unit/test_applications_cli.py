@@ -199,3 +199,80 @@ def test_set_status_corrects_a_wrong_email_rejection(home):
     ctx = AppContext.load()
     assert repo.get_application(ctx.db, app_id)["status"] == "submitted"
     ctx.close()
+
+
+# ------------------------------------------------------------------ r2 ---- #
+def _approved_simple(ctx, make_job, browser, outcome="hang"):
+    add_sponsorship_answer(ctx)
+    info = setup_application(ctx, make_job)
+    browser.forms[next(iter(browser.forms))].outcome = outcome
+    service.prepare_application(ctx, info["job_uid"], browser_factory=browser)
+    uid = service.set_answer(ctx, info["app_uid"], "certify", "yes")
+    service.decide(ctx, uid, approve=True, actor="cli")
+    return info, uid
+
+
+def test_apply_after_unknown_outcome_requires_confirm_flag(cli, ctx, make_job, monkeypatch):
+    """r2: `apply` after an unknown outcome re-prepared to awaiting_approval, hiding a possible submission."""
+    browser = fake_for(fields=simple_fields())
+    monkeypatch.setattr(service, "default_factory", browser)
+    info, uid = _approved_simple(ctx, make_job, browser)
+    ctx.config.applications.browser_submission_enabled = True
+    ctx.config.applications.browser_timeout_seconds = 0.2
+    assert service.submit_approved(ctx, uid, browser_factory=browser).outcome == "unknown"
+
+    refused = cli("apply", info["job_uid"])
+    assert refused.exit_code == 1
+    assert "UNKNOWN outcome" in refused.output and "--confirm-not-submitted" in refused.output
+    assert repo.get_application(ctx.db, info["app_id"])["status"] == "needs_manual_action"
+    shown = cli("applications", "show", info["app_uid"])
+    assert "UNKNOWN outcome" in shown.output
+
+    ok = cli("apply", info["job_uid"], "--confirm-not-submitted")
+    assert ok.exit_code == 0, ok.output
+    assert "awaiting_approval" in ok.output
+    assert ctx.db.scalar("SELECT actor FROM application_events WHERE application_id = ? "
+                         "AND event_type = 'confirmed_not_submitted'", (info["app_id"],)) == "user"
+    assert browser.submissions == 1
+
+
+def test_approvals_reject_withdraws_an_unused_approval(cli, ctx, make_job, fake):
+    """r2: `approvals reject` on an approved request said 'is approved, not pending'."""
+    info = setup_application(ctx, make_job)
+    uid = service.prepare_application(ctx, info["job_uid"], browser_factory=fake).approval_uid
+    service.decide(ctx, uid, approve=True, actor="cli")
+    result = cli("approvals", "reject", uid, "--note", "not this one")
+    assert result.exit_code == 0, result.output
+    assert "withdrawn" in result.output and "documents_ready" in result.output
+    assert repo.get_approval(ctx.db, uid)["status"] == "superseded"
+
+
+def test_mark_submitted_closes_approved_request(cli, ctx, make_job, fake):
+    info = setup_application(ctx, make_job)
+    uid = service.prepare_application(ctx, info["job_uid"], browser_factory=fake).approval_uid
+    service.decide(ctx, uid, approve=True, actor="cli")
+    assert cli("applications", "mark-submitted", info["app_uid"]).exit_code == 0
+    assert repo.get_approval(ctx.db, uid)["status"] == "superseded"
+
+
+def test_show_and_withdraw_after_killed_submission(cli, ctx, make_job, monkeypatch):
+    import socket
+    import subprocess
+    import sys
+
+    from job_agent.applications.payload import build_payload
+    from job_agent.models import PipelineState as S
+
+    browser = fake_for(fields=simple_fields())
+    monkeypatch.setattr(service, "default_factory", browser)
+    info, uid = _approved_simple(ctx, make_job, browser)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    repo.transition_application(ctx.db, info["app_id"], S.SUBMISSION_ATTEMPTED, actor="browser", approval_uid=uid,
+                                approved_payload=build_payload(ctx.db, info["app_id"]),
+                                details={"pid": proc.pid, "host": socket.gethostname()})
+    shown = cli("applications", "show", info["app_uid"])
+    assert shown.exit_code == 0 and "stopped before recording the outcome" in shown.output
+    withdrawn = cli("applications", "withdraw", info["app_uid"], input="y\n")
+    assert withdrawn.exit_code == 0, withdrawn.output
+    assert repo.get_application(ctx.db, info["app_id"])["status"] == "withdrawn"
