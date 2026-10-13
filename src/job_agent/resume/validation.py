@@ -4,8 +4,18 @@
 it is supposed to restate. Its rules are heuristics that err on the side of
 rejecting: a rejected rewording simply falls back to the verbatim fact text.
 
+Every check runs on ``claim_text(text)``: whitespace collapsed and
+``security.textnorm.normalize_text`` applied, so full-width letters ("Ｌｅｄ"),
+look-alike Cyrillic/Greek letters ("Lеd"), circled / superscript / roman
+numerals ("⑤⓪⓪", "³⁰", "Ⅻ") are judged as the plain letters and digits a
+reader sees. Callers store and render that same normalized text.
+
 Rules (each violation is an ``Issue`` with severity ``error``):
 
+* no characters that could disguise a claim (``textnorm.suspicious_characters``,
+  combining marks, control/format/private-use characters) unless the verified
+  source contains them too; a word with non-ASCII letters must appear in the
+  verified text;
 * every number / percentage / amount must appear in the source fact(s) with the
   same unit (%, $, k/m/b, x) -- a bare number must also count the same thing
   ("9 programs" may not become "9 categories" or borrow "25" from "25%");
@@ -15,9 +25,10 @@ Rules (each violation is an ``Issue`` with severity ``error``):
   ("approximately", "about", "~") / lower bound ("over", "more than", "at
   least", "12+") / upper bound ("up to", "less than"); nothing may be added,
   removed or swapped;
-* no lexicon tool/skill/technology (matched case-insensitively) unless it is in
-  the source fact (text or its ``skills``) -- or, with ``strict_skills=False``,
-  in ``profile.skills``;
+* no lexicon tool/skill/technology (matched case-insensitively, also with
+  hyphens / dots / slashes removed or turned into spaces: "Power-BI", "Snow-flake")
+  and no other ``profile.skills`` phrase unless it is in the source fact (text or
+  its ``skills``) -- or, with ``strict_skills=False``, in ``profile.skills``;
 * no leadership / ownership verbs (led, managed, owned, spearheaded, ...) and
   no build/ownership verbs (built, developed, designed, created, launched,
   deployed, implemented, ...) unless the source uses them -- "Supported" may
@@ -25,10 +36,14 @@ Rules (each violation is an ``Issue`` with severity ``error``):
 * no inflation wording the source lacks: "single-handedly", "solely",
   "responsible for", "end-to-end", "company-wide" / "statewide" scope words,
   intensifiers such as "significantly";
+* no scope word ("all", "every", "each", "entire", "whole", "most", "only")
+  in front of something the fact does not quantify that way;
 * no content word that is not in the fact text, the fact's ``skills`` /
-  ``keywords``, ``profile.skills``, the caller's verified ``context`` or a small
-  connective allowlist ("using", "including", "also", ...): reordering and
-  trimming pass, additions do not;
+  ``keywords``, the caller's verified ``context`` (plus ``profile.skills`` with
+  ``strict_skills=False``) or a small connective allowlist ("using",
+  "including", "also", ...): reordering and trimming pass, additions do not. A
+  hyphenated compound ("Power-BI") must appear as a whole unless it only attaches
+  a connective ("DB2-based");
 * no organization / proper names that are not in the source (including other
   profile employers and the job's employer);
 * no certifications / degrees that are not in the source or the profile; no
@@ -50,6 +65,7 @@ employer are never trusted as a source for any claim.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -64,8 +80,10 @@ from job_agent.resume.text import (
     normalize_space,
     split_sentences,
     stem,
+    to_latin1,
     words,
 )
+from job_agent.security.textnorm import normalize_text, suspicious_characters
 
 MIN_OVERLAP = 0.5
 MIN_WORDS = 4
@@ -194,6 +212,12 @@ _LINK = re.compile(r"(https?://|www\.|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]
 _PLACEHOLDER = re.compile(r"<[^<>]+>")
 _BRACKET_PLACEHOLDER = re.compile(r"\[[^\[\]]{2,60}\]")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9&+#'’.-]*")
+#: Scope words that widen a claim ("Supported all dashboards") unless the fact quantifies the same thing that way.
+_SCOPE = re.compile(r"(?<![A-Za-z'’-])(all|every|each|entire|entirety|whole|most|only)(?![A-Za-z'’-])", re.IGNORECASE)
+#: Punctuation inside a tool name used to hide it from the lexicon ("Power-BI", "Snow.flake", "DB2/SQL").
+_JOINER = re.compile(r"(?<=[A-Za-z0-9])[-_./](?=[A-Za-z0-9])")
+_GLUE = re.compile(r"(?<=[A-Za-z0-9])[-_.](?=[A-Za-z0-9])")
+_UNICODE_WORD = re.compile(r"[^\W\d_](?:[\w'’-]*[^\W_])?")
 
 #: Connective words a rewording may add without adding a claim (kept deliberately small).
 CONNECTIVES: frozenset[str] = frozenset(content_set(
@@ -205,6 +229,83 @@ CONNECTIVES: frozenset[str] = frozenset(content_set(
 # --------------------------------------------------------------------------- #
 def _issue(code: str, message: str, severity: str = "error", location: str | None = None) -> Issue:
     return Issue(code=code, severity=severity, message=message, location=location)  # type: ignore[arg-type]
+
+
+def claim_text(text: str | None) -> str:
+    """The canonical form of a statement: exactly what is validated, stored and rendered.
+
+    Whitespace is collapsed and ``textnorm.normalize_text`` folds full-width /
+    compatibility forms and look-alike letters into the Latin letters and
+    digits a reader would see ("Ｌｅｄ" -> "Led", "⑤⓪⓪" -> "500").
+    """
+    return normalize_space(normalize_text(normalize_space(text)))
+
+
+def _lines(text: str) -> str:
+    """``claim_text`` applied per line (keeps joined verified texts apart)."""
+    return "\n".join(claim_text(line) for line in (text or "").split("\n"))
+
+
+def unexpected_characters(text: str | None, verified_text: str = "") -> list[str]:
+    """Characters in generated ``text`` that can disguise a claim, unless ``verified_text`` has them too.
+
+    ``textnorm.suspicious_characters`` (full-width / compatibility forms, look-alike
+    and non-Latin-1 letters or digits, invisible characters) plus combining marks
+    and control / format / private-use characters.
+    """
+    found: list[str] = []
+    odd = [c for c in text or "" if not c.isascii() and unicodedata.category(c)[0] in "MC"]
+    for ch in [*suspicious_characters(text), *odd]:
+        if ch not in found and ch not in (verified_text or ""):
+            found.append(ch)
+    return found
+
+
+def check_characters(text: str, verified_text: str) -> list[Issue]:
+    found = unexpected_characters(text, verified_text)
+    if not found:
+        return []
+    shown = ", ".join(f"U+{ord(c):04X}" for c in found[:6])
+    return [_issue("suspicious_characters",
+                   "contains characters that are not in the verified text and can disguise a claim or turn into "
+                   f"different letters/digits in the PDF (full-width, look-alike, invisible or compatibility "
+                   f"forms: {shown})")]
+
+
+def check_non_ascii_words(text: str, allowed_text: str) -> list[Issue]:
+    """A word with non-ASCII letters ("Lèd", "Mánaged") must appear in the verified text as it is."""
+    novel: list[str] = []
+    for m in _UNICODE_WORD.finditer(text or ""):
+        w = m.group(0)
+        if w.isascii() or w in novel:
+            continue
+        if not re.search(rf"(?<!\w){re.escape(w)}(?!\w)", allowed_text or "", re.IGNORECASE):
+            novel.append(w)
+    if not novel:
+        return []
+    return [_issue("unverified_non_ascii_word", "uses accented / non-English spellings that are not in the verified "
+                                                "text: " + ", ".join(f"'{w}'" for w in novel[:6]))]
+
+
+def _scope_uses(text: str) -> list[tuple[str, str, str]]:
+    """``(scope word, stem of the next content word, shown phrase)`` for every scope word in ``text``."""
+    out = []
+    for m in _SCOPE.finditer(text or ""):
+        rest = re.split(r"[,;:!?()]|\.\s", text[m.end(): m.end() + 80])[0]
+        following = [w for w in words(rest) if _bare(w) not in STOPWORDS and len(_bare(w)) >= 2]
+        target = stem(_bare(following[0])) if following else ""
+        out.append((m.group(1).lower(), target, normalize_space(f"{m.group(1)} {following[0] if following else ''}")))
+    return out
+
+
+def check_scope(text: str, source_text: str) -> list[Issue]:
+    """Scope words ("all", "every", "entire", ...) only where the fact quantifies the same thing that way."""
+    allowed = {(w, t) for w, t, _ in _scope_uses(source_text)}
+    issues: list[Issue] = []
+    for w, t, shown in _scope_uses(text):
+        if (w, t) not in allowed and not any(shown in i.message for i in issues):
+            issues.append(_issue("scope_inflated", f"'{shown}' widens the scope of what the verified fact states"))
+    return issues
 
 
 def _numbers(text: str) -> list[tuple[str, str, str]]:
@@ -312,21 +413,46 @@ def check_numbers(text: str, source_text: str) -> list[Issue]:
     return issues
 
 
+def _skill_variants(text: str) -> list[str]:
+    """``text`` plus forms with joining punctuation turned into spaces / removed ("Power-BI" -> "Power BI", "PowerBI")."""
+    return list(dict.fromkeys([text, _JOINER.sub(" ", text), _GLUE.sub("", text)]))
+
+
 def _skills_in(texts: Iterable[str]) -> set[str]:
     found: set[str] = set()
     for t in texts:
-        found.update(lexicon.find_skills(t, ignore_case=True))
+        for variant in _skill_variants(t):
+            found.update(lexicon.find_skills(variant, ignore_case=True))
     return found
+
+
+def _skill_spans(text: str) -> dict[str, str]:
+    spans: dict[str, str] = {}
+    for variant in _skill_variants(text):
+        for name, matched in lexicon.find_skill_spans(variant, ignore_case=True):
+            spans.setdefault(name, matched)
+    return spans
+
+
+def _mentions_any(text: str, phrase: str) -> bool:
+    return any(mentions(v, p) for v in _skill_variants(text) for p in _skill_variants(phrase))
 
 
 def check_skills(text: str, source_facts: Sequence[Fact], profile: CandidateProfile, *, strict: bool = True,
                  extra_allowed: Iterable[str] = ()) -> list[Issue]:
-    """Lexicon tools/skills (matched in any letter case) must come from the source fact."""
-    source_allowed = _skills_in([f.text for f in source_facts] + [s for f in source_facts for s in f.skills])
-    source_allowed |= _skills_in(extra_allowed)
+    """Tools/skills must come from the source fact.
+
+    Lexicon entries are matched in any letter case and also when split or glued
+    with punctuation ("Power-BI", "Snow-flake"); ``profile.skills`` phrases that
+    the lexicon does not know ("AI-assisted development") are tools too.
+    """
+    source_texts = [claim_text(t) for t in [*(f.text for f in source_facts), *(s for f in source_facts for s in f.skills),
+                                            *extra_allowed]]
+    source_allowed = _skills_in(source_texts)
+    source_blob = "\n".join(source_texts)
     profile_allowed = _skills_in(profile.skills)
     issues = []
-    for name, matched in lexicon.find_skill_spans(text, ignore_case=True):
+    for name, matched in _skill_spans(text).items():
         if name in source_allowed:
             continue
         if name in profile_allowed:
@@ -336,6 +462,13 @@ def check_skills(text: str, source_facts: Sequence[Fact], profile: CandidateProf
                                      "a bullet may only name tools used in that fact"))
             continue
         issues.append(_issue("unverified_skill", f"'{matched}' is not in your verified skills or the source fact"))
+    if strict:
+        for skill in profile.skills:
+            if (skill.strip() and not _skills_in([skill]) and _mentions_any(text, skill)
+                    and not _mentions_any(source_blob, skill)):
+                issues.append(_issue("skill_not_in_source_fact",
+                                     f"'{skill}' is in your skills list but not in this verified fact; "
+                                     "a bullet may only name skills used in that fact"))
     return issues
 
 
@@ -394,7 +527,11 @@ def check_new_words(text: str, allowed_text: str, *, vocabulary: Iterable[str] =
         if len(lw) < 3 or lw in STOPWORDS or stem(lw) in allowed:
             continue
         parts = [p for p in re.split(r"[-/]", lw) if p]
-        if len(parts) > 1 and all(len(p) < 3 or p in STOPWORDS or stem(p) in allowed for p in parts):
+        # A hyphen may only attach a connective to a verified word ("DB2-based"); a compound of two verified
+        # words ("Power-BI", "SAS-certified") must itself appear in the verified text.
+        compound = [p for p in lw.split("-") if p and p not in STOPWORDS and stem(p) not in CONNECTIVES]
+        if (len(parts) > 1 and len(compound) <= 1
+                and all(len(p) < 3 or p in STOPWORDS or stem(p) in allowed for p in parts)):
             continue
         if w not in novel:
             novel.append(w)
@@ -577,26 +714,35 @@ def validate_claim(text: str, source_facts: Sequence[Fact], profile: CandidatePr
     Agency" for a cover-letter sentence); it may supply names and words but
     never numbers. ``vocabulary`` is extra allowed connective stems. Listing
     text (job title, employer, description) must never be passed as context.
+
+    All checks run on ``claim_text(text)`` (Unicode-normalized); callers store
+    and render that normalized text, never the raw input.
     """
-    candidate = normalize_space(text)
+    raw = normalize_space(text)
+    candidate = claim_text(text)
     if not source_facts:
         return [_issue("no_source_fact", "a claim must cite at least one verified fact")]
-    source_text = "\n".join(normalize_space(f.text) for f in source_facts)
+    raw_skills = [s for f in source_facts for s in f.skills]
+    raw_keywords = [k for f in source_facts for k in f.keywords]
+    char_issues = check_characters(raw, "\n".join([*(f.text for f in source_facts), *raw_skills, *raw_keywords,
+                                                   context]))
+    source_text = "\n".join(claim_text(f.text) for f in source_facts)
     if candidate == normalize_space(source_text):
         # Verbatim restatement of a single fact -- only document-level rules apply.
-        return check_forbidden_content(candidate, source_text)
-    issues: list[Issue] = []
+        return char_issues + check_forbidden_content(candidate, source_text)
+    issues: list[Issue] = list(char_issues)
     if not candidate:
         return [_issue("empty", "empty statement")]
     vocabulary = frozenset(vocabulary)
+    context = _lines(context)
     n_words = len(words(candidate))
     src_words = len(words(source_text)) + len(words(context))
     if n_words < MIN_WORDS:
         issues.append(_issue("too_short", f"only {n_words} words"))
     if n_words > max(40, int(src_words * 1.6)) or len(candidate) > MAX_CHARS:
         issues.append(_issue("too_long", f"{n_words} words / {len(candidate)} characters is too long"))
-    skill_text = "\n".join(s for f in source_facts for s in f.skills)
-    keyword_text = "\n".join(k for f in source_facts for k in f.keywords)
+    skill_text = "\n".join(claim_text(s) for s in raw_skills)
+    keyword_text = "\n".join(claim_text(k) for k in raw_keywords)
     # Exact verified context phrases (a title such as "Team Lead", an employer such as "Oracle") are
     # masked for the claim checks below; they never make the same words acceptable elsewhere.
     masked = _mask_phrases(candidate, context.split("\n"))
@@ -605,12 +751,16 @@ def validate_claim(text: str, source_facts: Sequence[Fact], profile: CandidatePr
     issues += check_leadership(masked, source_text)
     issues += check_role_verbs(masked, source_text)
     issues += check_inflation(masked, source_text)
+    issues += check_scope(masked, source_text)
     issues += check_credentials(candidate, source_text + "\n" + context, profile)
     issues += check_education_claims(candidate, profile, source_text)
     issues += check_organizations(candidate, source_text, profile, forbidden_names=forbidden_names,
                                   allowed_text="\n".join([skill_text, context]))
     issues += check_forbidden_content(candidate, source_text)
-    allowed_text = "\n".join([source_text, skill_text, keyword_text, *profile.skills, context])
+    # Words of profile skills outside this fact are allowed wording only when the skill rule is relaxed.
+    profile_words = [claim_text(s) for s in profile.skills] if not strict_skills else []
+    allowed_text = "\n".join([source_text, skill_text, keyword_text, *profile_words, context])
+    issues += check_non_ascii_words(candidate, allowed_text)
     # Qualifier words right before a number ("roughly 30%") are judged by check_numbers (same class).
     issues += check_new_words(_ANY_QUALIFIER.sub(" ", candidate), allowed_text, vocabulary=vocabulary)
     ratio = overlap_ratio(candidate, "\n".join([source_text, skill_text, context]), vocabulary=vocabulary)
@@ -676,6 +826,21 @@ def placeholder_issues(profile: CandidateProfile, rendered_text: str, *, profile
 # --------------------------------------------------------------------------- #
 # Document-level validation
 # --------------------------------------------------------------------------- #
+def pdf_character_issues(text: str) -> list[Issue]:
+    """A ``review`` issue for characters the PDF (base-14 fonts) can only show as '?'.
+
+    Generated text never contains such characters (it is normalized and checked);
+    they come from verified profile text. The renderer never folds them into
+    other letters or digits, so the PDF shows '?' and the DOCX keeps them.
+    """
+    missing = sorted({ch for ch in text or "" if not ch.isspace() and ch != "?" and to_latin1(ch) == "?"})
+    if not missing:
+        return []
+    shown = ", ".join(f"'{ch}' (U+{ord(ch):04X})" for ch in missing[:8])
+    return [_issue("pdf_unsupported_characters", f"The PDF shows these characters from your profile as '?': {shown}. "
+                                                 "Check the PDF, or use the DOCX version.", severity="review")]
+
+
 def _header_issues(header: Any, profile: CandidateProfile) -> list[Issue]:
     p = profile.personal
     expected = {"full_name": p.full_name, "email": p.email, "phone": p.phone, "location": p.location}
@@ -733,8 +898,10 @@ def validate_resume(content: ResumeContent, profile: CandidateProfile, *,
                                  location="skills"))
     text = content.plain_text()
     contact = "\n".join(content.header.contact_parts())
-    issues += [i for i in check_forbidden_content(text, contact) if i.code != "placeholder_text"]
+    issues += [i for i in check_forbidden_content(normalize_text(text), normalize_text(contact))
+               if i.code != "placeholder_text"]
     issues += placeholder_issues(profile, text, profile_label=profile_label)
+    issues += pdf_character_issues(text)
     for i in issues:
         i.document = "resume"
     return issues
@@ -834,22 +1001,32 @@ _LISTING_LEAD = re.compile(r"^(?:Your listing mentions|The listing also mentions
 
 def validate_body_claim(text: str, facts: Sequence[Fact], profile: CandidateProfile, *, employer: str | None,
                         listing_text: str) -> list[Issue]:
-    """Validate one cover-letter body claim (a sentence restating ``facts``)."""
-    issues: list[Issue] = []
+    """Validate one cover-letter body claim (a sentence restating ``facts``).
+
+    Like ``validate_claim``, the checks run on ``claim_text(text)``; the caller
+    keeps that normalized sentence.
+    """
+    context = fact_context(profile, facts)
+    fact_blob = "\n".join([*(f.text for f in facts), *(s for f in facts for s in f.skills),
+                           *(k for f in facts for k in f.keywords)])
+    issues: list[Issue] = check_characters(normalize_space(text), fact_blob + "\n" + context)
+    text = claim_text(text)
+    listing_text = normalize_text(listing_text)
     core = text
     lead = _LISTING_LEAD.match(text)
     if lead:
         keyword, core = lead.group("kw"), lead.group("core")
-        fact_blob = "\n".join([*(f.text for f in facts), *(s for f in facts for s in f.skills),
-                               *(k for f in facts for k in f.keywords)])
+        fact_blob = _lines(fact_blob)
         in_listing = mentions(listing_text, keyword) or keyword in lexicon.find_skills(listing_text)
         in_fact = mentions(fact_blob, keyword) or keyword in _skills_in([fact_blob])
         if not (in_listing and in_fact):
             issues.append(_issue("unverified_listing_reference",
                                  f"'{keyword}' must be literally in the listing and in the cited verified fact"))
-    issues += validate_claim(core, facts, profile, forbidden_names=[employer] if employer else [],
-                             context=fact_context(profile, facts), vocabulary=BODY_VOCABULARY)
-    profile_text = "\n".join([*organizations(profile), *(f.text for f in facts)])
+    seen = {i.code for i in issues}
+    issues += [i for i in validate_claim(core, facts, profile, forbidden_names=[employer] if employer else [],
+                                         context=context, vocabulary=BODY_VOCABULARY)
+               if not (i.code == "suspicious_characters" and i.code in seen)]
+    profile_text = "\n".join([*organizations(profile), *(claim_text(f.text) for f in facts)])
     for sentence in split_sentences(core):
         issues += check_company_claims(sentence, employer=employer or "", listing_text=listing_text,
                                        profile_text=profile_text)
@@ -903,8 +1080,10 @@ def validate_cover_letter(content: CoverLetterContent, claims: Sequence[Claim], 
                                  + "; ".join(summarize(problems))))
     text = content.plain_text()
     contact = "\n".join(content.header.contact_parts())
-    issues += [i for i in check_forbidden_content(text, contact) if i.code != "placeholder_text"]
+    issues += [i for i in check_forbidden_content(normalize_text(text), normalize_text(contact))
+               if i.code != "placeholder_text"]
     issues += placeholder_issues(profile, text, profile_label=profile_label, document="cover_letter")
+    issues += pdf_character_issues(text)
     for i in issues:
         i.document = "cover_letter"
     return issues

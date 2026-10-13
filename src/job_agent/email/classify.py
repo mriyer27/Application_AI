@@ -114,14 +114,15 @@ RULES: tuple[_Rule, ...] = (
        r"forward with (?:other|another))|(?:pursue|pursuing|move forward with) other candidates|(?:position|role) "
        r"has (?:now )?been filled|no longer (?:under consideration|being considered|considering your)|"
        r"(?:not|were not|was not|have not been) selected|other candidates whose|decided to move in a different "
-       r"direction|not (?:able|in a position) to offer you)\b", 3.5, 3.5),
+       r"direction|not (?:able|in a position) to offer you|mov(?:ed|ing) forward with (?:another|other|a different) "
+       r"(?:candidate|applicant)s?)\b", 3.5, 3.5),
     _r(C.REJECTION, r"\bunfortunately\b", 1.5, 1.0),
     # -- offer ----------------------------------------------------------------------
     _r(C.OFFER,
        r"\b(?:pleased|delighted|happy|excited|thrilled) to (?:extend|make|present) (?:to )?(?:you )?(?:an?|the|this) "
        r"(?:formal |written |verbal |conditional )?(?:job |employment )?offer\b", 4.0, 4.0),
-    _r(C.OFFER, r"\b(?:pleased|delighted|happy|excited|thrilled) to offer you (?:the|a|an) (?:position|role|job)\b",
-       4.0, 4.0),
+    _r(C.OFFER, r"\b(?:pleased|delighted|happy|excited|thrilled) to offer you (?:(?:the|a|an) (?:position|role|job)|"
+                r"(?:full-time |part-time )?employment)\b", 4.0, 4.0),
     # Never a bare "your offer": shops and banks send "your offer is ready" all the time.
     _r(C.OFFER, r"\b(?:offer letter|offer of employment|employment offer|job offer)\b", 3.5, 2.0),
     # -- interview invitation -------------------------------------------------------
@@ -192,6 +193,39 @@ _OFFER_NEGATED = re.compile(
     r"(?:rescinded|revoked|retracted|withdrawn|cancell?ed)\b",
     re.I,
 )
+#: The offer is being made to *someone else*: "we extended an offer to another candidate, who accepted it",
+#: "the position has been filled", "we moved forward with another applicant". That is a rejection.
+_OFFER_TO_OTHER = re.compile(
+    r"\boffer(?:\s+of\s+employment)?\s+to\s+(?:another|other|a\s+different|the\s+other|one\s+of\s+the\s+other|"
+    r"the\s+selected|the\s+successful|the\s+chosen|the|a|an)\s+(?:[a-z-]+\s+){0,3}?"
+    r"(?:candidate|applicant|individual|person|finalist)s?\b"
+    r"|\b(?:extended|made|presented|given)\s+(?:an?|the|our|this|that)\s+(?:job\s+|employment\s+|final\s+)?offer"
+    r"(?:\s+of\s+employment)?\s+to\s+(?!you\b|yourself\b)[a-z]"
+    r"|\b(?:candidate|applicant|individual|person|finalist)s?,?\s+(?:who|that)\s+(?:has\s+|have\s+)?"
+    r"(?:since\s+|already\s+|now\s+)?accepted\b"
+    r"|\b(?:position|role|opening|vacancy|job|req(?:uisition)?)\s+(?:has|have|had|was|is)\s+(?:now\s+|already\s+|since\s+)?"
+    r"(?:been\s+)?filled\b"
+    r"|\bmov(?:e|ed|ing)\s+forward\s+with\s+(?:another|other|a\s+different|a\s+more)\b"
+    r"|\b(?:decided|chosen|chose|selected)\s+to\s+(?:hire|offer\s+the\s+(?:position|role)\s+to)\s+"
+    r"(?:another|a\s+different|someone\s+else|an?\s+other)\b"
+    r"|\bhired\s+(?:another|someone\s+else|a\s+different)\b",
+    re.I,
+)
+#: An offer is only an offer *to you* when it is addressed to the reader.
+_OFFER_TO_READER = re.compile(
+    r"\b(?:extend(?:ed|ing)?|mak(?:e|ing)|made|present(?:ed|ing)?|send(?:ing)?|sent|giv(?:e|ing)|offer(?:ed|ing)?)\s+"
+    r"(?:to\s+)?you\s+(?:with\s+)?(?:an?|the|this|our|your)\s+(?:[a-z-]+\s+){0,3}?offer\b"
+    r"|\boffer(?:ed|ing)?\s+you\s+(?:the|a|an|this|our)\s+(?:[a-z-]+\s+){0,4}?(?:position|role|job)\b"
+    r"|\boffer(?:ed|ing)?\s+you\s+(?:full-time\s+|part-time\s+)?employment\b"
+    r"|\boffer(?:\s+of\s+employment)?\s+(?:to|for)\s+you\b"
+    r"|\byour\s+(?:[a-z-]+\s+){0,2}?(?:offer\s+letter|offer\s+of\s+employment|job\s+offer|employment\s+offer|"
+    r"offer\s+package|offer\s+details)\b"
+    r"|\byou(?:'ve|\s+have)?\s+(?:been|are\s+being)\s+(?:extended|offered|made)\s+(?:an?|the)\b",
+    re.I,
+)
+#: "Join our talent community": an invitation, not an offer of employment.
+_NOT_AN_OFFER = re.compile(r"\btalent\s+(?:community|pool|network|pipeline)\b|\bjoin\s+our\s+(?:mailing|newsletter)\b",
+                           re.I)
 #: A conditional earlier in the same clause ("we reserve the right to rescind this offer if ...",
 #: "if you decide not to move forward with the offer").
 _CONDITIONAL_BEFORE = re.compile(
@@ -248,12 +282,21 @@ def is_promotional(*, subject: str, body: str) -> bool:
     return bool(_PROMOTIONAL.search(_norm(subject)) or _PROMOTIONAL.search(_norm(body)))
 
 
-def offer_negated(text: str) -> bool:
-    """An offer that is declined, rescinded or not extended (conditional clauses do not count)."""
-    for match in _OFFER_NEGATED.finditer(text):
+def _unconditional(pattern: re.Pattern[str], text: str) -> bool:
+    for match in pattern.finditer(text):
         if not _CONDITIONAL_BEFORE.search(text[max(0, match.start() - 60):match.start()]):
             return True
     return False
+
+
+def offer_negated(text: str) -> bool:
+    """An offer that is declined, rescinded, not extended, or made to someone else (conditionals do not count)."""
+    return _unconditional(_OFFER_NEGATED, text) or _unconditional(_OFFER_TO_OTHER, text)
+
+
+def offer_to_reader(text: str) -> bool:
+    """The text makes an offer to *you* ("extend you an offer", "offer you the position", "your offer letter")."""
+    return bool(_OFFER_TO_READER.search(text))
 
 
 @dataclass
@@ -262,6 +305,9 @@ class RuleScores:
     newsletter: float
     #: Strong offer *and* strong rejection signals: never confident enough to act on.
     conflict: bool = False
+    #: Offer wording that turned out to be negated or meant for someone else, with no rejection wording
+    #: of its own: most likely a rejection, but a misread offer must never be filed away automatically.
+    negated_offer_only: bool = False
 
 
 def score_rules(*, subject: str, body: str, from_address: str | None, from_domain: str | None,
@@ -279,10 +325,13 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
 
     both = f"{subj}\n{text}"
     conflict = False
+    negated_offer_only = False
     if offer_negated(subj) or offer_negated(text):
-        if scores[C.OFFER] >= 4.0:
-            conflict = True  # "pleased to extend an offer" next to "unable to extend an offer": ask the user
+        if scores[C.OFFER] >= 4.0 and offer_to_reader(both):
+            conflict = True  # "pleased to extend you an offer" next to "unable to extend an offer": ask the user
         else:
+            # "pleased to extend an offer to another candidate" is a rejection
+            negated_offer_only = scores[C.OFFER] > 0 and scores[C.REJECTION] < 3.5
             scores[C.OFFER] = 0.0
         scores[C.REJECTION] += 3.5
     elif scores[C.OFFER] > 0 and not _EMPLOYMENT_CONTEXT.search(both):
@@ -311,7 +360,7 @@ def score_rules(*, subject: str, body: str, from_address: str | None, from_domai
         newsletter += 1.5
     if _matches_domain(from_domain, JOB_BOARD_DOMAINS) and (_BULK_LOCALPART.search(local) or noreply):
         newsletter += 3.0
-    return RuleScores(scores=scores, newsletter=newsletter, conflict=conflict)
+    return RuleScores(scores=scores, newsletter=newsletter, conflict=conflict, negated_offer_only=negated_offer_only)
 
 
 def rules_summary(category: EmailCategory, *, subject: str, from_name: str | None, from_domain: str | None) -> str:
@@ -340,6 +389,12 @@ def classify_rules(*, subject: str, body: str, from_address: str | None = None, 
         confidence = max(0.3, confidence)
         if rs.conflict:
             confidence = min(confidence, 0.6)  # contradictory signals: ask the user
+        if category == C.OFFER:
+            both = f"{_norm(subject)}\n{_norm(body)}"
+            if not offer_to_reader(both) or _NOT_AN_OFFER.search(both):
+                confidence = min(confidence, 0.6)  # not clearly an offer *to you*: ask the user
+        elif category == C.REJECTION and rs.negated_offer_only:
+            confidence = min(confidence, 0.6)
     return EmailClassification(
         category=category,
         confidence=round(confidence, 3),

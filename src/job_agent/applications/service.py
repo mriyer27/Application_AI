@@ -10,14 +10,24 @@ Invariants enforced here and in ``database.repo`` (not by prompts):
   (``SUBMISSION_ATTEMPTED`` is recorded *before* the click, with the rebuilt
   payload whose hash must equal the approved one);
 * browser submission is off unless ``applications.browser_submission_enabled``;
-* an unknown outcome is never retried automatically.
+* an unknown outcome is never retried automatically: once the click may have
+  happened (including Ctrl+C / a stop signal / a killed process) the outcome is
+  recorded as unknown, the browser never submits that application again, and
+  preparing it again needs your explicit ``--confirm-not-submitted``;
+* documents you rejected are never uploaded or offered for approval.
 """
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
+import socket
+import threading
 from dataclasses import asdict, dataclass, field
+from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from job_agent.applications import documents as docs
 from job_agent.applications import repository as arepo
@@ -31,10 +41,12 @@ from job_agent.applications.field_mapping import (
 )
 from job_agent.applications.payload import (
     FORM_PREPARED_EVENT,
+    REJECTED_DOCUMENT_STATUS,
     approval_view,
     build_payload,
     submission_blockers,
     summary_line,
+    usable_document,
 )
 from job_agent.browser.detection import detect_closed_listing
 from job_agent.browser.errors import ChallengeDetected, FillError, NavigationBlocked, PageUnavailable
@@ -50,6 +62,7 @@ from job_agent.browser.session import (
     poll_outcome,
 )
 from job_agent.database import Database, repo
+from job_agent.database.connection import from_json
 from job_agent.errors import (
     ApprovalError,
     HumanActionRequired,
@@ -61,10 +74,10 @@ from job_agent.errors import (
     UnknownOutcome,
 )
 from job_agent.logging_config import get_logger
-from job_agent.models import ApprovalStatus, ApprovalType, ErrorKind, Permission, PipelineState
+from job_agent.models import ALLOWED_TRANSITIONS, ApprovalStatus, ApprovalType, ErrorKind, Permission, PipelineState
 from job_agent.security.permissions import require_permission
 from job_agent.security.sanitize import ensure_within, safe_component
-from job_agent.utils.time import utcnow, utcnow_iso
+from job_agent.utils.time import parse_iso, utcnow, utcnow_iso
 
 if TYPE_CHECKING:  # pragma: no cover
     import sqlite3
@@ -77,16 +90,28 @@ S = PipelineState
 PREPARABLE = frozenset({S.DOCUMENTS_READY, S.IN_PROGRESS, S.AWAITING_APPROVAL, S.NEEDS_MANUAL_ACTION, S.FAILED})
 ANSWERABLE = PREPARABLE
 MAX_LLM_DRAFTS = 3
+#: A submission still "attempted" after this long is treated as interrupted even if
+#: its process cannot be checked (another machine, or no pid recorded).
+STUCK_SUBMISSION_MINUTES = 15
+#: Event you record (``apply --confirm-not-submitted``) after checking that an
+#: unknown-outcome submission did NOT reach the employer.
+CONFIRMED_NOT_SUBMITTED_EVENT = "confirmed_not_submitted"
+UNKNOWN_OUTCOME_EVENT = "submission_outcome_unknown"
 
 __all__ = [
-    "PreparationResult", "SubmissionResult", "DecisionResult", "SubmissionBlocked", "prepare_application",
-    "set_answer", "build_payload", "decide", "submit_approved", "mark_submitted", "withdraw", "add_note",
-    "list_applications", "application_detail", "approval_view", "pending_approvals",
+    "PreparationResult", "SubmissionResult", "DecisionResult", "SubmissionBlocked", "SubmissionInProgress",
+    "prepare_application", "set_answer", "build_payload", "decide", "submit_approved", "mark_submitted", "withdraw",
+    "set_status", "add_note", "list_applications", "application_detail", "approval_view", "pending_approvals",
+    "has_unknown_outcome", "recover_interrupted_submission",
 ]
 
 
 class SubmissionBlocked(HumanActionRequired):
     """The browser will not submit this application (nothing was sent)."""
+
+
+class SubmissionInProgress(HumanActionRequired):
+    """Another live process is submitting this application right now."""
 
 
 @dataclass
@@ -152,7 +177,9 @@ def _policy(job: "sqlite3.Row") -> NavigationPolicy:
 
 
 def _target_url(app: "sqlite3.Row", job: "sqlite3.Row", policy: NavigationPolicy) -> str | None:
-    candidates = [u for u in (app["application_url"], job["application_url"], job["job_url"]) if u]
+    """The job's CURRENT application / listing URL (discovery keeps them up to date); the URL copied
+    onto the application at an earlier ``prepare`` is only a last resort."""
+    candidates = list(dict.fromkeys(u for u in (job["application_url"], job["job_url"], app["application_url"]) if u))
     for url in candidates:
         if policy.initial_problem(url) is None:
             return url
@@ -173,12 +200,29 @@ def _screenshot(ctx: "AppContext", page: ApplicationPage, app_uid: str, name: st
     return path.relative_to(base.resolve().parent).as_posix()
 
 
-def _verified_variants(db: Database, documents_dir: Path, document_id: int | None) -> list[docs.DocumentRef]:
-    base = docs.get_document(db, document_id)
-    if base is None:
+def _verified_variants(db: Database, documents_dir: Path, document_id: int | None, *,
+                       job_uid: str) -> list[docs.DocumentRef]:
+    """Usable files of the application's document: never a version you rejected.
+
+    A rejected version falls back to the latest version you did not reject; if
+    there is none, ``HumanActionRequired`` (regenerate with ``job-agent prepare``).
+    """
+    stored = docs.get_document(db, document_id)
+    if stored is None:
         return []
+    base = usable_document(db, stored)
+    if base is None:
+        label = stored.doc_type.replace("_", " ")
+        raise HumanActionRequired(
+            f"you rejected the {label} {stored.file_name} and there is no other version you have not rejected; "
+            "it will never be uploaded",
+            human_action=f"run job-agent prepare {job_uid} to generate a new version, review it, then run "
+                         f"job-agent apply {job_uid} again",
+        )
     good, first_error = [], None
     for variant in docs.variants(db, base):
+        if variant.status == REJECTED_DOCUMENT_STATUS:
+            continue
         try:
             docs.verify_file(variant, documents_dir)
             good.append(variant)
@@ -265,6 +309,8 @@ def _fill_document(ctx: "AppContext", page: ApplicationPage, fld: FormField, sou
     doc = docs.get_document(ctx.db, int(source[9:]))
     if doc is None:
         raise FillError(f"{fld.key}: document {source} no longer exists")
+    if doc.status == REJECTED_DOCUMENT_STATUS:
+        raise FillError(f"{fld.key}: {doc.file_name} was rejected by you; it is never uploaded")
     path = docs.verify_file(doc, ctx.config.documents_dir)  # sha256 re-verified right before upload
     page.attach_file(fld, path)
     return doc.file_name
@@ -312,29 +358,184 @@ def _review_next_action(payload: dict[str, Any], approval_uid: str) -> str:
             f"with `job-agent approvals answer`, then approve or reject it.")
 
 
-def _reject_live_approvals(db: Database, application_id: int, note: str) -> None:
+def _close_live_approvals(db: Database, application_id: int, reason: str) -> int:
+    """You recorded the outcome yourself: no pending OR approved-but-unused request may stay usable."""
     repo.expire_approvals(db)
-    for row in arepo.live_approvals(db, application_id, ApprovalType.SUBMIT_APPLICATION.value):
-        if row["status"] == ApprovalStatus.PENDING.value:
-            repo.decide_approval(db, row["approval_uid"], approve=False, actor="user", note=note)
+    return repo.cancel_live_approvals(db, application_id=application_id, actor="user", reason=reason)
+
+
+# --------------------------------------------------------------------------- #
+# Unknown outcomes and interrupted submissions
+# --------------------------------------------------------------------------- #
+def _unknown_outcome_marks(db: Database, application_id: int) -> list["sqlite3.Row"]:
+    """Every record that a submission's outcome became unknown: the browser's own event, or ANY move
+    out of ``submission_attempted`` to ``needs_manual_action`` (e.g. ``repo.recover_stuck_submissions``)."""
+    return db.query_all(
+        "SELECT id FROM application_events WHERE application_id = ? AND (event_type = ? OR "
+        "(from_status = ? AND to_status = ?)) ORDER BY id",
+        (application_id, UNKNOWN_OUTCOME_EVENT, S.SUBMISSION_ATTEMPTED.value, S.NEEDS_MANUAL_ACTION.value),
+    )
+
+
+def has_unknown_outcome(db: Database, application_id: int) -> bool:
+    """A submission of this application may have reached the employer without us knowing (ever)."""
+    return bool(_unknown_outcome_marks(db, application_id))
+
+
+def _unacknowledged_unknown_outcome(db: Database, application_id: int) -> bool:
+    """An unknown outcome you have not yet confirmed as "not submitted" (``apply --confirm-not-submitted``)."""
+    marks = _unknown_outcome_marks(db, application_id)
+    if not marks:
+        return False
+    confirmed = db.scalar("SELECT MAX(id) FROM application_events WHERE application_id = ? AND event_type = ?",
+                          (application_id, CONFIRMED_NOT_SUBMITTED_EVENT))
+    return confirmed is None or int(marks[-1]["id"]) > int(confirmed)
+
+
+def _unknown_outcome_help(app_uid: str, job_uid: str) -> str:
+    return (f"Check your email and the employer's portal first. If it went through, run `job-agent applications "
+            f"mark-submitted {app_uid}` (or `job-agent applications set-status {app_uid} confirmation_received`). "
+            f"If you are sure it was NOT submitted, run `job-agent apply {job_uid} --confirm-not-submitted`, or "
+            f"close it with `job-agent applications set-status {app_uid} closed`.")
+
+
+def _attempt_owner(db: Database, application_id: int) -> dict[str, Any]:
+    """Details of the status change that started the current submission attempt (url, approval, pid, host)."""
+    row = db.query_one("SELECT details FROM application_events WHERE application_id = ? AND to_status = ? "
+                       "ORDER BY id DESC LIMIT 1", (application_id, S.SUBMISSION_ATTEMPTED.value))
+    details = from_json(row["details"], {}) if row else {}
+    return details if isinstance(details, dict) else {}
+
+
+def _attempt_abandoned(app: "sqlite3.Row", owner: dict[str, Any]) -> bool:
+    """The process that clicked submit is gone (same machine, pid not running), or the attempt is stale."""
+    pid, host = owner.get("pid"), owner.get("host")
+    if isinstance(pid, int) and host == socket.gethostname():
+        if pid != os.getpid() and not repo.pid_alive(pid):
+            return True
+    started = parse_iso(app["status_updated_at"])
+    return started is None or utcnow() - started > timedelta(minutes=STUCK_SUBMISSION_MINUTES)
+
+
+def recover_interrupted_submission(ctx: "AppContext", application_ref: str | int) -> bool:
+    """Record an unknown outcome for a submission whose process stopped before recording one.
+
+    Returns True if the application was moved to ``needs_manual_action`` (with an
+    ``UnknownOutcome`` error); False if it is not stuck in ``submission_attempted``.
+    Raises ``SubmissionInProgress`` while the submitting process is still running.
+    Never retries anything.
+    """
+    db = ctx.db
+    app = arepo.resolve_application(db, application_ref)
+    if app["status"] != S.SUBMISSION_ATTEMPTED.value:
+        return False
+    app_id, app_uid = int(app["id"]), str(app["application_uid"])
+    owner = _attempt_owner(db, app_id)
+    if not _attempt_abandoned(app, owner):
+        raise SubmissionInProgress(
+            f"a browser submission of {app_uid} is still in progress (process {owner.get('pid', '?')})",
+            human_action=("Wait for `job-agent applications submit` to finish. If that process is stuck, stop it; "
+                          f"its outcome is then recorded as unknown (or after {STUCK_SUBMISSION_MINUTES} minutes)."),
+        )
+    job = arepo.get_job(db, int(app["job_id"]))
+    url = str(owner.get("url") or app["application_url"] or "")
+    outcome = SubmitOutcome("interrupted", url, detail="the process that clicked submit stopped before recording "
+                                                       "the outcome")
+    _record_outcome(ctx, app_id, app_uid, str(owner.get("approval_uid") or ""), job, outcome, None)
+    log.warning("submission of %s was interrupted; recorded as an unknown outcome", app_uid)
+    return True
+
+
+def _recover_for_user_action(ctx: "AppContext", app: "sqlite3.Row", target: PipelineState) -> "sqlite3.Row":
+    """Before you record an outcome the state machine does not allow from ``submission_attempted``
+    (withdraw, close, rejected, ...), an abandoned attempt is first recorded as an unknown outcome."""
+    attempted = app["status"] == S.SUBMISSION_ATTEMPTED.value
+    if attempted and target not in ALLOWED_TRANSITIONS[S.SUBMISSION_ATTEMPTED]:
+        recover_interrupted_submission(ctx, int(app["id"]))
+        return arepo.resolve_application(ctx.db, int(app["id"]))
+    return app
+
+
+def _main_thread() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
+@contextlib.contextmanager
+def _stop_signals_raise() -> Iterator[None]:
+    """While waiting on the employer's page after the click, SIGTERM/SIGHUP/SIGBREAK (default action:
+    die silently) raise ``SystemExit`` instead, so the outcome is still recorded as unknown.
+    Only in the main thread and only for signals still at their default handler."""
+    previous: dict[int, Any] = {}
+    if _main_thread():
+        def _raise(signum: int, frame: Any) -> None:
+            raise SystemExit(128 + signum)
+
+        for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                if signal.getsignal(sig) is signal.SIG_DFL:
+                    previous[sig] = signal.signal(sig, _raise)
+            except (ValueError, OSError):  # pragma: no cover - platform specific
+                continue
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, handler)
+
+
+@contextlib.contextmanager
+def _signals_deferred() -> Iterator[None]:
+    """Recording the outcome must not be cut short by a second Ctrl+C / stop signal (main thread only)."""
+    previous: dict[int, Any] = {}
+    if _main_thread():
+        def _later(signum: int, frame: Any) -> None:
+            log.warning("signal %s received while recording the submission outcome; finishing that first", signum)
+
+        for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                previous[sig] = signal.signal(sig, _later)
+            except (ValueError, OSError):  # pragma: no cover - platform specific
+                continue
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, handler)
 
 
 # --------------------------------------------------------------------------- #
 # Prepare
 # --------------------------------------------------------------------------- #
 def prepare_application(ctx: "AppContext", job_ref: str | int, *, browser_factory: BrowserFactory | None = None,
-                        headless: bool | None = None) -> PreparationResult:
-    """Open the official form, fill only verified answers, never submit, and request approval."""
+                        headless: bool | None = None, confirm_not_submitted: bool = False) -> PreparationResult:
+    """Open the official form, fill only verified answers, never submit, and request approval.
+
+    After a submission with an unknown outcome this refuses (it may already have
+    reached the employer) unless you pass ``confirm_not_submitted=True`` after
+    checking your email / the employer's portal; that confirmation is recorded.
+    """
     require_permission(ctx.config, Permission.PREPARE_APPLICATIONS)
     db, cfg = ctx.db, ctx.config
     job = arepo.resolve_job(db, job_ref)
+    job_uid = str(job["job_uid"])
     app = repo.get_application_for_job(db, int(job["id"]))
     if app is None or not app["resume_document_id"]:
         raise HumanActionRequired(
-            f"job {job['job_uid']} has no prepared résumé yet",
-            human_action=f"run job-agent prepare {job['job_uid']} first",
+            f"job {job_uid} has no prepared résumé yet",
+            human_action=f"run job-agent prepare {job_uid} first",
         )
     app_id, app_uid = int(app["id"]), str(app["application_uid"])
+    if app["status"] == S.SUBMISSION_ATTEMPTED.value and recover_interrupted_submission(ctx, app_id):
+        app = repo.get_application(db, app_id)
+        assert app is not None
     status = S(app["status"])
     if status not in PREPARABLE:
         raise InvalidTransition(
@@ -342,16 +543,30 @@ def prepare_application(ctx: "AppContext", job_ref: str | int, *, browser_factor
             human_action=("Run `job-agent prepare` to regenerate documents first." if status == S.DOCUMENTS_PENDING
                           else f"See `job-agent applications show {app_uid}`."),
         )
+    unacknowledged = _unacknowledged_unknown_outcome(db, app_id)
+    if unacknowledged and not confirm_not_submitted:
+        raise HumanActionRequired(
+            f"a browser submission of {app_uid} has an UNKNOWN outcome: it may already have reached the employer, "
+            "so it is not prepared again",
+            human_action=_unknown_outcome_help(app_uid, job_uid),
+        )
     profile = ctx.profile
-    resume_variants = _verified_variants(db, cfg.documents_dir, app["resume_document_id"])
+    resume_variants = _verified_variants(db, cfg.documents_dir, app["resume_document_id"], job_uid=job_uid)
     if not resume_variants:
         raise HumanActionRequired(f"résumé document for {app_uid} not found",
-                                  human_action=f"run job-agent prepare {job['job_uid']} first")
-    cover_variants = _verified_variants(db, cfg.documents_dir, app["cover_letter_document_id"])
+                                  human_action=f"run job-agent prepare {job_uid} first")
+    cover_variants = _verified_variants(db, cfg.documents_dir, app["cover_letter_document_id"], job_uid=job_uid)
     cover_text, cover_text_doc = _cover_text(cover_variants, cfg.documents_dir)
     policy = _policy(job)
     url = _target_url(app, job, policy)
 
+    if unacknowledged:
+        with db.transaction():
+            repo.add_application_event(db, app_id, CONFIRMED_NOT_SUBMITTED_EVENT, actor="user",
+                                       details={"note": "you checked that the earlier submission with an unknown "
+                                                        "outcome did not reach the employer"})
+            repo.audit(db, actor="user", action="application_confirmed_not_submitted", entity_type="application",
+                       entity_id=app_id, outcome="success")
     if status != S.IN_PROGRESS:
         repo.transition_application(db, app_id, S.IN_PROGRESS, actor="system", expected_current=status,
                                     next_action="Preparing the application form in the browser")
@@ -540,6 +755,35 @@ def _submit_approval_row(db: Database, approval_uid: str) -> "sqlite3.Row":
     return row
 
 
+def _rejected_documents(db: Database, payload: dict[str, Any]) -> list[str]:
+    """Files in an approval payload that you have rejected (now, or already when the request was made)."""
+    out = []
+    for kind in ("resume", "cover_letter"):
+        info = payload.get(kind) or {}
+        if not isinstance(info, dict) or not info:
+            continue
+        doc_id = info.get("document_id")
+        doc = docs.get_document(db, int(doc_id)) if isinstance(doc_id, int) else None
+        if info.get("status") == REJECTED_DOCUMENT_STATUS or (doc and doc.status == REJECTED_DOCUMENT_STATUS):
+            out.append(str(info.get("file") or kind.replace("_", " ")))
+    return out
+
+
+def _withdraw_approval(db: Database, row: "sqlite3.Row", *, actor: str, note: str | None,
+                       expected_payload_hash: str | None) -> None:
+    """You take back an approval you gave that was never used (it can no longer be consumed)."""
+    if actor not in {"user", "dashboard", "cli"}:
+        raise ApprovalError("approvals can only be decided by the user (cli or dashboard)")
+    if expected_payload_hash is not None and expected_payload_hash != row["payload_hash"]:
+        raise ApprovalError("the request changed since you reviewed it; review it again")
+    reason = "approval withdrawn by you" + (f": {note}" if note else "")
+    with db.transaction():
+        if not repo.cancel_live_approvals(db, application_id=int(row["application_id"]), actor=actor, reason=reason):
+            raise ApprovalError(f"approval {row['approval_uid']} was used or changed meanwhile; nothing was withdrawn")
+        repo.audit(db, actor=actor, action="approval_withdrawn", entity_type="approval",
+                   entity_id=row["approval_uid"], outcome="success", details={"note": note})
+
+
 def decide(ctx: "AppContext", approval_uid: str, *, approve: bool, actor: str, note: str | None = None,
            expected_payload_hash: str | None = None) -> DecisionResult:
     """Record your decision on an approval (actor: cli | dashboard | user).
@@ -556,18 +800,34 @@ def decide(ctx: "AppContext", approval_uid: str, *, approve: bool, actor: str, n
         repo.decide_approval(db, approval_uid, approve=approve, actor=actor, note=note,
                              expected_payload_hash=expected_payload_hash)
         return DecisionResult(approval_uid, approve, None, None, "Decision recorded.")
-    repo.decide_approval(db, approval_uid, approve=approve, actor=actor, note=note,
-                         expected_payload_hash=expected_payload_hash)
     app_id = int(row["application_id"])
+    payload = repo.approval_payload(row)
+    if approve:
+        rejected = _rejected_documents(db, payload)
+        if rejected:
+            job = arepo.get_job(db, int(repo.get_application(db, app_id)["job_id"]))
+            raise ApprovalError(
+                f"you rejected {', '.join(rejected)}; a request that would use it cannot be approved",
+                human_action=f"Reject this request, run `job-agent prepare {job['job_uid']}` to generate a new "
+                             f"version, review it, then run `job-agent apply {job['job_uid']}` again.",
+            )
+    repo.expire_approvals(db)
+    current = repo.get_approval(db, approval_uid)
+    withdrawn = (not approve and current is not None and current["status"] == ApprovalStatus.APPROVED.value)
+    if withdrawn:
+        _withdraw_approval(db, current, actor=actor, note=note, expected_payload_hash=expected_payload_hash)
+    else:
+        repo.decide_approval(db, approval_uid, approve=approve, actor=actor, note=note,
+                             expected_payload_hash=expected_payload_hash)
     app = repo.get_application(db, app_id)
     assert app is not None
-    payload = repo.approval_payload(row)
     app_uid = str(app["application_uid"])
     url = payload.get("application_url") or app["application_url"]
     status = S(app["status"])
     if not approve:
         job = arepo.get_job(db, int(app["job_id"]))
-        next_action = (f"Approval rejected{': ' + note if note else ''}. Fix answers (`job-agent approvals answer`) "
+        verb = "withdrawn (it was approved but never used)" if withdrawn else "rejected"
+        next_action = (f"Approval {verb}{': ' + note if note else ''}. Fix answers (`job-agent approvals answer`) "
                        f"or documents (`job-agent prepare {job['job_uid']}`), then run "
                        f"`job-agent apply {job['job_uid']}` again.")
         if status == S.AWAITING_APPROVAL:
@@ -580,7 +840,11 @@ def decide(ctx: "AppContext", approval_uid: str, *, approve: bool, actor: str, n
                                        details={"approval": approval_uid, "note": note})
         return DecisionResult(approval_uid, False, app_uid, status, next_action)
 
-    if ctx.config.applications.browser_submission_enabled:
+    if has_unknown_outcome(db, app_id):
+        next_action = (f"Approved - an earlier browser submission of this application had an unknown outcome, so the "
+                       f"browser will never submit it again. Submit manually at {url} using the prepared answers, "
+                       f"then run job-agent applications mark-submitted {app_uid}")
+    elif ctx.config.applications.browser_submission_enabled:
         blockers = submission_blockers(payload)
         next_action = (f"Approved - run `job-agent applications submit {approval_uid}` to submit with the browser, "
                        f"or submit manually at {url} and run `job-agent applications mark-submitted {app_uid}`.")
@@ -617,10 +881,13 @@ def pending_approvals(db: Database) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 def _approval_problem(row: "sqlite3.Row") -> str | None:
     status = row["status"]
+    note = str(row["decision_note"] or "")
+    superseded = ("was replaced by a newer request after the application changed; review the new one"
+                  if not note or note == "payload changed" else f"is no longer valid ({note})")
     return {
         "pending": "has not been approved yet; review it with `job-agent approvals show` and approve it",
         "consumed": "was already used for a submission attempt and can never be reused",
-        "superseded": "was replaced by a newer request after the application changed; review the new one",
+        "superseded": superseded,
         "rejected": "was rejected",
         "expired": "expired; run `job-agent apply` again to prepare a fresh approval",
     }.get(status) if status != ApprovalStatus.APPROVED.value else None
@@ -648,12 +915,13 @@ def submit_approved(ctx: "AppContext", approval_uid: str, *,
     app = repo.get_application(db, app_id)
     assert app is not None
     app_uid = str(app["application_uid"])
-    if arepo.unknown_outcome_attempts(db, app_id):
+    if has_unknown_outcome(db, app_id):
         raise SubmissionBlocked(
             f"a previous browser submission of {app_uid} has an unknown outcome; it will never be retried "
             "automatically",
             human_action=("Check your email / the employer portal. If it went through, run "
-                          f"`job-agent applications mark-submitted {app_uid}`; otherwise apply manually."),
+                          f"`job-agent applications mark-submitted {app_uid}`; otherwise apply manually and then "
+                          "run mark-submitted."),
         )
     status = S(app["status"])
     if status != S.AWAITING_APPROVAL:
@@ -722,26 +990,48 @@ def submit_approved(ctx: "AppContext", approval_uid: str, *,
             raise  # nothing happened; approval still unused, the application stays awaiting approval
 
         # Phase 2: consume the approval exactly once (recorded before the click), then click once.
+        # The pid/host let a later command tell an abandoned attempt from one still running.
         repo.transition_application(
             db, app_id, S.SUBMISSION_ATTEMPTED, actor="browser", approval_uid=approval_uid, approved_payload=payload,
-            expected_current=S.AWAITING_APPROVAL, details={"url": url},
+            expected_current=S.AWAITING_APPROVAL, details={"url": url, "pid": os.getpid(),
+                                                           "host": socket.gethostname()},
             next_action="Submission attempted - if this does not change, check your email/portal before doing "
                         "anything else",
         )
-        repo.audit(db, actor="browser", action="application_submit_clicked", entity_type="application",
-                   entity_id=app_id, outcome="attempted", details={"approval_uid": approval_uid})
+        outcome: SubmitOutcome | None = None
         try:
-            page.click_submit(control)
-        except Exception as exc:  # noqa: BLE001 - the click may or may not have happened
-            outcome = SubmitOutcome("click_error", url, detail=f"{type(exc).__name__}: {exc}"[:300])
-        else:
-            try:
-                outcome = poll_outcome(page, baseline, timeout_seconds=cfg.applications.browser_timeout_seconds)
-            except Exception as exc:  # noqa: BLE001 - outcome unknown, handled below
-                outcome = SubmitOutcome("error", url, detail=f"{type(exc).__name__}: {exc}"[:300])
-        shot = _screenshot(ctx, page, app_uid, f"submit-{utcnow().strftime('%Y%m%dT%H%M%SZ')}")
+            repo.audit(db, actor="browser", action="application_submit_clicked", entity_type="application",
+                       entity_id=app_id, outcome="attempted", details={"approval_uid": approval_uid})
+            with _stop_signals_raise():
+                outcome = _click_and_poll(page, control, baseline, url,
+                                          timeout_seconds=cfg.applications.browser_timeout_seconds)
+                shot = _screenshot(ctx, page, app_uid, f"submit-{utcnow().strftime('%Y%m%dT%H%M%SZ')}")
+                with _signals_deferred():
+                    result = _record_outcome(ctx, app_id, app_uid, approval_uid, job, outcome, shot)
+        except BaseException as exc:
+            # Ctrl+C, a stop signal or any failure after the click: the form may have been sent. Record the
+            # outcome (unknown unless already known) BEFORE anything else, then re-raise. Never retried.
+            if repo.get_application(db, app_id)["status"] == S.SUBMISSION_ATTEMPTED.value:
+                known = outcome if outcome is not None else SubmitOutcome(
+                    "interrupted", url, detail=f"{type(exc).__name__} while waiting for the employer's page")
+                with _signals_deferred():
+                    _record_outcome(ctx, app_id, app_uid, approval_uid, job, known, None)
+            raise
+    return result
 
-    return _record_outcome(ctx, app_id, app_uid, approval_uid, job, outcome, shot)
+
+def _click_and_poll(page: ApplicationPage, control: Any, baseline: Any, url: str, *,
+                    timeout_seconds: float) -> SubmitOutcome:
+    """Click the approved submit control once and watch for the outcome (errors become unknown outcomes;
+    KeyboardInterrupt / SystemExit propagate to the caller, which records them)."""
+    try:
+        page.click_submit(control)
+    except Exception as exc:  # noqa: BLE001 - the click may or may not have happened
+        return SubmitOutcome("click_error", url, detail=f"{type(exc).__name__}: {exc}"[:300])
+    try:
+        return poll_outcome(page, baseline, timeout_seconds=timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 - outcome unknown, handled by the caller
+        return SubmitOutcome("error", url, detail=f"{type(exc).__name__}: {exc}"[:300])
 
 
 def _record_outcome(ctx: "AppContext", app_id: int, app_uid: str, approval_uid: str, job: "sqlite3.Row",
@@ -766,8 +1056,9 @@ def _record_outcome(ctx: "AppContext", app_id: int, app_uid: str, approval_uid: 
                                 screenshot=shot)
     reason = {"timeout": "no confirmation appeared", "challenge": "a security check appeared after clicking",
               "navigation_blocked": "the page tried to leave the official site after clicking",
-              "click_error": "the click failed midway", "error": "the browser failed after clicking"}.get(
-        outcome.kind, outcome.kind)
+              "click_error": "the click failed midway", "error": "the browser failed after clicking",
+              "interrupted": "the submission was interrupted (Ctrl+C, a stop signal or a stopped process) after "
+                             "the submit click"}.get(outcome.kind, outcome.kind)
     detail = f"{reason} ({outcome.detail})" if outcome.detail else reason
     next_action = (f"Unknown outcome: {detail}. Check your email/portal before doing anything else. If it went "
                    f"through, run `job-agent applications mark-submitted {app_uid}`; otherwise apply manually. "
@@ -800,7 +1091,7 @@ def mark_submitted(ctx: "AppContext", application_ref: str | int, *, note: str |
                                                details={"note": note, "method": "reported by you"},
                                                next_action="Submitted (reported by you) - watch your email for a "
                                                            "confirmation")
-        _reject_live_approvals(db, app_id, "application marked submitted by you")
+        _close_live_approvals(db, app_id, "application marked submitted by you")
     return previous
 
 
@@ -821,26 +1112,26 @@ def set_status(ctx: "AppContext", application_ref: str | int, status: PipelineSt
         allowed = ", ".join(sorted(s.value for s in USER_SETTABLE_STATUSES))
         raise PermanentError(f"status {target.value!r} cannot be set by hand; choose one of: {allowed}")
     db = ctx.db
-    app = arepo.resolve_application(db, application_ref)
+    app = _recover_for_user_action(ctx, arepo.resolve_application(db, application_ref), target)
     app_id = int(app["id"])
     with db.transaction():
         previous = repo.transition_application(db, app_id, target, actor="user",
                                                details={"note": note, "method": "set by you"},
                                                next_action=f"{target.value.replace('_', ' ').capitalize()} "
                                                            "(set by you)")
-        if target in {S.SUBMITTED, S.CLOSED}:
-            _reject_live_approvals(db, app_id, f"application marked {target.value} by you")
+        # Every status you can set records an outcome: no earlier submit approval may stay usable.
+        _close_live_approvals(db, app_id, f"application marked {target.value} by you")
     return previous
 
 
 def withdraw(ctx: "AppContext", application_ref: str | int, *, note: str | None = None) -> PipelineState:
     db = ctx.db
-    app = arepo.resolve_application(db, application_ref)
+    app = _recover_for_user_action(ctx, arepo.resolve_application(db, application_ref), S.WITHDRAWN)
     app_id = int(app["id"])
     with db.transaction():
         previous = repo.transition_application(db, app_id, S.WITHDRAWN, actor="user", details={"note": note},
                                                next_action="Withdrawn")
-        _reject_live_approvals(db, app_id, "application withdrawn by you")
+        _close_live_approvals(db, app_id, "application withdrawn by you")
     return previous
 
 
@@ -888,5 +1179,8 @@ def application_detail(db: Database, ref: str | int) -> dict[str, Any]:
         "answers": [dict(r) for r in arepo.get_answers(db, app_id)],
         "documents": documents,
         "approvals": approvals,
-        "unknown_outcome": arepo.unknown_outcome_attempts(db, app_id) > 0,
+        "unknown_outcome": has_unknown_outcome(db, app_id),
+        "unknown_outcome_unacknowledged": _unacknowledged_unknown_outcome(db, app_id),
+        "submission_abandoned": (app["status"] == S.SUBMISSION_ATTEMPTED.value
+                                 and _attempt_abandoned(app, _attempt_owner(db, app_id))),
     }

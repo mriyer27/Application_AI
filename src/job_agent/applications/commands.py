@@ -145,6 +145,10 @@ def _print_answers(answers: list[dict[str, Any]]) -> None:
 def apply_cmd(
     job_uid: str = typer.Argument(..., help="Job id (J-...) whose documents are ready."),
     headed: bool = typer.Option(False, "--headed", help="Show the browser window."),
+    confirm_not_submitted: bool = typer.Option(
+        False, "--confirm-not-submitted",
+        help="After a browser submission with an UNKNOWN outcome: you checked your email / the employer's portal "
+             "and it was NOT submitted. Recorded on the application; required before it is prepared again."),
 ) -> None:
     """Prepare the application form (fills verified answers only, never submits) and request approval."""
     from job_agent.applications import repository as arepo
@@ -153,7 +157,8 @@ def apply_cmd(
 
     ctx = get_ctx()
     try:
-        result = prepare_application(ctx, job_uid, headless=False if headed else None)
+        result = prepare_application(ctx, job_uid, headless=False if headed else None,
+                                     confirm_not_submitted=confirm_not_submitted)
     except JobAgentError as exc:
         fail(exc)
         return
@@ -258,7 +263,7 @@ def approvals_reject(
     approval_uid: str = typer.Argument(..., help="Approval id (AP-...)."),
     note: str = typer.Option(..., "--note", help="Why you reject it (stored on the application)."),
 ) -> None:
-    """Reject a submission request; the application goes back to editing."""
+    """Reject a submission request, or withdraw an approval you gave that was never used."""
     from job_agent.applications.service import decide
     from job_agent.cli import console, fail, get_ctx
 
@@ -345,7 +350,12 @@ def applications_show(application_uid: str = typer.Argument(..., help="Applicati
     console.print(f"[bold]Application URL:[/bold] {_e(a['application_url'] or j['application_url'] or j['job_url'])}")
     if a["next_action"]:
         console.print(f"[bold]Next:[/bold] {_e(a['next_action'])}")
-    if d["unknown_outcome"]:
+    if d["submission_abandoned"]:
+        console.print("[red]The process that clicked submit stopped before recording the outcome: it is UNKNOWN "
+                      "whether the application was sent. Check your email/portal, then run `job-agent applications "
+                      "mark-submitted`, `set-status ... closed` or `withdraw` (the unknown outcome is recorded "
+                      "first).[/red]")
+    elif d["unknown_outcome"]:
         console.print("[red]A browser submission had an UNKNOWN outcome. Check your email/portal before doing "
                       "anything else; the agent will not retry it.[/red]")
     for doc_type, variants in d["documents"].items():

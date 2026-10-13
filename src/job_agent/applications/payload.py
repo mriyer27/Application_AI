@@ -20,6 +20,8 @@ from job_agent.models import ApprovalType
 
 PAYLOAD_VERSION = 1
 FORM_PREPARED_EVENT = "form_prepared"
+#: ``document_versions.status`` of a version you rejected: never uploaded, approved or offered.
+REJECTED_DOCUMENT_STATUS = "rejected"
 
 
 def _fill_value(row: Any) -> str | None:
@@ -32,9 +34,29 @@ def _is_verified_source(source: str | None) -> bool:
     return bool(source) and any(str(source).startswith(p) for p in VERIFIED_SOURCE_PREFIXES)
 
 
+def usable_document(db: Database, doc: docs.DocumentRef | None) -> docs.DocumentRef | None:
+    """``doc`` unless you rejected it; then the latest version of the same job's document that you did
+    not reject (preferred format first), or ``None`` if every version was rejected."""
+    if doc is None or doc.status != REJECTED_DOCUMENT_STATUS:
+        return doc
+    row = db.query_one(
+        "SELECT * FROM document_versions WHERE job_id = ? AND doc_type = ? AND status != ? "
+        "ORDER BY version DESC, id DESC LIMIT 1",
+        (doc.job_id, doc.doc_type, REJECTED_DOCUMENT_STATUS),
+    )
+    if row is None:
+        return None
+    fallback = docs.DocumentRef.from_row(row)
+    return next((v for v in docs.variants(db, fallback) if v.status != REJECTED_DOCUMENT_STATUS), fallback)
+
+
 def chosen_documents(db: Database, app: Any, answers: list[Any]) -> tuple[docs.DocumentRef | None,
                                                                             docs.DocumentRef | None]:
-    """Résumé / cover letter that will be used (the uploaded variant if a form field takes one)."""
+    """Résumé / cover letter that will be used (the uploaded variant if a form field takes one).
+
+    A version you rejected is shown as such (its status is part of the payload, so
+    approval is refused); without an upload field the latest non-rejected version is used.
+    """
     picked: dict[str, docs.DocumentRef] = {}
     for row in answers:
         source = row["answer_source"] or ""
@@ -47,8 +69,12 @@ def chosen_documents(db: Database, app: Any, answers: list[Any]) -> tuple[docs.D
         if doc_type in picked:
             result.append(picked[doc_type])
             continue
-        base = docs.get_document(db, app[column])
-        result.append(docs.variants(db, base)[0] if base else None)
+        base = usable_document(db, docs.get_document(db, app[column]))
+        if base is None:
+            result.append(None)
+            continue
+        variants = [v for v in docs.variants(db, base) if v.status != REJECTED_DOCUMENT_STATUS]
+        result.append(variants[0] if variants else base)
     return result[0], result[1]
 
 
@@ -126,7 +152,10 @@ def submission_blockers(payload: dict[str, Any]) -> list[str]:
         problems.append("no résumé document")
     for kind, label in (("resume", "résumé"), ("cover_letter", "cover letter")):
         doc = payload.get(kind)
-        if doc and doc.get("status") != "approved":
+        if doc and doc.get("status") == REJECTED_DOCUMENT_STATUS:
+            problems.append(f"the {label} {doc.get('file', '')} was rejected by you; it is never uploaded "
+                            "(run job-agent prepare to generate a new version)")
+        elif doc and doc.get("status") != "approved":
             problems.append(f"the {label} has not been approved by you yet "
                             f"(job-agent documents approve {doc.get('document_id', '<document-id>')})")
     for item in payload.get("unanswered_required") or []:

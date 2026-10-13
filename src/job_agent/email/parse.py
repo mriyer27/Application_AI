@@ -105,42 +105,118 @@ def header_values(payload: dict[str, Any] | None, name: str) -> list[str]:
             if str(h.get("name") or "").lower() == wanted]
 
 
-_AR_COMMENT = re.compile(r"\([^()]*\)")
-_AR_METHOD = re.compile(r"^\s*(dkim|spf|dmarc|arc)\s*=\s*([a-z]+)\b(.*)$", re.I | re.S)
-_AR_PROP = re.compile(r"\b(header\.[a-z]+|smtp\.[a-z]+)\s*=\s*\"?([^\s;\"]+)\"?", re.I)
+#: ``method[/version] = result rest`` at the start of one result (RFC 8601 ``methodspec``).
+_AR_METHOD = re.compile(r"^\s*([a-z0-9][a-z0-9-]*)\s*(?:/\s*\d+\s*)?=\s*([a-z0-9-]+)(?![a-z0-9-])(.*)$", re.I | re.S)
+#: ``ptype.property = pvalue`` (RFC 8601 ``propspec``); quoted strings are placeholders by now.
+_AR_PROP = re.compile(r"(?<![^\s])([a-z]+)\s*\.\s*([a-z0-9_-]+)\s*=\s*(\S+)", re.I)
+_AR_QUOTE = "\x00"  # placeholder delimiter; NUL is removed from the input first
+_AR_PLACEHOLDER = re.compile(_AR_QUOTE + r"(\d+)" + _AR_QUOTE)
+_DOMAIN_CHARS = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
 #: DMARC results that still let an aligned DKIM pass count ("none" = the domain publishes no policy).
 _DMARC_NEUTRAL = {"pass", "none"}
 
 
-def _strip_comments(value: str) -> str:
-    previous = None
-    while previous != value:  # nested comments: strip innermost first
-        previous, value = value, _AR_COMMENT.sub(" ", value)
-    return value
+class _ARSyntaxError(ValueError):
+    pass
+
+
+def _ar_lex(value: str) -> tuple[str, list[str]]:
+    """RFC 8601 / 5322 lexing: comments become a space, quoted strings become numbered placeholders.
+
+    Everything inside a quoted string or a comment is an opaque atom, so a ``;``
+    or ``dmarc=pass`` written there can never become a result of its own. An
+    unterminated quoted string or comment raises ``_ARSyntaxError``.
+    """
+    text = value.replace(_AR_QUOTE, "")
+    out: list[str] = []
+    quoted: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            buf: list[str] = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    i += 1
+                buf.append(text[i])
+                i += 1
+            if i >= n:
+                raise _ARSyntaxError("unterminated quoted string")
+            i += 1
+            out.append(f"{_AR_QUOTE}{len(quoted)}{_AR_QUOTE}")
+            quoted.append("".join(buf))
+        elif ch == "(":
+            depth = 1
+            i += 1
+            while i < n and depth:
+                c = text[i]
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                depth += 1 if c == "(" else -1 if c == ")" else 0
+                i += 1
+            if depth:
+                raise _ARSyntaxError("unterminated comment")
+            out.append(" ")
+        elif ch == ")":
+            raise _ARSyntaxError("unbalanced comment")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), quoted
+
+
+def _ar_value(raw: str, quoted: list[str]) -> str:
+    """A property value: a whole quoted string is unquoted; a quoted local part stays opaque."""
+    whole = _AR_PLACEHOLDER.fullmatch(raw)
+    if whole:
+        return quoted[int(whole.group(1))].strip().lower()
+    return _AR_PLACEHOLDER.sub("quoted", raw).strip().lower()
 
 
 def _parse_ar(value: str) -> tuple[str, list[tuple[str, str, dict[str, str]]]] | None:
-    """``(authserv-id, [(method, result, props)])`` of one Authentication-Results value."""
-    segments = [s.strip() for s in _strip_comments(value).split(";")]
-    if not segments or not segments[0]:
+    """``(authserv-id, [(method, result, props)])`` of one Authentication-Results value (RFC 8601).
+
+    Returns ``None`` when the value cannot be parsed safely (unbalanced quotes
+    or comments, no authserv-id).
+    """
+    try:
+        lexed, quoted = _ar_lex(value)
+    except _ARSyntaxError:
         return None
-    authserv = segments[0].split()[0].lower()
+    segments = [s.strip() for s in lexed.split(";")]
+    head = segments[0].split() if segments else []
+    if not head or _AR_PLACEHOLDER.search(head[0]):
+        return None
+    authserv = head[0].lower()
     results = []
     for seg in segments[1:]:
         match = _AR_METHOD.match(seg)
         if not match:
             continue
-        props = {k.lower(): v.strip().lower() for k, v in _AR_PROP.findall(match.group(3))}
+        props: dict[str, str] = {}
+        for ptype, prop, raw in _AR_PROP.findall(match.group(3)):
+            key = f"{ptype.lower()}.{prop.lower()}"
+            props.setdefault(key, _ar_value(raw, quoted))
         results.append((match.group(1).lower(), match.group(2).lower(), props))
     return authserv, results
 
 
+def _domain_of(value: str | None) -> str | None:
+    """The domain in ``@acme.com`` / ``hr@acme.com`` / ``acme.com``; ``None`` unless it looks like a domain."""
+    if not value:
+        return None
+    domain = value.rsplit("@", 1)[-1].strip().strip(".").lower()
+    return domain if domain and "." in domain and _DOMAIN_CHARS.match(domain) else None
+
+
 def _aligned(domain: str | None, from_domain: str | None) -> bool:
     """Relaxed DMARC alignment: same registrable domain."""
+    domain = _domain_of(domain)
     if not domain or not from_domain:
         return False
-    domain = domain.lstrip("@").rsplit("@", 1)[-1].strip(".")
-    return bool(domain) and registrable_domain(domain) == registrable_domain(from_domain)
+    return registrable_domain(domain) == registrable_domain(from_domain)
 
 
 def sender_auth(payload: dict[str, Any] | None, from_domain: str | None) -> SenderAuth:
@@ -151,15 +227,23 @@ def sender_auth(payload: dict[str, Any] | None, from_domain: str | None) -> Send
     with the message and may be forged. It counts only when its authserv-id is
     Gmail's. ``ARC-Authentication-Results`` is never used: when Gmail's own
     header is missing, a sender-supplied ARC header would be just as forgeable.
+
+    The value is lexed per RFC 8601: quoted strings (e.g. a quoted
+    ``smtp.mailfrom`` local part) and comments are opaque, so text inside them
+    can never add a result. Anything unusual fails closed: an unparseable value,
+    more than one DMARC result, a DMARC result other than pass/none, or a DMARC
+    result for a domain other than the From domain.
     """
     top = header_values(payload, "Authentication-Results")
     if not top:
         return SenderAuth(reason="no Authentication-Results from Gmail")
     parsed = _parse_ar(top[0])
-    if not parsed or parsed[0] not in TRUSTED_AUTHSERV_IDS:
+    if parsed is None:
+        return SenderAuth(reason="Authentication-Results could not be parsed")
+    if parsed[0] not in TRUSTED_AUTHSERV_IDS:
         return SenderAuth(reason="Authentication-Results not written by Gmail")
     chosen = parsed[1]
-    dkim = tuple(f"{res}:{props.get('header.d') or props.get('header.i', '').lstrip('@') or '?'}"
+    dkim = tuple(f"{res}:{_domain_of(props.get('header.d') or props.get('header.i')) or '?'}"
                  for method, res, props in chosen if method == "dkim")
     spf = next((res for method, res, _ in chosen if method == "spf"), None)
     dmarc_entries = [(res, props) for method, res, props in chosen if method == "dmarc"]
@@ -167,8 +251,14 @@ def sender_auth(payload: dict[str, Any] | None, from_domain: str | None) -> Send
     base = dict(source="authentication-results", dkim=dkim, spf=spf, dmarc=dmarc)
     if not from_domain:
         return SenderAuth(reason="no sender address", **base)
+    if len(dmarc_entries) > 1:
+        # Gmail writes one DMARC verdict per message; several mean the header is not what it seems.
+        return SenderAuth(reason="several dmarc results", **base)
     if dmarc and dmarc not in _DMARC_NEUTRAL:
         return SenderAuth(reason=f"dmarc={dmarc}", **base)
+    if any(props.get("header.from") and not _aligned(props.get("header.from"), from_domain)
+           for _, props in dmarc_entries):
+        return SenderAuth(reason="dmarc result is for a different From domain", **base)
     for res, props in dmarc_entries:
         if res == "pass" and _aligned(props.get("header.from"), from_domain):
             return SenderAuth(authenticated=True, method="dmarc", reason="", **base)
@@ -357,6 +447,8 @@ def parse_message(message: dict[str, Any], *, body_char_limit: int) -> ParsedEma
     precedence = headers.get("precedence", "").lower()
     bulk = bool(headers.get("list-unsubscribe") or headers.get("list-id")) or precedence in {"bulk", "list", "junk"}
     from_domain = sender_domain(from_address)
+    # Several From headers: Gmail may have verified a different one than the one shown here.
+    several_from = len(header_values(payload, "From")) > 1
     return ParsedEmail(
         gmail_message_id=str(message.get("id") or ""),
         gmail_thread_id=str(message.get("threadId") or message.get("id") or ""),
@@ -370,5 +462,5 @@ def parse_message(message: dict[str, Any], *, body_char_limit: int) -> ParsedEma
         body_text=extract_body(payload, body_char_limit),
         label_ids=tuple(str(x) for x in message.get("labelIds") or []),
         bulk=bulk,
-        auth=sender_auth(payload, from_domain),
+        auth=SenderAuth(reason="several From headers") if several_from else sender_auth(payload, from_domain),
     )
