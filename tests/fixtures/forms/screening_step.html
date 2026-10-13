@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Screening questions - Fixture Corp</title></head>
+<body>
+<!-- Synthetic intermediate step returned by the first post: more questions plus a validation error. -->
+<h1>Screening questions</h1>
+<p>Before your application is submitted, answer the screening questions below.</p>
+<div class="error" role="alert">Please answer all required questions.</div>
+<form method="post" action="/apply/screening">
+  <div><label for="years">Years of SQL experience *</label><input id="years" name="screening_years" required aria-invalid="true">
+    <span class="field-error">This question is required</span></div>
+  <button type="submit">Submit application</button>
+</form>
+</body>
+</html>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd LaunchAgent for the job-agent dashboard (macOS, per user). Optional.
+  Installed by scripts/macos/install-launchd.sh with its dashboard option (replaces @REPO_DIR@).
+  Set a dashboard password first: job-agent dashboard set-password.
+  Stop / unload:   launchctl bootout gui/$(id -u)/com.jobagent.dashboard
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jobagent.dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@REPO_DIR@/.venv/bin/job-agent</string>
+        <string>dashboard</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>@REPO_DIR@</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JOB_AGENT_HOME</key>
+        <string>@REPO_DIR@</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>@REPO_DIR@/logs/launchd-dashboard.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@REPO_DIR@/logs/launchd-dashboard.err.log</string>
+</dict>
+</plist>

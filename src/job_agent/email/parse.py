@@ -1,0 +1,466 @@
+"""Parse Gmail API message resources into a small in-memory structure.
+
+The decoded body text lives only in ``ParsedEmail.body_text`` while a message
+is being classified; it is never written to the database, logs or reports.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import html
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import getaddresses, parsedate_to_datetime
+from html.parser import HTMLParser
+from typing import Any
+
+from job_agent.security.untrusted import clean_untrusted
+from job_agent.utils.time import to_iso
+
+SNIPPET_LIMIT = 200
+SUBJECT_LIMIT = 300
+
+_MULTI_PART_SLDS = {"co", "com", "ac", "org", "net", "gov", "edu", "ltd", "plc", "or", "ne", "go"}
+
+#: Only authentication results written by Gmail's own receiving servers are trusted.
+#: Anyone can put an ``Authentication-Results`` header into a message they send.
+TRUSTED_AUTHSERV_IDS: frozenset[str] = frozenset({"mx.google.com"})
+
+
+@dataclass(frozen=True)
+class SenderAuth:
+    """Whether Gmail verified that the message really comes from its From domain.
+
+    ``authenticated`` is true only for ``dmarc=pass`` (``header.from`` aligned
+    with the From domain) or ``dkim=pass`` with a signing domain aligned with the
+    From domain, as reported by a trusted authserv-id. SPF alone never counts:
+    it checks the envelope sender, not the From address you see.
+    """
+
+    authenticated: bool = False
+    method: str | None = None  # "dmarc" | "dkim"
+    source: str | None = None  # "authentication-results" when Gmail's header was found
+    dkim: tuple[str, ...] = ()  # e.g. ("pass:acme.com", "fail:evil.example")
+    spf: str | None = None
+    dmarc: str | None = None
+    reason: str = "no Authentication-Results from Gmail"
+
+    @property
+    def label(self) -> str:
+        if self.authenticated:
+            return f"verified ({self.method})"
+        return f"not verified: {self.reason}"
+
+
+UNAUTHENTICATED = SenderAuth()
+
+
+@dataclass
+class ParsedEmail:
+    gmail_message_id: str
+    gmail_thread_id: str
+    received_at: str | None
+    date_header_at: str | None
+    from_name: str | None
+    from_address: str | None
+    from_domain: str | None
+    subject: str
+    snippet: str
+    #: Plain text body, truncated. In memory only -- never persist this field.
+    body_text: str = field(repr=False, default="")
+    label_ids: tuple[str, ...] = ()
+    bulk: bool = False  # List-Unsubscribe / Precedence: bulk / list headers present
+    auth: SenderAuth = UNAUTHENTICATED  # DKIM / DMARC verdict from Gmail's headers
+
+    @property
+    def is_from_self(self) -> bool:
+        return "SENT" in self.label_ids or "DRAFT" in self.label_ids
+
+    @property
+    def sender(self) -> str:
+        if self.from_name and self.from_address:
+            return f"{self.from_name} <{self.from_address}>"
+        return self.from_address or self.from_name or ""
+
+
+# --------------------------------------------------------------------------- #
+# Headers
+# --------------------------------------------------------------------------- #
+def headers_of(payload: dict[str, Any] | None) -> dict[str, str]:
+    """Header map with lowercase names (first occurrence wins)."""
+    out: dict[str, str] = {}
+    for h in (payload or {}).get("headers") or []:
+        name = str(h.get("name") or "").lower()
+        if name and name not in out:
+            out[name] = str(h.get("value") or "")
+    return out
+
+
+def header_values(payload: dict[str, Any] | None, name: str) -> list[str]:
+    """Every value of one header, top (most recently added) first."""
+    wanted = name.lower()
+    return [str(h.get("value") or "") for h in (payload or {}).get("headers") or []
+            if str(h.get("name") or "").lower() == wanted]
+
+
+#: ``method[/version] = result rest`` at the start of one result (RFC 8601 ``methodspec``).
+_AR_METHOD = re.compile(r"^\s*([a-z0-9][a-z0-9-]*)\s*(?:/\s*\d+\s*)?=\s*([a-z0-9-]+)(?![a-z0-9-])(.*)$", re.I | re.S)
+#: ``ptype.property = pvalue`` (RFC 8601 ``propspec``); quoted strings are placeholders by now.
+_AR_PROP = re.compile(r"(?<![^\s])([a-z]+)\s*\.\s*([a-z0-9_-]+)\s*=\s*(\S+)", re.I)
+_AR_QUOTE = "\x00"  # placeholder delimiter; NUL is removed from the input first
+_AR_PLACEHOLDER = re.compile(_AR_QUOTE + r"(\d+)" + _AR_QUOTE)
+_DOMAIN_CHARS = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+#: DMARC results that still let an aligned DKIM pass count ("none" = the domain publishes no policy).
+_DMARC_NEUTRAL = {"pass", "none"}
+
+
+class _ARSyntaxError(ValueError):
+    pass
+
+
+def _ar_lex(value: str) -> tuple[str, list[str]]:
+    """RFC 8601 / 5322 lexing: comments become a space, quoted strings become numbered placeholders.
+
+    Everything inside a quoted string or a comment is an opaque atom, so a ``;``
+    or ``dmarc=pass`` written there can never become a result of its own. An
+    unterminated quoted string or comment raises ``_ARSyntaxError``.
+    """
+    text = value.replace(_AR_QUOTE, "")
+    out: list[str] = []
+    quoted: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            buf: list[str] = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    i += 1
+                buf.append(text[i])
+                i += 1
+            if i >= n:
+                raise _ARSyntaxError("unterminated quoted string")
+            i += 1
+            out.append(f"{_AR_QUOTE}{len(quoted)}{_AR_QUOTE}")
+            quoted.append("".join(buf))
+        elif ch == "(":
+            depth = 1
+            i += 1
+            while i < n and depth:
+                c = text[i]
+                if c == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                depth += 1 if c == "(" else -1 if c == ")" else 0
+                i += 1
+            if depth:
+                raise _ARSyntaxError("unterminated comment")
+            out.append(" ")
+        elif ch == ")":
+            raise _ARSyntaxError("unbalanced comment")
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), quoted
+
+
+def _ar_value(raw: str, quoted: list[str]) -> str:
+    """A property value: a whole quoted string is unquoted; a quoted local part stays opaque."""
+    whole = _AR_PLACEHOLDER.fullmatch(raw)
+    if whole:
+        return quoted[int(whole.group(1))].strip().lower()
+    return _AR_PLACEHOLDER.sub("quoted", raw).strip().lower()
+
+
+def _parse_ar(value: str) -> tuple[str, list[tuple[str, str, dict[str, str]]]] | None:
+    """``(authserv-id, [(method, result, props)])`` of one Authentication-Results value (RFC 8601).
+
+    Returns ``None`` when the value cannot be parsed safely (unbalanced quotes
+    or comments, no authserv-id).
+    """
+    try:
+        lexed, quoted = _ar_lex(value)
+    except _ARSyntaxError:
+        return None
+    segments = [s.strip() for s in lexed.split(";")]
+    head = segments[0].split() if segments else []
+    if not head or _AR_PLACEHOLDER.search(head[0]):
+        return None
+    authserv = head[0].lower()
+    results = []
+    for seg in segments[1:]:
+        match = _AR_METHOD.match(seg)
+        if not match:
+            continue
+        props: dict[str, str] = {}
+        for ptype, prop, raw in _AR_PROP.findall(match.group(3)):
+            key = f"{ptype.lower()}.{prop.lower()}"
+            props.setdefault(key, _ar_value(raw, quoted))
+        results.append((match.group(1).lower(), match.group(2).lower(), props))
+    return authserv, results
+
+
+def _domain_of(value: str | None) -> str | None:
+    """The domain in ``@acme.com`` / ``hr@acme.com`` / ``acme.com``; ``None`` unless it looks like a domain."""
+    if not value:
+        return None
+    domain = value.rsplit("@", 1)[-1].strip().strip(".").lower()
+    return domain if domain and "." in domain and _DOMAIN_CHARS.match(domain) else None
+
+
+def _aligned(domain: str | None, from_domain: str | None) -> bool:
+    """Relaxed DMARC alignment: same registrable domain."""
+    domain = _domain_of(domain)
+    if not domain or not from_domain:
+        return False
+    return registrable_domain(domain) == registrable_domain(from_domain)
+
+
+def sender_auth(payload: dict[str, Any] | None, from_domain: str | None) -> SenderAuth:
+    """DKIM / DMARC verdict for the From domain, from Gmail's own Authentication-Results.
+
+    Only the topmost ``Authentication-Results`` header is considered: Gmail
+    prepends its own when it receives a message, so anything below it came
+    with the message and may be forged. It counts only when its authserv-id is
+    Gmail's. ``ARC-Authentication-Results`` is never used: when Gmail's own
+    header is missing, a sender-supplied ARC header would be just as forgeable.
+
+    The value is lexed per RFC 8601: quoted strings (e.g. a quoted
+    ``smtp.mailfrom`` local part) and comments are opaque, so text inside them
+    can never add a result. Anything unusual fails closed: an unparseable value,
+    more than one DMARC result, a DMARC result other than pass/none, or a DMARC
+    result for a domain other than the From domain.
+    """
+    top = header_values(payload, "Authentication-Results")
+    if not top:
+        return SenderAuth(reason="no Authentication-Results from Gmail")
+    parsed = _parse_ar(top[0])
+    if parsed is None:
+        return SenderAuth(reason="Authentication-Results could not be parsed")
+    if parsed[0] not in TRUSTED_AUTHSERV_IDS:
+        return SenderAuth(reason="Authentication-Results not written by Gmail")
+    chosen = parsed[1]
+    dkim = tuple(f"{res}:{_domain_of(props.get('header.d') or props.get('header.i')) or '?'}"
+                 for method, res, props in chosen if method == "dkim")
+    spf = next((res for method, res, _ in chosen if method == "spf"), None)
+    dmarc_entries = [(res, props) for method, res, props in chosen if method == "dmarc"]
+    dmarc = dmarc_entries[0][0] if dmarc_entries else None
+    base = dict(source="authentication-results", dkim=dkim, spf=spf, dmarc=dmarc)
+    if not from_domain:
+        return SenderAuth(reason="no sender address", **base)
+    if len(dmarc_entries) > 1:
+        # Gmail writes one DMARC verdict per message; several mean the header is not what it seems.
+        return SenderAuth(reason="several dmarc results", **base)
+    if dmarc and dmarc not in _DMARC_NEUTRAL:
+        return SenderAuth(reason=f"dmarc={dmarc}", **base)
+    if any(props.get("header.from") and not _aligned(props.get("header.from"), from_domain)
+           for _, props in dmarc_entries):
+        return SenderAuth(reason="dmarc result is for a different From domain", **base)
+    for res, props in dmarc_entries:
+        if res == "pass" and _aligned(props.get("header.from"), from_domain):
+            return SenderAuth(authenticated=True, method="dmarc", reason="", **base)
+    for method, res, props in chosen:
+        if method == "dkim" and res == "pass" and _aligned(props.get("header.d") or props.get("header.i"),
+                                                           from_domain):
+            return SenderAuth(authenticated=True, method="dkim", reason="", **base)
+    summary = ", ".join([*(f"dkim={d}" for d in dkim), f"spf={spf or 'none'}", f"dmarc={dmarc or 'none'}"])
+    return SenderAuth(reason=f"no DKIM/DMARC pass for {registrable_domain(from_domain)} ({summary})", **base)
+
+
+def parse_from(value: str | None) -> tuple[str | None, str | None]:
+    """``("Jane Doe", "jane@acme.com")`` from a From header value."""
+    if not value:
+        return None, None
+    pairs = getaddresses([value])
+    name, address = pairs[0] if pairs else ("", "")
+    address = address.strip().strip("<>").lower() or None
+    if address and "@" not in address:
+        address = None
+    name = clean_untrusted(name, max_chars=120) or None
+    return name, address
+
+
+def sender_domain(address: str | None) -> str | None:
+    if not address or "@" not in address:
+        return None
+    domain = address.rsplit("@", 1)[1].strip().strip(">").strip(".").lower()
+    return domain or None
+
+
+def registrable_domain(domain: str | None) -> str | None:
+    """Best-effort registrable domain: ``mail.jobs.acme.co.uk`` -> ``acme.co.uk``."""
+    if not domain:
+        return None
+    labels = [p for p in domain.lower().strip(".").split(".") if p]
+    if len(labels) < 2:
+        return domain.lower() or None
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _MULTI_PART_SLDS:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def domain_core(domain: str | None) -> str | None:
+    """``acme-analytics.co.uk`` -> ``acmeanalytics`` (letters/digits only)."""
+    reg = registrable_domain(domain)
+    if not reg:
+        return None
+    first = reg.split(".")[0]
+    core = re.sub(r"[^a-z0-9]", "", first)
+    return core or None
+
+
+def parse_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return to_iso(dt)
+
+
+def _internal_date(value: Any) -> str | None:
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    return to_iso(datetime.fromtimestamp(ms / 1000, tz=timezone.utc))
+
+
+# --------------------------------------------------------------------------- #
+# Body
+# --------------------------------------------------------------------------- #
+def decode_base64url(data: str | None) -> bytes:
+    if not data:
+        return b""
+    text = data.strip().replace("\n", "")
+    text += "=" * (-len(text) % 4)
+    try:
+        return base64.urlsafe_b64decode(text)
+    except (binascii.Error, ValueError):
+        return b""
+
+
+def _charset(part: dict[str, Any]) -> str:
+    ctype = headers_of(part).get("content-type", "")
+    match = re.search(r'charset="?([A-Za-z0-9_\-:.]+)"?', ctype, re.I)
+    return match.group(1) if match else "utf-8"
+
+
+def _decode_part(part: dict[str, Any]) -> str:
+    raw = decode_base64url((part.get("body") or {}).get("data"))
+    if not raw:
+        return ""
+    try:
+        return raw.decode(_charset(part), errors="replace")
+    except LookupError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _walk(part: dict[str, Any], plain: list[str], htmls: list[str]) -> None:
+    mime = str(part.get("mimeType") or "").lower()
+    if part.get("filename") or (part.get("body") or {}).get("attachmentId"):
+        return  # attachments are never downloaded or read
+    if mime.startswith("multipart/"):
+        for child in part.get("parts") or []:
+            _walk(child, plain, htmls)
+        return
+    if mime == "text/plain":
+        plain.append(_decode_part(part))
+    elif mime == "text/html":
+        htmls.append(_decode_part(part))
+
+
+class _TextExtractor(HTMLParser):
+    _BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table", "ul", "ol", "section",
+              "article", "header", "footer", "blockquote"}
+    _SKIP = {"script", "style", "head", "title", "noscript", "template"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP:
+            self._skip_depth += 1
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        elif tag in self._BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self.parts.append(data)
+
+
+def html_to_text(markup: str) -> str:
+    parser = _TextExtractor()
+    try:
+        parser.feed(markup)
+        parser.close()
+    except Exception:  # malformed HTML: fall back to tag stripping
+        return html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    text = "".join(parser.parts)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def extract_body(payload: dict[str, Any] | None, limit: int) -> str:
+    """Plain-text body: text/plain parts preferred, else HTML converted to text."""
+    if not payload:
+        return ""
+    plain: list[str] = []
+    htmls: list[str] = []
+    _walk(payload, plain, htmls)
+    text = "\n".join(p for p in plain if p.strip())
+    if not text.strip() and htmls:
+        text = "\n".join(html_to_text(h) for h in htmls if h.strip())
+    return clean_untrusted(text, max_chars=limit)
+
+
+# --------------------------------------------------------------------------- #
+def parse_message(message: dict[str, Any], *, body_char_limit: int) -> ParsedEmail:
+    payload = message.get("payload") or {}
+    headers = headers_of(payload)
+    from_name, from_address = parse_from(headers.get("from"))
+    date_header_at = parse_date(headers.get("date"))
+    # internalDate is when Gmail received the message (not sender-controlled);
+    # the Date header is used only when it is missing.
+    received_at = _internal_date(message.get("internalDate")) or date_header_at
+    subject = clean_untrusted(headers.get("subject", ""), max_chars=5_000).replace("\n", " ")[:SUBJECT_LIMIT]
+    snippet = clean_untrusted(html.unescape(str(message.get("snippet") or "")), max_chars=5_000)[:SNIPPET_LIMIT]
+    precedence = headers.get("precedence", "").lower()
+    bulk = bool(headers.get("list-unsubscribe") or headers.get("list-id")) or precedence in {"bulk", "list", "junk"}
+    from_domain = sender_domain(from_address)
+    # Several From headers: Gmail may have verified a different one than the one shown here.
+    several_from = len(header_values(payload, "From")) > 1
+    return ParsedEmail(
+        gmail_message_id=str(message.get("id") or ""),
+        gmail_thread_id=str(message.get("threadId") or message.get("id") or ""),
+        received_at=received_at,
+        date_header_at=date_header_at,
+        from_name=from_name,
+        from_address=from_address,
+        from_domain=from_domain,
+        subject=subject,
+        snippet=snippet,
+        body_text=extract_body(payload, body_char_limit),
+        label_ids=tuple(str(x) for x in message.get("labelIds") or []),
+        bulk=bulk,
+        auth=SenderAuth(reason="several From headers") if several_from else sender_auth(payload, from_domain),
+    )

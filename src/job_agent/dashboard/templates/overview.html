@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+
+<section class="tiles" aria-label="Agent status">
+  <div class="tile">
+    <div class="tile-label">Automation</div>
+    {% if status.paused %}
+    <div class="tile-value warn">Paused</div>
+    {% if status.paused_reason %}<div class="small">{{ status.paused_reason }}</div>{% endif %}
+    {% else %}
+    <div class="tile-value ok">Active</div>
+    {% endif %}
+  </div>
+  <div class="tile">
+    <div class="tile-label">Scheduler daemon</div>
+    {% if status.daemon_running %}
+    <div class="tile-value ok">Running</div>
+    {% else %}
+    <div class="tile-value muted-value">Not running</div>
+    {% endif %}
+    <div class="small">Heartbeat: {{ status.heartbeat_at|ago }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Last successful run</div>
+    {% if status.last_success %}
+    <div class="tile-value">{{ status.last_success.task_name|humanize }}</div>
+    <div class="small">{{ status.last_success.finished_at|localtime }}</div>
+    {% else %}
+    <div class="tile-value muted-value">None yet</div>
+    {% endif %}
+  </div>
+  <div class="tile">
+    <div class="tile-label">Next scheduled run</div>
+    {% if status.next_run %}
+    <div class="tile-value">{{ status.next_run.task_name|humanize }}</div>
+    <div class="small">{{ status.next_run.next_run_at|localtime }}{% if not status.daemon_running %} (daemon not running: will not fire){% endif %}</div>
+    {% else %}
+    <div class="tile-value muted-value">Nothing scheduled</div>
+    {% endif %}
+  </div>
+  <div class="tile">
+    <div class="tile-label">New jobs today</div>
+    <div class="tile-value">{{ new_jobs_today }}</div>
+    <div class="small">{{ counts.jobs_total }} total · {{ counts.shortlisted }} shortlisted</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Pending approvals</div>
+    <div class="tile-value{% if pending_count %} warn{% endif %}">{{ pending_count }}</div>
+    <div class="small"><a href="/approvals">Review</a></div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Gmail</div>
+    <div class="tile-value{% if gmail.connected %} ok{% else %} muted-value{% endif %}">{{ gmail.label }}</div>
+    <div class="small">{{ gmail.detail }}</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Unresolved errors</div>
+    <div class="tile-value{% if counts.unresolved_errors %} bad{% endif %}">{{ counts.unresolved_errors }}</div>
+    <div class="small"><a href="/controls">Controls</a></div>
+  </div>
+</section>
+
+{% if health %}
+<section class="card">
+  <h2>Last health check {{ m.status_badge(health.get("overall")) }}</h2>
+  {% if health_problems %}
+  <ul class="plain">
+    {% for c in health_problems %}
+    <li>{{ m.status_badge(c.get("status")) }} <strong>{{ c.get("name") }}</strong>: {{ c.get("detail") }}{% if c.get("action") %} <span class="muted">— {{ c.get("action") }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">All checks passed.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Pending approvals</h2>
+  {% if pending_approvals %}
+  <ul class="list">
+    {% for a in pending_approvals %}
+    <li>
+      <a href="/approvals/{{ a.approval_uid }}">{{ a.summary }}</a>
+      {{ m.badge(a.request_type) }}{% if a.expired_now %} {{ m.badge("expired", "bad") }}{% endif %}
+      <div class="small muted">requested {{ a.requested_at|ago }}{% if a.expires_at %} · expires {{ a.expires_at|localtime }}{% endif %}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Nothing waiting for you.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Top matches</h2>
+  {% if top_matches %}
+  <ul class="list">
+    {% for j in top_matches %}
+    <li>
+      <span class="score">{{ j.overall_score|score }}</span>
+      <a href="/jobs/{{ j.id }}">{{ j.title }}</a> · {{ j.employer }}
+      <div class="small muted">{{ j.location or "location unknown" }} · {{ j.category|humanize }}{% if j.application_status %} · application {{ j.application_status|humanize }}{% endif %}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No scored jobs yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Follow-ups due</h2>
+  {% if followups_due %}
+  <ul class="list">
+    {% for f in followups_due %}
+    <li>
+      {{ m.badge(f.followup_type) }} {{ f.suggested_action }}
+      <div class="small muted">{% if f.employer %}{{ f.employer }} · {{ f.title }} · {% endif %}due {{ f.due_at|localtime }} · {{ f.status|humanize }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p><a href="/followups">All follow-ups</a></p>
+  {% else %}
+  <p class="muted">No follow-ups due in the next 24 hours.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recruiter communications needing attention</h2>
+  {% if attention_emails %}
+  <ul class="list">
+    {% for e in attention_emails %}
+    <li>
+      {{ m.badge(e.category) }} {{ e.subject or "(no subject)" }}
+      {% if e.injection_suspected %}{{ m.badge("suspicious content", "bad") }}{% endif %}
+      <div class="small muted">{{ e.from_address or "unknown sender" }} · {{ e.received_at|localtime }}</div>
+      {% if e.summary %}<div class="small">{{ e.summary }}</div>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p><a href="/email?attention=1">Open email</a></p>
+  {% else %}
+  <p class="muted">Nothing flagged in the last 14 days{% if not gmail.connected %} ({{ gmail.label }}){% endif %}.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent errors</h2>
+  {% if recent_errors %}
+  <ul class="list">
+    {% for e in recent_errors %}
+    <li>
+      {{ m.status_badge(e.error_kind) }} <strong>{{ e.component }}</strong>: {{ e.message }}
+      <div class="small muted">{{ e.occurred_at|localtime }}{% if e.human_action %} · next step: {{ e.human_action }}{% endif %}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  <p><a href="/controls">Resolve in Controls</a></p>
+  {% else %}
+  <p class="muted">No unresolved errors.</p>
+  {% endif %}
+</section>
+{% endblock %}

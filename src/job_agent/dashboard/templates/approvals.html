@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Approvals{% endblock %}
+{% block content %}
+<h1>Approvals</h1>
+<p class="muted">Nothing is submitted until you approve it here or in the CLI. Each approval is bound to the exact content you review and is used once.</p>
+<section class="card">
+  <h2>Pending</h2>
+  {% if pending %}
+  <ul class="list">
+    {% for a in pending %}
+    <li>
+      <a href="/approvals/{{ a.approval_uid }}">{{ a.summary }}</a> {{ m.badge(a.request_type) }}{% if a.expired_now %} {{ m.badge("expired", "bad") }}{% endif %}
+      <div class="small muted">{% if a.employer %}{{ a.employer }} · {{ a.title }} · {% endif %}requested {{ a.requested_at|localtime }}{% if a.expires_at %} · expires {{ a.expires_at|localtime }}{% endif %}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No pending approvals.</p>
+  {% endif %}
+</section>
+<section class="card">
+  <h2>Recently decided</h2>
+  {% if recent %}
+  <ul class="list">
+    {% for a in recent %}
+    <li><a href="/approvals/{{ a.approval_uid }}">{{ a.summary }}</a> {{ m.status_badge(a.status) }}
+      <div class="small muted">{{ a.request_type|humanize }}{% if a.decided_at %} · {{ a.decided_at|localtime }} by {{ a.decided_by }}{% endif %}</div></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">None yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

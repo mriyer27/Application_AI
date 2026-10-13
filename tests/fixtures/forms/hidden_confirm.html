@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Fixture Corp</title>
+<style>
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+  .cover-wrap{position:relative}
+  .covered{position:absolute;top:0;left:0;z-index:0}
+  .cover{position:relative;z-index:1;background:#fff;height:3em}
+</style></head>
+<body>
+<!-- Synthetic intermediate step (NOT a confirmation): every confirmation sentence below is invisible to a
+     person, each in a different way. Markers HIDDEN-<technique> let the tests check each technique. -->
+<main>
+<h1>Data Analyst</h1>
+<p>Your information is ready. Our team needs a few more details from you.</p>
+<a href="/forms/next.html">Continue</a>
+<div style="position:absolute;left:-10000px;top:0">HIDDEN-OFFSCREEN Thank you for applying! Your application has been submitted.</div>
+<div style="opacity:0">HIDDEN-OPACITY Thank you for applying! Your application has been received.</div>
+<div style="opacity:0.3"><span style="opacity:0.2">HIDDEN-NESTED-OPACITY Your application has been received.</span></div>
+<div style="font-size:1px">HIDDEN-TINY Thank you for applying!</div>
+<div class="sr-only">HIDDEN-SRONLY Your application has been submitted.</div>
+<div style="clip-path:inset(50%)">HIDDEN-CLIPPATH Your application was successfully submitted.</div>
+<div style="color:#ffffff;background:#ffffff">HIDDEN-SAMECOLOR Thank you for your application!</div>
+<div style="color:transparent">HIDDEN-TRANSPARENT Thank you for applying!</div>
+<div style="height:0;overflow:hidden">HIDDEN-ZEROHEIGHT Your application has been received.</div>
+<div style="text-indent:-9999px;overflow:hidden;white-space:nowrap">HIDDEN-INDENT Thank you for applying!</div>
+<div style="transform:scale(0)">HIDDEN-SCALE Your application has been submitted.</div>
+<div style="position:fixed;left:0;top:-500px">HIDDEN-FIXED-OFF Thank you for applying!</div>
+<div style="visibility:hidden">HIDDEN-VISIBILITY Thank you for applying!</div>
+<div style="display:none">HIDDEN-DISPLAY Thank you for applying!</div>
+<details><summary>More</summary>HIDDEN-DETAILS Your application has been received.</details>
+<div class="cover-wrap"><div class="covered">HIDDEN-COVERED Thank you for applying!</div><div class="cover"></div></div>
+</main>
+</body>
+</html>

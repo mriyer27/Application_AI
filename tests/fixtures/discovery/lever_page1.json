@@ -1,0 +1,76 @@
+[
+  {
+    "additionalPlain": "We are unable to sponsor H-1B visas for this role.\n",
+    "additional": "<div>We are unable to sponsor H-1B visas for this role.</div>",
+    "categories": {
+      "commitment": "Full-time",
+      "location": "New York, NY",
+      "team": "Analytics",
+      "allLocations": [
+        "New York, NY"
+      ]
+    },
+    "createdAt": 1790000000000,
+    "descriptionPlain": "Synthetic posting.\n",
+    "description": "<div>Synthetic posting.</div>",
+    "id": "5f1c0a3e-0000-4000-8000-000000000001",
+    "lists": [
+      {
+        "text": "What You'll Need",
+        "content": "\n<li>SQL and Python</li>\n<li>1+ years of experience with dashboards</li>\n"
+      },
+      {
+        "text": "Nice to have",
+        "content": "\n<li>Tableau</li>\n"
+      }
+    ],
+    "text": "Data Analyst",
+    "country": "US",
+    "workplaceType": "hybrid",
+    "opening": "<div>Synthetic posting.</div>",
+    "openingPlain": "Synthetic posting.\n",
+    "descriptionBody": "",
+    "descriptionBodyPlain": "",
+    "hostedUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000001",
+    "applyUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000001/apply",
+    "salaryRange": {
+      "currency": "USD",
+      "interval": "per-year-salary",
+      "min": 90000,
+      "max": 120000
+    },
+    "salaryDescription": "<div>The base salary range for this role is $90,000 - $120,000.</div>",
+    "salaryDescriptionPlain": "The base salary range for this role is $90,000 - $120,000."
+  },
+  {
+    "additionalPlain": "Salary\nThe estimated salary range for this position is $70,000 - $95,000/year. Total compensation may also include equity.\nU.S. citizenship required.\n",
+    "additional": "<div>Salary</div><div>The estimated salary range for this position is $70,000 - $95,000/year. Total compensation may also include equity.</div><div>U.S. citizenship required.</div>",
+    "categories": {
+      "commitment": "Full-time",
+      "location": "Washington, D.C.",
+      "team": "Analytics",
+      "allLocations": [
+        "Washington, D.C."
+      ]
+    },
+    "createdAt": 1790000000000,
+    "descriptionPlain": "Synthetic posting.\n",
+    "description": "<div>Synthetic posting.</div>",
+    "id": "5f1c0a3e-0000-4000-8000-000000000002",
+    "lists": [
+      {
+        "text": "What We Require",
+        "content": "\n<li>Experience with SQL</li>\n"
+      }
+    ],
+    "text": "Business Intelligence Analyst",
+    "country": "US",
+    "workplaceType": "onsite",
+    "opening": "<div>Synthetic posting.</div>",
+    "openingPlain": "Synthetic posting.\n",
+    "descriptionBody": "",
+    "descriptionBodyPlain": "",
+    "hostedUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000002",
+    "applyUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000002/apply"
+  }
+]

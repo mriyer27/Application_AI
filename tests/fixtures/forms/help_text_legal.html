@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title>
+<style>.tooltip-description{display:none}</style></head>
+<body>
+<!-- Synthetic form: the question wording is harmless ("willing to relocate"), the legal clause is only in the
+     help text attached to it in different ways. -->
+<main>
+<form id="application" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="email">Email *</label><input id="email" name="email" type="email" required>
+    <small>We never share your email address.</small></div>
+  <div><label for="resume">Resume *</label><input id="resume" name="resume" type="file" accept=".pdf" required></div>
+  <fieldset aria-describedby="relo-help">
+    <legend>Are you willing to relocate?</legend>
+    <p id="relo-help" class="help">Answering Yes also confirms that you will not now or in the future require visa
+       sponsorship for this role.</p>
+    <label><input type="radio" name="relocate" value="yes" required> Yes</label>
+    <label><input type="radio" name="relocate" value="no"> No</label>
+  </fieldset>
+  <div class="question">
+    <label for="relo2">Are you willing to relocate to our New York office?</label>
+    <div class="hint" id="relo2-hint">Selecting Yes certifies that you are a U.S. citizen (export-control requirement).</div>
+    <select id="relo2" name="relo2" aria-describedby="relo2-hint" required>
+      <option value="">Select</option><option value="Yes">Yes</option><option value="No">No</option></select>
+  </div>
+  <div class="question">
+    <label for="relo3">Are you willing to relocate within the U.S.?</label>
+    <select id="relo3" name="relo3" required>
+      <option value="">Select</option><option>Yes</option><option>No</option></select>
+    <span class="tooltip-description">Yes means you hold an active security clearance.</span>
+  </div>
+  <label for="relo4">Are you willing to relocate for this role?</label>
+  <input id="relo4" name="relo4">
+  <small id="relo4-note">Your answer also confirms you are authorized to work in the United States.</small>
+  <div><label><input type="checkbox" id="relo5" name="relo5"
+      aria-description="Checking this confirms you do not require sponsorship"> I am willing to relocate</label></div>
+  <button type="submit">Submit application</button>
+</form>
+</main>
+</body>
+</html>

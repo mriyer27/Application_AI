@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Follow-ups{% endblock %}
+{% block content %}
+<h1>Follow-ups</h1>
+<p class="small">
+  {% if show == "open" %}<strong>Open</strong> · <a href="/followups?show=all">All</a>{% else %}<a href="/followups">Open</a> · <strong>All</strong>{% endif %}
+</p>
+<p class="small muted">Draft texts are suggestions to copy and send yourself; nothing is sent from here.</p>
+{% if not actions_available %}<div class="flash flash-warn">Follow-up actions are not available yet (follow-ups module not installed). The list below is read-only.</div>{% endif %}
+{% if items %}
+<ul class="cards">
+  {% for f in items %}
+  <li class="card">
+    <div class="badges">{{ m.badge(f.followup_type) }} {{ m.status_badge(f.status) }}{% if f.overdue %} {{ m.badge("due", "warn") }}{% endif %}</div>
+    <p>{{ f.suggested_action }}</p>
+    <div class="small muted">
+      due {{ f.due_at|localtime }}
+      {% if f.related_job_id %} · <a href="/jobs/{{ f.related_job_id }}">{{ f.employer }} · {{ f.title }}</a>{% endif %}
+      {% if f.application_id %} · <a href="/applications/{{ f.application_id }}">{{ f.application_uid }}</a>{% endif %}
+    </div>
+    {% if f.draft_text %}
+    <details>
+      <summary>Draft text (not sent)</summary>
+      {{ m.copy_block("draft-" ~ f.id, f.draft_text) }}
+    </details>
+    {% endif %}
+    {% if actions_available and f.status not in ("completed", "dismissed") %}
+    <form method="post" action="/followups/{{ f.id }}/status" class="inline-form">
+      {{ m.csrf() }}
+      <select name="status" aria-label="New status">
+        <option value="approved">approved</option>
+        <option value="completed">done</option>
+        <option value="dismissed">dismissed</option>
+      </select>
+      {{ m.confirm_box("confirm") }}
+      <button type="submit">Update</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No {{ "open " if show == "open" else "" }}follow-ups.</p>
+{% endif %}
+{% endblock %}

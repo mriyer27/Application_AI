@@ -1,0 +1,28 @@
+[
+  {
+    "additionalPlain": "The pay for this role is $45 - $55 per hour.\n",
+    "additional": "<div>The pay for this role is $45 - $55 per hour.</div>",
+    "categories": {
+      "commitment": "Full-time",
+      "location": "Remote - US",
+      "team": "Analytics",
+      "allLocations": [
+        "Remote - US"
+      ]
+    },
+    "createdAt": 1790000000000,
+    "descriptionPlain": "Synthetic posting.\n",
+    "description": "<div>Synthetic posting.</div>",
+    "id": "5f1c0a3e-0000-4000-8000-000000000003",
+    "lists": [],
+    "text": "Product Analyst, New Grad",
+    "country": "US",
+    "workplaceType": "remote",
+    "opening": "<div>Synthetic posting.</div>",
+    "openingPlain": "Synthetic posting.\n",
+    "descriptionBody": "",
+    "descriptionBodyPlain": "",
+    "hostedUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000003",
+    "applyUrl": "https://jobs.lever.co/acme/5f1c0a3e-0000-4000-8000-000000000003/apply"
+  }
+]

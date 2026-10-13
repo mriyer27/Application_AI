@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Fixture: what the server returns when it rejects a submission. -->
+<h1>Apply: Data Analyst</h1>
+<div class="error" role="alert">Please correct the errors below.</div>
+<form id="application" method="post" action="/submit/validation" enctype="multipart/form-data">
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel" aria-invalid="true">
+    <span class="field-error">Phone number is invalid</span></div>
+  <button type="submit">Submit application</button>
+</form>
+</body>
+</html>

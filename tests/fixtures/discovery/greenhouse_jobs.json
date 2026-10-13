@@ -1,0 +1,571 @@
+{
+  "jobs": [
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1001",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901001,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1001,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-100",
+      "title": "Business Analyst - Retail Energy",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;&lt;strong&gt;About the role&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Join our Retail Energy practice as a Business Analyst.&amp;nbsp;You will gather requirements &amp;amp; model processes.&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;What You&amp;rsquo;ll Do&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;&lt;li&gt;Run stakeholder workshops&lt;/li&gt;&lt;li&gt;Write user stories&lt;/li&gt;&lt;/ul&gt;\n&lt;p&gt;&lt;strong&gt;What We&amp;rsquo;re Looking For&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Bachelor&amp;rsquo;s degree in Business, Finance or Information Systems&lt;/li&gt;\n&lt;li&gt;2+ years of experience in business analysis&lt;/li&gt;\n&lt;li&gt;Strong SQL and Excel skills&lt;/li&gt;\n&lt;li&gt;Must be authorized to work in the United States. We are unable to sponsor visas for this role.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;&lt;strong&gt;Bonus Points For&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;&lt;li&gt;Experience with Power BI&lt;/li&gt;&lt;li&gt;Energy industry exposure&lt;/li&gt;&lt;/ul&gt;\n&lt;p&gt;Work with business sponsors to scope analysis.&lt;/p&gt;\n&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;\n&lt;p&gt;&lt;span style=&quot;color:#fff&quot;&gt;LI-HYBRID&lt;/span&gt;&lt;/p&gt;\n&lt;div class=&quot;content-pay-transparency&quot;&gt;&lt;div class=&quot;pay-input&quot;&gt;&lt;div class=&quot;title&quot;&gt;US Pay Range&lt;/div&gt;&lt;div class=&quot;pay-range&quot;&gt;&lt;span&gt;$85,000&lt;/span&gt;&lt;span class=&quot;divider&quot;&gt;&amp;mdash;&lt;/span&gt;&lt;span&gt;$105,000 USD&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1002",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901002,
+      "location": {
+        "name": "US - Houston"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1002,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-100",
+      "title": "Business Analyst - Retail Energy",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;&lt;strong&gt;About the role&lt;/strong&gt;&lt;/p&gt;\n&lt;p&gt;Join our Retail Energy practice as a Business Analyst.&amp;nbsp;You will gather requirements &amp;amp; model processes.&lt;/p&gt;\n&lt;p&gt;&lt;strong&gt;What You&amp;rsquo;ll Do&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;&lt;li&gt;Run stakeholder workshops&lt;/li&gt;&lt;li&gt;Write user stories&lt;/li&gt;&lt;/ul&gt;\n&lt;p&gt;&lt;strong&gt;What We&amp;rsquo;re Looking For&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;\n&lt;li&gt;Bachelor&amp;rsquo;s degree in Business, Finance or Information Systems&lt;/li&gt;\n&lt;li&gt;2+ years of experience in business analysis&lt;/li&gt;\n&lt;li&gt;Strong SQL and Excel skills&lt;/li&gt;\n&lt;li&gt;Must be authorized to work in the United States. We are unable to sponsor visas for this role.&lt;/li&gt;\n&lt;/ul&gt;\n&lt;p&gt;&lt;strong&gt;Bonus Points For&lt;/strong&gt;&lt;/p&gt;\n&lt;ul&gt;&lt;li&gt;Experience with Power BI&lt;/li&gt;&lt;li&gt;Energy industry exposure&lt;/li&gt;&lt;/ul&gt;\n&lt;p&gt;Work with business sponsors to scope analysis.&lt;/p&gt;\n&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt;\n&lt;p&gt;&lt;span style=&quot;color:#fff&quot;&gt;LI-HYBRID&lt;/span&gt;&lt;/p&gt;\n&lt;div class=&quot;content-pay-transparency&quot;&gt;&lt;div class=&quot;pay-input&quot;&gt;&lt;div class=&quot;title&quot;&gt;US Pay Range&lt;/div&gt;&lt;div class=&quot;pay-range&quot;&gt;&lt;span&gt;$85,000&lt;/span&gt;&lt;span class=&quot;divider&quot;&gt;&amp;mdash;&lt;/span&gt;&lt;span&gt;$105,000 USD&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - Houston",
+          "location": "US - Houston",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1003",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901003,
+      "location": {
+        "name": "London, United Kingdom"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1003,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-103",
+      "title": "Data Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Analyze data.&lt;/p&gt;&lt;p&gt;&lt;strong&gt;Requirements&lt;/strong&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;SQL&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "London, United Kingdom",
+          "location": "London, United Kingdom",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1004",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901004,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1004,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-104",
+      "title": "Software Engineer Intern",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1005",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901005,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1005,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-105",
+      "title": "",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/None",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 900000,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": null,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-106",
+      "title": "Data Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1007",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901007,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1007,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-107",
+      "title": "Product Analyst Intern",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1008",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901008,
+      "location": {
+        "name": "US - Dallas"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1008,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-108",
+      "title": "Lead Data Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - Dallas",
+          "location": "US - Dallas",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1009",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901009,
+      "location": {
+        "name": "Remote - US"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1009,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-109",
+      "title": "Leadership Development Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "Remote - US",
+          "location": "Remote - US",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1010",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901010,
+      "location": {
+        "name": "US - Charlotte"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1010,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-110",
+      "title": "Strategy Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;h3&gt;Qualifications&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;5+ years of experience in corporate strategy&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - Charlotte",
+          "location": "US - Charlotte",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://careers.example.com/open-roles/?gh_jid=1011&gh_src=abc123&utm_source=x#apply",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901011,
+      "location": {
+        "name": "US - Chicago"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1011,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-111",
+      "title": "Operations Analyst",
+      "company_name": "Example Consulting",
+      "first_published": "2026-09-20T10:00:00-04:00",
+      "language": "en",
+      "application_deadline": "2026-09-01T00:00:00Z",
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - Chicago",
+          "location": "US - Chicago",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    },
+    {
+      "absolute_url": "https://job-boards.greenhouse.io/example/jobs/1012",
+      "data_compliance": [
+        {
+          "type": "gdpr",
+          "requires_consent": false
+        }
+      ],
+      "internal_job_id": 901012,
+      "location": {
+        "name": "US - New York"
+      },
+      "metadata": [
+        {
+          "id": 1,
+          "name": "FADV_Account",
+          "value": null,
+          "value_type": "single_select"
+        }
+      ],
+      "id": 1012,
+      "updated_at": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "R-112",
+      "title": "Analytics Consultant",
+      "company_name": "Example Consulting",
+      "first_published": "2026-06-01T12:00:00Z",
+      "language": "en",
+      "application_deadline": null,
+      "content": "&lt;p&gt;Synthetic description.&lt;/p&gt;",
+      "departments": [
+        {
+          "id": 7,
+          "name": "Business Consulting",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ],
+      "offices": [
+        {
+          "id": 8,
+          "name": "US - New York",
+          "location": "US - New York",
+          "child_ids": [],
+          "parent_id": null
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "total": 12
+  }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>{% block title %}Dashboard{% endblock %} · job-agent</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">job-agent</a>
+  {% if user %}
+  <form class="logout" method="post" action="/logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="link-button">Sign out</button>
+  </form>
+  {% endif %}
+</header>
+{% if user %}
+<nav class="nav" aria-label="Main">
+  {% for key, label, href in [("overview", "Overview", "/"), ("jobs", "Jobs", "/jobs"),
+                              ("applications", "Applications", "/applications"), ("approvals", "Approvals", "/approvals"),
+                              ("email", "Email", "/email"), ("followups", "Follow-ups", "/followups"),
+                              ("reports", "Reports", "/reports"), ("controls", "Controls", "/controls")] %}
+  <a href="{{ href }}"{% if section == key %} aria-current="page"{% endif %}>{{ label }}{% if key == "approvals" and nav_pending %} <span class="badge badge-warn">{{ nav_pending }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+<main class="container">
+  {% for level, message in flashes %}
+  <div class="flash flash-{{ level }}" role="status">{{ message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+<footer class="footer">Local-first and supervised: nothing is submitted or sent without your approval. Times in {{ timezone }}.</footer>
+</body>
+</html>

@@ -1,0 +1,127 @@
+# Synthetic test profile. Fictional person, institutions and employers.
+schema_version: 1
+
+personal:
+  full_name: "Test Candidate"
+  email: "test.candidate@example.com"
+  phone: "+1 315 555 0100"
+  location: "Springfield, NY"
+  linkedin_url: null
+  portfolio_url: null
+  github_url: null
+
+summary: null
+
+education:
+  - id: edu_ms
+    institution: "Example State University"
+    degree: "Master of Science"
+    field: "Information Systems"
+    location: "Springfield, NY"
+    start: "Fall 2025"
+    end: "May 2027"
+    expected: true
+    gpa: "3.70/4.00"
+    facts: []
+  - id: edu_bs
+    institution: "Sample Institute of Technology"
+    degree: "Bachelor of Technology"
+    field: "Computer Science"
+    location: "Sampletown"
+    start: "June 2021"
+    end: "June 2025"
+    expected: false
+    gpa: "8.00/10"
+    facts: []
+
+experience:
+  - id: exp_state_agency
+    employer: "Example State Agency"
+    title: "Student Intern"
+    team: "Innovation Team"
+    location: null
+    dates: "Summer 2026"
+    employment_type: internship
+    facts:
+      - id: agency_regression
+        text: "Analyzed regression results across 12 categories using SAS Enterprise Guide, contributing to approximately 30% less manual review effort."
+        skills: ["SAS Enterprise Guide", "Data analytics and business reporting"]
+        keywords: [regression, analysis, analytics, statistics]
+        metrics: ["12", "30%"]
+      - id: agency_dashboards
+        text: "Supported IBM Cognos dashboards and reporting using DB2."
+        skills: ["IBM Cognos", "DB2", "Data analytics and business reporting"]
+        keywords: [dashboards, reporting, business intelligence]
+        metrics: []
+      - id: agency_python_migration
+        text: "Converted 9 legacy SAS programs to Python with AI-assisted development, improving processing efficiency by approximately 25%."
+        skills: ["Python", "SAS Enterprise Guide", "AI-assisted development"]
+        keywords: [modernization, automation, ai, python]
+        metrics: ["9", "25%"]
+  - id: exp_small_co
+    employer: "Sample Automation Co"
+    title: "IT / Software Development"
+    team: null
+    location: "Sampletown"
+    dates: "July 2024 - December 2024"
+    employment_type: other
+    facts:
+      - id: smallco_flask
+        text: "Worked on a Flask-based application with MongoDB."
+        skills: ["Flask", "MongoDB", "Python"]
+        keywords: [web application, flask, mongodb]
+        metrics: []
+      - id: smallco_dashboard
+        text: "Supported a sales dashboard."
+        skills: ["Data analytics and business reporting"]
+        keywords: [dashboard, sales, reporting]
+        metrics: []
+
+projects: []
+certifications: []
+
+skills:
+  - Python
+  - SQL
+  - MySQL
+  - Excel
+  - Power BI
+  - Tableau
+  - R
+  - Jira
+  - Confluence
+  - SAS Enterprise Guide
+  - IBM Cognos
+  - DB2
+  - Flask
+  - MongoDB
+  - AI-assisted development
+  - Data analytics and business reporting
+
+preferences:
+  target_roles: [Business Analyst, Data Analyst, AI Analyst, Product Analyst]
+  avoid_focus: [competitive programming, full-time software engineering]
+  preferred_themes: [AI, business, analytics]
+  salary_min_base: 90000
+  salary_currency: USD
+  relocation: null
+  preferred_locations: []
+
+work_authorization:
+  current_status: "F-1"
+  authorized_to_work_in_us_now: null
+  authorized_for_internship_now: null
+  authorized_for_full_time_after_graduation: null
+  requires_sponsorship_now: null
+  requires_sponsorship_future: null
+  us_citizen: null
+  us_person_for_export_control: null
+  security_clearance: null
+  notes: null
+  last_verified: null
+
+verified_answers:
+  - id: hear_about_us
+    question_patterns: ["how did you hear about"]
+    answer: "Company careers page"
+    is_legal_declaration: false

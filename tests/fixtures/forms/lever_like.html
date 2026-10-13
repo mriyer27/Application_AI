@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture Co - Business Systems Analyst</title></head>
+<body>
+<!-- Synthetic page using Lever-style field names (fixture; not a copy of any real page). -->
+<div class="content"><h2>Business Systems Analyst</h2>
+<form method="POST" action="__SUBMIT_ACTION__" enctype="multipart/form-data" id="application-form">
+  <ul>
+    <li class="application-question"><div class="application-label">Resume/CV<span class="required">✱</span></div>
+      <div class="application-field"><input type="file" name="resume" id="resume-upload-input" required></div></li>
+    <li class="application-question"><div class="application-label">Full name<span class="required">✱</span></div>
+      <div class="application-field"><input type="text" name="name" required></div></li>
+    <li class="application-question"><div class="application-label">Email<span class="required">✱</span></div>
+      <div class="application-field"><input type="email" name="email" required></div></li>
+    <li class="application-question"><div class="application-label">Phone</div>
+      <div class="application-field"><input type="text" name="phone"></div></li>
+    <li class="application-question"><div class="application-label">Current company</div>
+      <div class="application-field"><input type="text" name="org"></div></li>
+    <li class="application-question"><div class="application-label">LinkedIn URL</div>
+      <div class="application-field"><input type="text" name="urls[LinkedIn]"></div></li>
+    <li class="application-question"><div class="application-label">GitHub URL</div>
+      <div class="application-field"><input type="text" name="urls[GitHub]"></div></li>
+    <li class="application-question"><div class="application-label">Portfolio URL</div>
+      <div class="application-field"><input type="text" name="urls[Portfolio]"></div></li>
+  </ul>
+  <ul>
+    <li class="application-question custom-question">
+      <div class="application-label">Are you legally authorized to work in the country where this job is located?<span class="required">✱</span></div>
+      <div class="application-field"><ul>
+        <li><label><input type="radio" name="cards[a1b2][field0]" value="Yes" required><span class="application-answer-alternative">Yes</span></label></li>
+        <li><label><input type="radio" name="cards[a1b2][field0]" value="No"><span class="application-answer-alternative">No</span></label></li>
+      </ul></div></li>
+    <li class="application-question custom-question">
+      <div class="application-label">Do you have an active security clearance?</div>
+      <div class="application-field"><ul>
+        <li><label><input type="radio" name="cards[a1b2][field1]" value="Yes"><span>Yes</span></label></li>
+        <li><label><input type="radio" name="cards[a1b2][field1]" value="No"><span>No</span></label></li>
+      </ul></div></li>
+    <li class="application-question custom-question">
+      <div class="application-label">When can you start?</div>
+      <div class="application-field"><input type="text" name="cards[a1b2][field2]"></div></li>
+  </ul>
+  <div class="application-additional"><div class="application-label">Additional information</div>
+    <textarea name="comments" placeholder="Add a cover letter or anything else you want to share."></textarea></div>
+  <div class="eeo-section"><h4>Voluntary self-identification (U.S. EEO)</h4>
+    <div class="application-label">Gender</div>
+    <select name="eeo[gender]"><option value="">Select ...</option><option value="Female">Female</option>
+      <option value="Male">Male</option><option value="Decline to self-identify">Decline to self-identify</option></select>
+    <div class="application-label">Pronouns</div>
+    <input type="text" name="eeo[pronouns]"></div>
+  <div class="consent"><label><input type="checkbox" name="consent[privacy]" value="1"> I agree to the privacy policy and consent to the processing of my data.</label></div>
+  <button type="submit" class="template-btn-submit">Submit application</button>
+</form></div>
+</body>
+</html>

@@ -1,0 +1,90 @@
+# Candidate profile (EXAMPLE -- placeholders only).
+# Copy to profiles/candidate_profile.yaml (`job-agent init`) and fill in ONLY
+# verified facts. Every résumé / cover-letter / application claim must trace
+# back to a fact below. The real file is git-ignored; never commit it.
+schema_version: 1
+
+personal:
+  full_name: "<Your Full Name>"
+  email: "<you@example.com>"
+  phone: "<+1 555 555 5555>"
+  location: "<City, ST>"
+  linkedin_url: null
+  portfolio_url: null
+  github_url: null
+
+summary: null   # optional verified one-line summary; otherwise generated from facts
+
+education:
+  - id: edu_masters
+    institution: "<University Name>"
+    degree: "<Master of Science>"
+    field: "<Field of Study>"
+    location: "<City, ST>"
+    start: "<Fall 2025>"
+    end: "<May 2027>"
+    expected: true
+    gpa: "<3.xx/4.00>"
+    facts: []
+  - id: edu_bachelors
+    institution: "<University Name>"
+    degree: "<Bachelor of Technology>"
+    field: "<Field of Study>"
+    location: "<City, Country>"
+    start: "<June 2021>"
+    end: "<June 2025>"
+    expected: false
+    gpa: "<x.xx/10>"
+    facts: []
+
+experience:
+  - id: exp_example_internship
+    employer: "<Employer Name>"
+    title: "<Exact Title As Held>"
+    team: "<Team / Division>"
+    location: "<City, ST>"
+    dates: "<Summer 2026>"          # verbatim; never invent months
+    employment_type: internship
+    facts:
+      - id: example_fact_1
+        text: "<Verified accomplishment sentence, e.g. Analyzed X using Y, contributing to approximately Z% ...>"
+        skills: ["<Skill>"]
+        keywords: ["<keyword>"]
+        metrics: []                  # list any numbers that appear verbatim in text, e.g. ["40%"]
+
+projects: []
+certifications: []
+
+# Only skills you can evidence. Never add a skill just because a job asks for it.
+skills:
+  - "<Skill 1>"
+  - "<Skill 2>"
+
+preferences:
+  target_roles: ["<Target Role>"]
+  avoid_focus: ["<e.g. competitive programming>"]
+  preferred_themes: ["<e.g. AI + business>"]
+  salary_min_base: null
+  salary_currency: USD
+  relocation: null
+  preferred_locations: []
+
+# Tri-state: null = unknown. The agent NEVER guesses these and routes every
+# legal / eligibility question to you for review. Fill in only what you have
+# verified (ideally with your school's international student office).
+work_authorization:
+  current_status: null
+  authorized_to_work_in_us_now: null
+  authorized_for_internship_now: null
+  authorized_for_full_time_after_graduation: null
+  requires_sponsorship_now: null
+  requires_sponsorship_future: null
+  us_citizen: null
+  us_person_for_export_control: null
+  security_clearance: null
+  notes: null
+  last_verified: null
+
+# Answers YOU have confirmed for recurring application questions. Legal
+# declarations here are still shown to you for approval before any submission.
+verified_answers: []

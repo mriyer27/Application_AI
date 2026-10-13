@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Small synthetic form used for the approval/submission flow tests. -->
+<h1>Apply: Data Analyst</h1>
+<form id="application" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required></div>
+  <div><label for="email">Email *</label><input id="email" type="email" name="email" required></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div><label for="resume">Resume *</label><input type="file" id="resume" name="resume" accept=".pdf" required></div>
+  <div><label for="source">How did you hear about us?</label>
+    <select id="source" name="source"><option value="">Select...</option><option>LinkedIn</option>
+      <option>Company careers page</option></select></div>
+  <div><label for="sponsor">Will you now or in the future require visa sponsorship? *</label>
+    <select id="sponsor" name="sponsorship" required><option value="">--</option><option>Yes</option>
+      <option>No</option></select></div>
+  <div><label><input type="checkbox" id="certify" name="certify" value="1" required> I certify that the information above is accurate.</label></div>
+  <button type="submit" id="submit-btn">Submit application</button>
+</form>
+</body>
+</html>

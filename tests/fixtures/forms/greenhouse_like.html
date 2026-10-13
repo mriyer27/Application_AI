@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Job Application for Product Analyst at Fixture Labs</title>
+<style>.visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}</style></head>
+<body>
+<!-- Synthetic page using Greenhouse-style field names (fixture; not a copy of any real page). -->
+<div id="app_body">
+<h1 class="app-title">Product Analyst</h1>
+<form id="application_form" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div class="field"><label for="first_name">First Name <span class="asterisk">*</span></label>
+    <input type="text" id="first_name" name="job_application[first_name]" aria-required="true"></div>
+  <div class="field"><label for="last_name">Last Name <span class="asterisk">*</span></label>
+    <input type="text" id="last_name" name="job_application[last_name]" aria-required="true"></div>
+  <div class="field"><label for="email">Email <span class="asterisk">*</span></label>
+    <input type="text" id="email" name="job_application[email]" aria-required="true"></div>
+  <div class="field"><label for="phone">Phone</label>
+    <input type="text" id="phone" name="job_application[phone]"></div>
+  <div class="field"><label for="job_application_location">Location (City)</label>
+    <input type="text" id="job_application_location" name="job_application[location]"></div>
+  <div class="field"><label for="resume_input">Resume/CV <span class="asterisk">*</span></label>
+    <button type="button" class="attach">Attach</button>
+    <input type="file" class="visually-hidden" id="resume_input" name="job_application[resume]" aria-required="true"></div>
+  <div class="field"><label for="cover_input">Cover Letter</label>
+    <input type="file" class="visually-hidden" id="cover_input" name="job_application[cover_letter]"></div>
+  <div class="field"><label for="q0">LinkedIn Profile</label>
+    <input type="text" id="q0" name="job_application[answers_attributes][0][text_value]"></div>
+  <div class="field"><label for="q1">Website</label>
+    <input type="text" id="q1" name="job_application[answers_attributes][1][text_value]"></div>
+  <div class="field"><label for="q2">Are you legally authorized to work in the United States? <span class="asterisk">*</span></label>
+    <select id="q2" name="job_application[answers_attributes][2][boolean_value]" aria-required="true">
+      <option value="">--</option><option value="1">Yes</option><option value="0">No</option></select></div>
+  <div class="field"><label for="q3">Will you now or in the future require sponsorship for employment visa status (e.g. H-1B visa status)? <span class="asterisk">*</span></label>
+    <select id="q3" name="job_application[answers_attributes][3][boolean_value]" aria-required="true">
+      <option value="">--</option><option value="1">Yes</option><option value="0">No</option></select></div>
+  <div class="field"><label for="q4">How did you hear about this job?</label>
+    <input type="text" id="q4" name="job_application[answers_attributes][4][text_value]"></div>
+  <div class="field"><label for="q5">What interests you about this role? <span class="asterisk">*</span></label>
+    <textarea id="q5" name="job_application[answers_attributes][5][text_value]" aria-required="true"></textarea></div>
+  <div class="field"><label for="school">School</label>
+    <input type="text" id="school" name="job_application[educations][][school_name]"></div>
+  <div class="field"><label for="degree">Degree</label>
+    <input type="text" id="degree" name="job_application[educations][][degree]"></div>
+  <div class="field"><label for="discipline">Discipline</label>
+    <input type="text" id="discipline" name="job_application[educations][][discipline]"></div>
+  <div id="eeoc_fields">
+    <h3>U.S. Equal Employment Opportunity Information (voluntary self-identification)</h3>
+    <div class="field"><label for="gender">Gender</label>
+      <select id="gender" name="job_application[gender]"><option value="">Please select</option>
+        <option value="1">Male</option><option value="2">Female</option><option value="3">Decline To Self Identify</option></select></div>
+    <div class="field"><label for="race">Race</label>
+      <select id="race" name="job_application[race]"><option value="">Please select</option>
+        <option value="1">Asian</option><option value="2">Decline To Self Identify</option></select></div>
+    <div class="field"><label for="veteran">Veteran Status</label>
+      <select id="veteran" name="job_application[veteran_status]"><option value="">Please select</option>
+        <option value="1">I am not a protected veteran</option><option value="3">I don't wish to answer</option></select></div>
+    <div class="field"><label for="disability">Disability Status</label>
+      <select id="disability" name="job_application[disability_status]"><option value="">Please select</option>
+        <option value="1">No, I don't have a disability</option><option value="3">I don't wish to answer</option></select></div>
+  </div>
+  <input type="hidden" name="job_application[mapped_url_token]" value="fixture">
+  <input type="submit" id="submit_app" value="Submit Application">
+</form>
+</div>
+</body>
+</html>

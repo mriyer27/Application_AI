@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m with context %}
+{% block title %}Controls{% endblock %}
+{% block content %}
+<h1>Controls</h1>
+
+<section class="card">
+  <h2>Automation</h2>
+  <p>
+    {% if status.paused %}{{ m.badge("paused", "warn") }}{% if status.paused_reason %} {{ status.paused_reason }}{% endif %}{% else %}{{ m.badge("active", "ok") }}{% endif %}
+    · daemon {% if status.daemon_running %}{{ m.badge("running", "ok") }}{% else %}{{ m.badge("not running") }}{% endif %}
+    <span class="small muted">heartbeat {{ status.heartbeat_at|ago }}</span>
+  </p>
+  {% if status.paused %}
+  <form method="post" action="/controls/resume" class="inline-form">
+    {{ m.csrf() }}
+    {{ m.confirm_box("Resume scheduled automation") }}
+    <button type="submit" class="primary">Resume</button>
+  </form>
+  {% else %}
+  <form method="post" action="/controls/pause" class="stack">
+    {{ m.csrf() }}
+    <label>Reason (optional) <input name="reason" maxlength="200"></label>
+    {{ m.confirm_box("Pause all scheduled tasks") }}
+    <button type="submit" class="danger">Pause automation</button>
+  </form>
+  {% endif %}
+  <p class="small muted">Pausing stops scheduled runs. Tasks you start here still run.</p>
+</section>
+
+<section class="card">
+  <h2>Run a task now</h2>
+  {% if queued %}<p class="small">{{ queued }} dashboard task(s) queued or running.</p>{% endif %}
+  {% if tasks %}
+  <ul class="list">
+    {% for t in tasks %}
+    <li class="task-row">
+      <div>
+        <strong>{{ t.name|humanize }}</strong>
+        <div class="small muted">{{ t.description }}{% if t.state and t.state.last_run_at %} · last {{ t.state.last_status or "?" }} {{ t.state.last_run_at|ago }}{% endif %}</div>
+      </div>
+      {% if not t.available %}
+      <span class="badge">not available yet</span>
+      {% elif t.locked %}
+      {{ m.badge("running", "warn") }}
+      {% else %}
+      <form method="post" action="/controls/run">
+        {{ m.csrf() }}
+        <input type="hidden" name="task" value="{{ t.name }}">
+        <button type="submit">Run</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No dashboard tasks are registered.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Errors needing attention</h2>
+  {% if errors %}
+  <ul class="list">
+    {% for e in errors %}
+    <li>
+      {{ m.status_badge(e.error_kind) }} <strong>{{ e.component }}</strong> <span class="small muted">#{{ e.id }} · {{ e.occurred_at|localtime }}</span>
+      <div class="pre-wrap">{{ e.message }}</div>
+      {% if e.human_action %}<div class="small">Next step: {{ e.human_action }}</div>{% endif %}
+      <form method="post" action="/errors/{{ e.id }}/resolve" class="inline-form">
+        {{ m.csrf() }}
+        {{ m.confirm_box("handled") }}
+        <button type="submit">Mark resolved</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No unresolved errors.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Recent runs</h2>
+  {% if runs %}
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Task</th><th>Status</th><th>Started</th><th>Trigger</th><th></th></tr></thead>
+    <tbody>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.task_name|humanize }}{% if r.attempt > 1 %} <span class="small muted">(attempt {{ r.attempt }})</span>{% endif %}</td>
+      <td>{{ m.status_badge(r.status) }}{% if r.error_message %}<div class="small">{{ r.error_message[:200] }}</div>{% endif %}</td>
+      <td class="small">{{ r.started_at|localtime }}{% if r.finished_at %}<br>finished {{ r.finished_at|ago }}{% endif %}</td>
+      <td class="small">{{ r.trigger }}</td>
+      <td>
+        {% if r.retry_allowed %}
+        <form method="post" action="/controls/retry">
+          {{ m.csrf() }}
+          <input type="hidden" name="run_uid" value="{{ r.run_uid }}">
+          <button type="submit">Retry</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">No runs recorded yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

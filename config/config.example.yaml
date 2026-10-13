@@ -1,0 +1,204 @@
+# job-agent configuration (example). Copy to config/config.yaml (`job-agent init`)
+# and edit. This file must NEVER contain secrets -- those go in .env.
+# Relative paths are resolved against JOB_AGENT_HOME (default: current directory).
+config_version: 1
+
+app:
+  mode: supervised            # the only mode: consequential actions need your approval
+  timezone: America/New_York  # used for schedules and report dates
+  data_dir: data
+  reports_dir: reports
+  documents_dir: documents
+  logs_dir: logs
+  profile_path: profiles/candidate_profile.yaml
+
+database:
+  path: data/job_agent.db
+
+logging:
+  level: INFO
+  max_bytes: 5000000
+  backup_count: 5
+
+search:
+  # Titles you are targeting. Matching is case-insensitive and tolerant of
+  # seniority prefixes such as "Associate" / "Junior".
+  target_titles:
+    - AI Analyst
+    - Business Analyst
+    - AI Strategy Consultant
+    - Technology Strategy Consultant
+    - Data Analyst
+    - Product Analyst
+    - Business Intelligence Analyst
+    - AI Business Analyst
+    - AI Transformation Consultant
+    - Technology Consulting Analyst
+    - Analytics Consultant
+    - Business Systems Analyst
+    - Digital Transformation Analyst
+    - Operations Analyst
+    - Product Manager
+    - Associate Product Manager
+    - AI Product Analyst
+    - AI Product Manager
+  # Additional phrases that make a title relevant.
+  title_keywords:
+    - analyst
+    - analytics
+    - strategy
+    - consultant
+    - product
+    - insights
+    - business intelligence
+    - transformation
+  # Titles containing these words are skipped (seniority / pure engineering).
+  exclude_title_keywords:
+    - senior
+    - sr
+    - staff
+    - principal
+    - lead
+    - director
+    - head of
+    - vice president
+    - vp
+    - manager, analytics   # people-manager roles
+    - software engineer
+    - engineering manager
+    - security engineer
+    - site reliability
+    - machine learning engineer
+    - research scientist
+    - phd
+  locations:
+    - United States
+    - USA
+    - US
+    - Remote
+    - New York
+    - NY
+  remote_preference: any      # remote_only | remote_or_hybrid | any
+  employment_types: [full_time, unknown]   # add "internship" to include internships
+  experience_levels: [entry, new_grad, associate, early_career, unknown]
+  max_years_experience: 3     # jobs explicitly requiring more years are filtered out
+  industries: []             # reserved: not used yet
+  target_employers: []        # employers to rank slightly higher, e.g. ["Capco"]
+  max_jobs_per_run: 300
+  max_posting_age_days: 45
+
+sources:
+  # Public, documented job-board APIs only. No scraping behind logins, no
+  # CAPTCHA bypassing. Each entry is the employer's public board identifier.
+  user_agent: "job-agent/0.1 (personal job search assistant)"
+  request_timeout_seconds: 20
+  min_request_interval_seconds: 1.0
+  max_retries: 3
+  max_pages: 20
+  greenhouse:
+    enabled: true
+    boards: [capco, databricks, datadog, robinhood, affirm, chime, brex, betterment, oscar, flatironhealth,
+             duolingo, asana, squarespace, toast, instacart, lyft, coinbase, okta, mongodb, samsara]
+  lever:
+    enabled: true
+    companies: [palantir, spotify, whoop]
+  ashby:
+    enabled: true
+    boards: [ramp, notion, plaid, mercury, deel, vanta]
+
+scoring:
+  weights:                    # relative weights; normalized to sum to 100
+    career_interest: 25
+    skills: 25
+    experience_level: 15
+    domain_relevance: 10      # AI / business / analytics / product relevance
+    location: 10
+    compensation: 10
+    employer_growth: 5
+  shortlist_threshold: 70
+  strong_threshold: 80
+  possible_threshold: 60
+  salary_target_base: 90000   # a ranking factor, not an exclusion rule
+  use_llm: true               # enrich scoring with local-LLM analysis when available
+  max_llm_jobs_per_run: 10    # CPU inference is slow; analyze only the top N per run
+
+llm:
+  enabled: true
+  provider: ollama
+  base_url: http://127.0.0.1:11434   # must be localhost (local-first policy)
+  model: qwen2.5:7b-instruct          # see docs/local-llm.md (`job-agent llm recommend`)
+  fallback_models: [qwen2.5:3b-instruct, llama3.2:3b]
+  timeout_seconds: 300               # CPU-only 7B models need minutes; raise to 600 if runs time out
+  max_retries: 2
+  temperature: 0.1
+  num_ctx: 8192
+  max_input_chars: 12000
+
+documents:
+  formats: [docx, pdf]
+  generate_cover_letter: true
+  max_bullets_per_role: 5
+  use_llm_rewording: true     # rewording is validated against verified facts
+  auto_prepare_top_n: 3       # after scheduled runs, draft documents for top new shortlisted jobs (no LLM)
+
+applications:
+  require_approval: true            # cannot be disabled
+  browser_submission_enabled: false # approved applications are submitted by you unless enabled
+  headless: true
+  browser_timeout_seconds: 45
+  max_concurrent_browsers: 1
+  approval_expiry_hours: 72
+  screenshots: true
+
+gmail:
+  enabled: false                    # enable after completing docs/gmail-setup.md
+  credentials_path: data/secrets/gmail_credentials.json
+  token_path: data/secrets/gmail_token.json
+  scopes: [https://www.googleapis.com/auth/gmail.readonly]
+  query: "newer_than:14d -category:promotions -category:social"
+  max_messages_per_sync: 100
+  body_char_limit: 4000             # bodies are processed in memory, not stored
+  store_snippets: true
+
+followups:
+  application_no_response_days: 8
+  recruiter_reply_days: 2
+  stale_application_days: 30
+  interview_reminder_hours: 24      # reserved: interview times are not read from emails yet
+  max_followups_per_application: 2
+
+reporting:
+  top_matches: 15
+  keep_days: 365              # reserved: old reports are never deleted automatically
+
+dashboard:
+  host: 127.0.0.1                   # loopback only by default
+  port: 8765
+  session_max_age_minutes: 720
+  login_attempts_per_minute: 5
+  allow_non_localhost: false        # see docs/remote-access.md before changing
+  secure_cookies: false             # true when served over HTTPS (tailscale serve)
+  allowed_hosts: []                 # extra Host names, e.g. ["laptop.your-tailnet.ts.net"]
+
+scheduler:
+  enabled: true
+  tasks:                            # cron fields are in app.timezone
+    discover_and_score: {cron: "15 7,16 * * *"}
+    email_sync: {interval_minutes: 30, enabled: false}
+    followups: {cron: "0 8 * * *"}
+    report: {cron: "30 21 * * *"}
+    health: {interval_minutes: 60}
+  lock_timeout_minutes: 90
+  max_retries: 2
+  retry_backoff_seconds: 120
+  misfire_grace_minutes: 60
+
+permissions:
+  read_jobs: true
+  generate_documents: true
+  prepare_applications: true
+  submit_applications: true   # still always requires your per-application approval
+  read_emails: true
+  draft_emails: true
+  send_emails: false          # not implemented; drafts only
+  change_config: false

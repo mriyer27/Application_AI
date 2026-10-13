@@ -1,0 +1,164 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "a0000000-0000-4000-8000-00000000000a",
+      "title": "AI Analyst",
+      "department": "Operations",
+      "team": "Strategy",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [
+        {
+          "location": "Remote (US)",
+          "address": {
+            "postalAddress": {
+              "addressCountry": "United States"
+            }
+          }
+        }
+      ],
+      "publishedAt": "2026-09-25T17:12:35.753+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000a",
+      "applyUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000a/application",
+      "descriptionHtml": "<h1><strong>About Example Fin</strong></h1><p>We build finance software.</p><h2>What You Need</h2><ul><li><p>Minimum 1 year of experience in analytics</p></li><li><p>Python and SQL</p></li></ul><h2>Nice to Haves</h2><ul><li><p>LLM tooling</p></li></ul><h2>Benefits</h2><ul><li><p>Fertility HRA (up to $10,000 per year)</p></li></ul>",
+      "descriptionPlain": "Synthetic.",
+      "compensation": {
+        "compensationTierSummary": "$100K – $130K • Offers Equity",
+        "scrapeableCompensationSalarySummary": "$100K – $130K • Offers Equity",
+        "compensationTiers": [],
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 100000,
+            "maxValue": 130000
+          }
+        ]
+      }
+    },
+    {
+      "id": "a0000000-0000-4000-8000-00000000000b",
+      "title": "Account Executive",
+      "department": "Operations",
+      "team": "Strategy",
+      "employmentType": "FullTime",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [],
+      "publishedAt": "2026-09-25T17:12:35.753+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000b",
+      "applyUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000b/application",
+      "descriptionHtml": "<p>Synthetic.</p>",
+      "descriptionPlain": "Synthetic.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "summaryComponents": []
+      }
+    },
+    {
+      "id": "a0000000-0000-4000-8000-00000000000c",
+      "title": "Product Analyst Intern",
+      "department": "Operations",
+      "team": "Strategy",
+      "employmentType": "Intern",
+      "location": "New York, NY (HQ)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [],
+      "publishedAt": "2026-09-25T17:12:35.753+00:00",
+      "isListed": false,
+      "isRemote": false,
+      "workplaceType": "Hybrid",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000c",
+      "applyUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000c/application",
+      "descriptionHtml": "<p>Synthetic.</p>",
+      "descriptionPlain": "Synthetic.",
+      "compensation": {
+        "compensationTierSummary": null,
+        "summaryComponents": []
+      }
+    },
+    {
+      "id": "a0000000-0000-4000-8000-00000000000d",
+      "title": "Business Operations Analyst",
+      "department": "Operations",
+      "team": "Strategy",
+      "employmentType": "FullTime",
+      "location": "Remote (US)",
+      "shouldDisplayCompensationOnJobPostings": true,
+      "secondaryLocations": [],
+      "publishedAt": "2026-09-25T17:12:35.753+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "address": {
+        "postalAddress": {
+          "addressRegion": "NY",
+          "addressCountry": "USA",
+          "addressLocality": "New York"
+        }
+      },
+      "jobUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000d",
+      "applyUrl": "https://jobs.ashbyhq.com/examplefin/a0000000-0000-4000-8000-00000000000d/application",
+      "descriptionHtml": "<p>Synthetic.</p>",
+      "descriptionPlain": "Synthetic.",
+      "compensation": {
+        "compensationTierSummary": "$90K – $110K • Offers Commission • Total OTE with 70/30 split",
+        "scrapeableCompensationSalarySummary": "$90K – $110K • Offers Commission • Total OTE with 70/30 split",
+        "compensationTiers": [],
+        "summaryComponents": [
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 90000,
+            "maxValue": 110000
+          },
+          {
+            "compensationType": "Commission",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 20000,
+            "maxValue": 30000
+          }
+        ]
+      }
+    }
+  ]
+}

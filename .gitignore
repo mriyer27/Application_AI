@@ -1,0 +1,66 @@
+# ---- Secrets & credentials (never commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+client_secret*.json
+token*.json
+*_token.json
+*.token
+secrets/
+data/secrets/
+
+# ---- Personal data (never commit) ----
+profiles/*
+!profiles/candidate_profile.example.yaml
+config/config.yaml
+config/*.local.yaml
+
+# ---- Runtime data, generated output ----
+data/*
+!data/.gitkeep
+reports/*
+!reports/.gitkeep
+documents/*
+!documents/.gitkeep
+logs/
+*.log
+*.log.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.xlsx
+!tests/fixtures/**/*.xlsx
+*.docx
+*.pdf
+screenshots/
+playwright-report/
+test-results/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

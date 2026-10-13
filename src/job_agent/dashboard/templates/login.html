@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Sign in</h1>
+  {% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ login_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>Username
+      <input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="256" required>
+    </label>
+    <label>Password
+      <input type="password" name="password" autocomplete="current-password" maxlength="1024" required>
+    </label>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+  <p class="muted small">Private dashboard. Access it only from your own devices over localhost or your private VPN.</p>
+</section>
+{% endblock %}
