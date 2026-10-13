@@ -99,6 +99,9 @@ def test_max_followups_per_application_and_one_open_per_type(ctx, make_job):
     assert "application_no_response" not in review_followups(ctx, now=NOW + timedelta(days=5)).by_type
 
     set_followup_status(ctx, first["id"], F.COMPLETED, actor="cli")
+    # The status change is stamped with the real clock; pin it to the test clock.
+    db.execute("UPDATE followups SET completed_at = ?, updated_at = ? WHERE id = ?",
+               (to_iso(NOW), to_iso(NOW), first["id"]))
     later = NOW + timedelta(days=9)
     s = review_followups(ctx, now=later)
     assert s.by_type.get("application_no_response") == 1

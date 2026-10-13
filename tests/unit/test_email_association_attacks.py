@@ -580,7 +580,8 @@ def test_unverified_cap_constant_matches():
 GH_AUTH = gmail_ar("us.greenhouse-mail.io", dkim_domain="greenhouse-mail.io")
 
 
-@pytest.mark.parametrize("employer,other", [("Mercury", "Blue Mercury"), ("Express", "American Express")])
+@pytest.mark.parametrize("employer,other", [("Mercury", "Blue Mercury"), ("Express", "American Express"),
+                                            ("Mercury", "blue mercury")])  # the sender picks the case
 def test_ats_mail_from_a_longer_company_ending_in_the_employer_name(gctx, make_job, employer, other):
     """E1: 'Blue Mercury' is not Mercury, even on the ATS the Mercury job was posted on."""
     db = gctx.db
@@ -777,6 +778,10 @@ def test_names_employer_checks_the_word_before():
     assert not associate.names_employer("Вlue Mercury", "Mercury")  # Cyrillic В
     assert not associate.names_employer("蓝 Mercury", "Mercury")  # another script's word before
     assert associate.employer_mention("Thanks from Blue Mercury", "Mercury") == "other"
+    # subjects / display names: capitalization is the sender's choice
+    assert associate.employer_mention("Your application to blue mercury", "Mercury", header=True) == "other"
+    assert associate.employer_mention("Application to Mercury received", "Mercury", header=True) == "named"
+    assert associate.employer_mention("Mercury values your time.", "Mercury") == "named"  # running text
     assert associate.employer_mention("Thanks from Acme", "Mercury") == "none"
     for text in ("Thank You For Applying To Mercury", "Welcome to Express!", "Join Mercury’s team",
                  "Hi Test,\nMercury will review it.", "Your Data Analyst application at Mercury",
@@ -805,7 +810,8 @@ def test_title_extraction_beyond_the_common_phrasings():
 
 
 def test_platform_tenant_helpers():
-    assert associate.url_tenant("https://boards.greenhouse.io/acmeanalytics/jobs/101") == ("greenhouse", "acmeanalytics")
+    assert associate.url_tenant("https://boards.greenhouse.io/acmeanalytics/jobs/101") == ("greenhouse",
+                                                                                          "acmeanalytics")
     assert associate.url_tenant("https://boards.greenhouse.io/embed/job_app?for=acme&token=1") == ("greenhouse", "acme")
     assert associate.url_tenant("https://acme.wd5.myworkdayjobs.com/en-US/External/job/1") == ("workday", "acme")
     assert associate.url_tenant("https://careers-acme.icims.com/jobs/1234/job") == ("icims.com", "acme")

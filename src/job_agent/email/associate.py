@@ -98,6 +98,12 @@ _PRECEDER_OK = _FOLLOWER_OK | frozenset({
     "apply", "applying", "applied", "considering", "choosing", "chose", "congratulations", "into", "within",
     "as", "like", "fw", "aw", "wg", "important", "action", "required", "feedback", "decision",
 })
+#: Lowercase words that may follow a name in a subject / display name ("Application to Mercury received",
+#: "Mercury's team" -> "Mercury s team").
+_HEADER_FOLLOWER_OK = frozenset({
+    "received", "submitted", "confirmation", "confirmed", "invitation", "invite", "reminder", "here", "today",
+    "now", "s", "x", "letter", "news", "message", "decision", "feedback", "inc", "llc", "ltd", "corp",
+})
 #: Small words that join two names into one ("Bank of America", "Procter & Gamble" -> "Procter and Gamble").
 _NAME_CONNECTORS = frozenset({"and", "of", "de", "du", "la", "le", "y", "e", "van", "von", "der", "den"})
 #: Labels / local-part / URL words that say nothing about which company a platform account belongs to.
@@ -238,44 +244,53 @@ _WORDS_BEFORE = re.compile(r"(?:([A-Za-z][A-Za-z0-9]*)[ \t]+)?([A-Za-z][A-Za-z0-
 _WORDS_AFTER = re.compile(r"(?:[ \t]+|-)([A-Za-z][A-Za-z0-9]*)(?:[ \t]+([A-Za-z][A-Za-z0-9]*))?")
 
 
-def _foreign_word(word: str | None, allowed: frozenset[str] | set[str]) -> bool:
-    """A capitalized word that is not a known neighbour of a company name."""
-    return bool(word) and word[0].isupper() and word.lower() not in allowed  # type: ignore[index]
+def _foreign_word(word: str | None, allowed: frozenset[str] | set[str], *, any_case: bool = False) -> bool:
+    """A capitalized word (any word with ``any_case``) that is not a known neighbour of a company name."""
+    if not word:
+        return False
+    return (any_case or word[0].isupper()) and word.lower() not in allowed
 
 
 def _mention_kind(hay: str, start: int, end: int, *, before_ok: set[str], after_ok: set[str],
-                  title_norm: str) -> str:
-    """``"named"`` or ``"other"`` (part of a longer company name) for one match of the employer's name."""
+                  title_norm: str, any_case: bool = False) -> str:
+    """``"named"`` or ``"other"`` (part of a longer company name) for one match of the employer's name.
+
+    In running text only *capitalized* neighbours can extend a name ("Mercury values your time" is fine).
+    In a subject or display name (``any_case``) the sender picks the capitalization, so any unknown
+    neighbouring word counts ("blue mercury").
+    """
     before = hay[max(0, start - 80):start]
     words = _WORDS_BEFORE.search(before)
     title_before = bool(title_norm) and normalize_text(before).endswith(title_norm)
     if words and not title_before:
         w2, w1 = words.group(1), words.group(2)
-        if _foreign_word(w1, before_ok):
+        if _foreign_word(w1, before_ok, any_case=any_case):
             return "other"  # "Blue Mercury", "American Express"
-        if w1.lower() in _NAME_CONNECTORS and _foreign_word(w2, before_ok):
+        if w1.lower() in _NAME_CONNECTORS and _foreign_word(w2, before_ok, any_case=any_case):
             return "other"  # "Bank of America", "Procter and Gamble"
     rest = hay[end:]
     after = _WORDS_AFTER.match(rest)
     if after is None:
         return "named"  # end of text, punctuation, possessive, line break
     w1, w2 = after.group(1), after.group(2)
-    if w1.lower() in _NAME_CONNECTORS and _foreign_word(w2, after_ok):
+    if w1.lower() in _NAME_CONNECTORS and _foreign_word(w2, after_ok, any_case=any_case):
         return "other"  # "Ernst and Young" for Ernst
-    if not _foreign_word(w1, after_ok):
+    if not _foreign_word(w1, after_ok, any_case=any_case):
         return "named"  # "Mercury Careers", "Acme Analytics Inc", "Mercury is ..."
     if title_norm and normalize_text(rest[:len(title_norm) + 20]).startswith(title_norm):
         return "named"  # "Acme Analytics Business Analyst - application received"
     return "other"  # "Mercury Insurance": a longer company name
 
 
-def employer_mention(text: str | None, employer: str | None, *, title: str | None = None) -> str:
+def employer_mention(text: str | None, employer: str | None, *, title: str | None = None,
+                     header: bool = False) -> str:
     """How ``text`` refers to the employer: ``"named"``, ``"other"`` or ``"none"``.
 
     ``"other"`` means the name only appears inside a longer company name, before
     *or* after it ("Mercury Insurance", "Blue Mercury" for Mercury). Once a text
     names the longer company, its other bare mentions ("the Mercury team") are
-    taken to mean that company too.
+    taken to mean that company too. ``header=True`` for a subject or display name, whose
+    capitalization proves nothing.
     """
     tokens = normalize_employer(employer).split()
     if not tokens or len("".join(tokens)) < 3:
@@ -284,12 +299,13 @@ def employer_mention(text: str | None, employer: str | None, *, title: str | Non
     if not hay:
         return "none"
     own = set(normalize_text(employer).split())
-    after_ok = set(_FOLLOWER_OK | _LEGAL_FOLLOWERS) | own
+    after_ok = set(_FOLLOWER_OK | _LEGAL_FOLLOWERS) | own | (_HEADER_FOLLOWER_OK if header else set())
     before_ok = set(_PRECEDER_OK) | own
     title_norm = normalize_text(title)
     pattern = re.compile(r"(?<![A-Za-z0-9])" + r"[^A-Za-z0-9\n]{1,3}".join(re.escape(t) for t in tokens)
                          + r"(?![A-Za-z0-9])", re.I)
-    kinds = {_mention_kind(hay, m.start(), m.end(), before_ok=before_ok, after_ok=after_ok, title_norm=title_norm)
+    kinds = {_mention_kind(hay, m.start(), m.end(), before_ok=before_ok, after_ok=after_ok, title_norm=title_norm,
+                           any_case=header)
              for m in pattern.finditer(hay)}
     if "other" in kinds:
         return "other"
@@ -485,7 +501,8 @@ def title_status(target_title: str | None, employer: str | None, mentioned: list
         title_norm = normalize_text(target_title)
         base_norm = normalize_text(re.split(r"\s+[-\u2013|]\s+|\s*\(|,|\s+@\s+", target_title or "", maxsplit=1)[0])
         for norm in dict.fromkeys(n for n in (title_norm, base_norm) if len(n) >= 4):
-            if _direct_title_mention(normalize_text(subject), norm) or _direct_title_mention(normalize_text(body), norm):
+            if (_direct_title_mention(normalize_text(subject), norm)
+                    or _direct_title_mention(normalize_text(body), norm)):
                 matched = True
                 break
     if matched and others:
@@ -552,8 +569,8 @@ def _employer_score(target: dict[str, Any], *, from_domain: str | None, from_nam
                      f"sender domain {sender_reg} only resembles the employer's name")
 
     # 2. The employer's full name in the subject / sender name / body.
-    header_kinds = {employer_mention(subject, employer_raw, title=title),
-                    employer_mention(from_name, employer_raw, title=title)}
+    header_kinds = {employer_mention(subject, employer_raw, title=title, header=True),
+                    employer_mention(from_name, employer_raw, title=title, header=True)}
     in_header = "named" in header_kinds and "other" not in header_kinds
     body_kind = employer_mention(body, employer_raw, title=title)
     in_body = body_kind == "named"
