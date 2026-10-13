@@ -255,6 +255,10 @@ An email **never** changes, by itself:
 - an application with no record of a submission;
 - a correction between outcomes (e.g. `rejected` → `interview_requested`); only
   you can make those (`job-agent applications set-status`).
+- an application whose outcome you corrected yourself: after such a correction,
+  emails for that application only suggest changes (apply one with
+  `job-agent emails associate <id> <application-uid> --apply-status`), so a
+  misread thread cannot undo your correction.
 
 Every automatic change is recorded with `{"type": "email", gmail_message_id,
 subject, received_at, category}` as evidence (actor `email`). Everything else

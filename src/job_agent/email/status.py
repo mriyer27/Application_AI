@@ -117,6 +117,17 @@ def check_transition(current: PipelineState, category: EmailCategory, *, actor: 
     return target, None
 
 
+def _corrected_by_user(db: Database, application_id: int) -> bool:
+    """Did you ever override an outcome by hand (e.g. rejected -> interview_requested)?
+
+    After that, an email (possibly the same misread thread) must not silently undo your correction.
+    """
+    rows = db.query_all("SELECT from_status, to_status FROM application_events WHERE application_id = ? "
+                        "AND event_type = 'status_change' AND actor = ? AND from_status IS NOT NULL "
+                        "AND to_status IS NOT NULL", (application_id, USER_ACTOR))
+    return any((PipelineState(r["from_status"]), PipelineState(r["to_status"])) in USER_CORRECTIONS for r in rows)
+
+
 def apply_email_status(db: Database, *, application_id: int, association_id: int, category: EmailCategory,
                        evidence: dict[str, Any], actor: str, email_id: int) -> StatusOutcome:
     """Apply (or record why not) the status implied by an email. Caller decides eligibility."""
@@ -127,6 +138,9 @@ def apply_email_status(db: Database, *, application_id: int, association_id: int
     target, reason = check_transition(current, category, actor=actor,
                                       submission_attempts=int(row["submission_attempts"] or 0),
                                       submitted_at=row["submitted_at"])
+    if target is not None and actor != USER_ACTOR and _corrected_by_user(db, application_id):
+        target, reason = None, ("you corrected this application's status yourself, so emails only suggest "
+                                f"changes; {CONFIRM_YOURSELF}")
     if target is None:
         if reason and not reason.startswith("application already") and category in CATEGORY_TARGET:
             repo.audit(db, actor=actor, action="email_status_update_skipped", entity_type="application",

@@ -417,3 +417,28 @@ def test_mark_email_handled(gctx):
     assert mark_email_handled(gctx, email_id) is True
     assert mark_email_handled(gctx, email_id) is False
     assert _email(gctx.db, "m-recruiter-1")["requires_attention"] == 0
+
+
+def test_email_never_undoes_your_status_correction(gctx, make_job):
+    """r3: after you correct an email-set outcome, a later (mis)classified email must not flip it back."""
+    from job_agent.email.status import apply_email_status
+
+    db = gctx.db
+    job_id = make_job(employer="Umbrella Health", employer_normalized="umbrella health",
+                      job_url="https://careers.umbrellahealth.com/jobs/77")
+    app_id = make_application(db, job_id, "submitted", submitted_at=SUBMITTED_AT)
+    sync_gmail(gctx, service=fake_service("s-domain-reject-1"))
+    assert repo.get_application(db, app_id)["status"] == "rejected"
+    repo.transition_application(db, app_id, S.INTERVIEW_REQUESTED, actor="user", details={"note": "misread email"})
+
+    email_id = _email(db, "s-domain-reject-1")["id"]
+    assoc_id = _assoc(db, email_id)[0]["id"]
+    evidence = {"type": "email", "gmail_message_id": "s-domain-reject-1"}
+    auto = apply_email_status(db, application_id=app_id, association_id=assoc_id, category=EmailCategory.REJECTION,
+                              evidence=evidence, actor="email", email_id=email_id)
+    assert auto.applied is None and "corrected this application's status yourself" in auto.skipped_reason
+    assert repo.get_application(db, app_id)["status"] == "interview_requested"
+
+    mine = apply_email_status(db, application_id=app_id, association_id=assoc_id, category=EmailCategory.REJECTION,
+                              evidence=evidence, actor="user", email_id=email_id)
+    assert mine.applied == S.REJECTED  # you can still apply it yourself
