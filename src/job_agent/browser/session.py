@@ -16,6 +16,15 @@ every frame in it and of any window it opens, before the request is sent:
   files from the job's ATS hosts / ``policy.ATS_ASSET_HOSTS``); before that,
   third-party GETs needed to render the page are allowed unless
   ``block_third_party_requests`` (strict mode, used by the tests) is set;
+* **data-loss prevention** from the moment filling begins until the approved
+  click, for every host *including the job's own*: every navigation of the
+  page or of any frame in it (GET form posts, ``location`` changes, iframe
+  loads) is aborted -- a top-level one also stops the session; a URL that was
+  requested or referenced by the page before anything was typed may be fetched
+  again; any other request is aborted if its decoded URL or body contains a
+  typed value or a chunk of an uploaded file (``dlp.ProtectedData``), if it has
+  a query string, if it is not a static asset (fetch / XHR / beacon /
+  EventSource...), or once ``NEW_ASSET_BUDGET`` new asset URLs were loaded;
 * WebSockets are always refused (``context.route_web_socket``), new windows /
   popups are closed and every request from them is aborted;
 * server-side redirects are not interceptable in Playwright, so they are
@@ -28,6 +37,9 @@ Not covered, because Chromium does not route them through Playwright:
 speculation-rules prefetch/prerender, WebSockets opened inside Web Workers,
 DNS prefetches and WebRTC. Closing those needs network-level enforcement (a
 filtering proxy); SharedWorkers are disabled outright (``CHROMIUM_ARGS``).
+Also not covered: a script that encodes typed data in a form the content check
+does not decode (e.g. reversed, as character codes) in the *path* of one of
+the ``NEW_ASSET_BUDGET`` new asset URLs allowed after filling began.
 
 At most ``max_concurrent`` sessions run per process (a semaphore). The Playwright
 sync API must not be used from inside an asyncio event loop; call it from a
@@ -56,8 +68,9 @@ from job_agent.browser.detection import (
     form_still_present,
     not_yet_submitted_wording,
 )
+from job_agent.browser.dlp import ProtectedData
 from job_agent.browser.errors import BrowserUnavailable, ChallengeDetected, NavigationBlocked, PageUnavailable
-from job_agent.browser.forms import FormField, SubmitControl
+from job_agent.browser.forms import FormField, SubmitControl, match_option
 from job_agent.browser.policy import NavigationPolicy
 from job_agent.errors import RecoverableError
 from job_agent.logging_config import get_logger
@@ -293,6 +306,63 @@ def launch_chromium(pw: "Playwright", *, headless: bool) -> "Browser":
 _SAFE_METHODS = frozenset({"GET", "HEAD"})
 #: Resource types that may be fetched from ``policy.asset_request_allowed`` hosts after filling began.
 _STATIC_TYPES = frozenset({"stylesheet", "image", "media", "font", "script", "texttrack"})
+#: New (not requested / referenced before filling began) asset URLs allowed before the approved click.
+NEW_ASSET_BUDGET = 16
+
+#: Every URL the document references before anything is typed (elements, inline styles, same-origin CSS).
+#: Fetching one of these later cannot carry typed data, so it is exempt from the data-loss checks.
+_REFERENCED_URLS_JS = r"""() => {
+  const out = new Set();
+  const add = (u, base) => {
+    if (!u || out.size >= 5000) return;
+    try {
+      const x = new URL(String(u).trim(), base || document.baseURI);
+      if (x.protocol === 'http:' || x.protocol === 'https:') { x.hash = ''; out.add(x.href); }
+    } catch (e) {}
+  };
+  const cssUrls = (text, base) => {
+    const re = /url\(\s*(['"]?)([^'")]+)\1\s*\)/g;
+    let m;
+    while ((m = re.exec(text || '')) && out.size < 5000) add(m[2], base);
+  };
+  for (const el of document.querySelectorAll('[src], [href], [poster], [data], [srcset], [imagesrcset], [style]')) {
+    for (const a of ['src', 'href', 'poster', 'data']) if (el.hasAttribute(a)) add(el.getAttribute(a));
+    for (const a of ['srcset', 'imagesrcset']) {
+      const v = el.getAttribute(a);
+      if (v) v.split(',').forEach(part => add(part.trim().split(/\s+/)[0]));
+    }
+    if (el.hasAttribute('style')) cssUrls(el.getAttribute('style'));
+    if (out.size >= 5000) break;
+  }
+  const walk = (rules, base, depth) => {
+    for (const r of Array.from(rules || [])) {
+      try {
+        if (r.styleSheet && depth < 4) {
+          add(r.href, base);
+          try { walk(r.styleSheet.cssRules, r.styleSheet.href || base, depth + 1); } catch (e) {}
+        }
+        if (r.cssRules) walk(r.cssRules, base, depth + 1);
+        cssUrls(r.cssText, base);
+      } catch (e) {}
+    }
+  };
+  for (const sheet of Array.from(document.styleSheets)) {
+    try { walk(sheet.cssRules, sheet.href || document.baseURI, 0); } catch (e) {}  // cross-origin: not readable
+  }
+  return Array.from(out);
+}"""
+
+
+def _url_key(url: str) -> str:
+    """A URL without its fragment (what the request actually fetches)."""
+    return url.split("#", 1)[0]
+
+
+def _post_body(request: "Request") -> bytes | None:
+    try:
+        return request.post_data_buffer
+    except Exception:  # noqa: BLE001 - body not available for this request type
+        return None
 
 
 def _clip(url: str) -> str:

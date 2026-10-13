@@ -99,8 +99,13 @@ def mentions(haystack: str, needle: str) -> bool:
 def to_latin1(text: str) -> str:
     """Transliterate to latin-1 for base-14 PDF fonts; never raises.
 
-    Common typographic characters get ASCII equivalents; others are decomposed
-    (NFKD) and stripped of non-latin-1 marks; anything left becomes "?".
+    Common typographic characters get ASCII equivalents; accented letters lose
+    their accents through *canonical* decomposition (NFD: "ő" -> "o"); anything
+    else becomes "?". Compatibility folding (NFKD) is deliberately not used: it
+    would turn full-width letters, circled / superscript / roman numerals and
+    similar look-alikes ("Ｌｅｄ", "⑤⓪⓪") into plain ASCII claims that no
+    validator saw. Generated text reaches the renderer already normalized and
+    validated (``validation.claim_text``).
     """
     out: list[str] = []
     for ch in text or "":
@@ -110,7 +115,7 @@ def to_latin1(text: str) -> str:
         if ch in _TYPOGRAPHIC:
             out.append(_TYPOGRAPHIC[ch])
             continue
-        decomposed = unicodedata.normalize("NFKD", ch)
+        decomposed = unicodedata.normalize("NFD", ch)
         kept = "".join(c for c in decomposed if ord(c) < 256 and not unicodedata.combining(c))
         out.append(kept if kept else "?")
     return "".join(out)

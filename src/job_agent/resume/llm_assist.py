@@ -9,7 +9,9 @@ verbatim facts / template letter -- the failure is recorded, never hidden.
 Security: the facts given to the model are verified profile text; the job title
 and keywords are sanitized hints (the llm module wraps them as untrusted data).
 Whatever the model returns is accepted only if ``validate_claim`` reports no
-issue, so prompt-injection in a job description cannot add content.
+issue, so prompt-injection in a job description cannot add content. The stored
+bullet is ``validation.claim_text`` of the output: exactly the normalized text
+that was validated (never a raw form with full-width or look-alike letters).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from job_agent.profile import CandidateProfile
 from job_agent.resume.keywords import JobKeywords
 from job_agent.resume.models import Issue, RejectedRewording, ResumeContent
 from job_agent.resume.text import normalize_space
-from job_agent.resume.validation import summarize, validate_claim
+from job_agent.resume.validation import claim_text, summarize, validate_claim
 
 if TYPE_CHECKING:  # pragma: no cover
     from job_agent.context import AppContext
@@ -147,6 +149,8 @@ def reword_bullets(assist: LLMAssist, content: ResumeContent, profile: Candidate
         candidate = normalize_space(raw).strip("\"'“”‘’ ").lstrip("-•* ").strip()
         if not candidate or candidate == bullet.text:
             continue
+        # Validation sees the raw text (to reject disguising characters) and judges its normalized form;
+        # the normalized form is what gets stored and rendered.
         problems = validate_claim(candidate, [fact], profile, forbidden_names=forbidden_names)
         if problems:
             reasons = summarize(problems)
@@ -155,7 +159,7 @@ def reword_bullets(assist: LLMAssist, content: ResumeContent, profile: Candidate
                                 message=f"LLM rewording of fact {fact.id} rejected ({reasons[0]}); "
                                         "verbatim fact text used"))
         else:
-            bullet.text = candidate
+            bullet.text = claim_text(candidate)
             bullet.generator = assist.label
     for note in assist.notes:
         issues.append(Issue(code="llm_unavailable", severity="info", document="resume", message=note))

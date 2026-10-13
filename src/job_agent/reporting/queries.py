@@ -16,7 +16,10 @@ Metric definitions (also documented in ``docs/reports.md``):
   ``submission_attempted`` (unknown outcome) never count.
 * **interviews / assessments / rejections / offers** -- applications that ever
   reached that state (from ``application_events``; the current status is used
-  as a fallback for rows without events).
+  as a fallback for rows without events). A milestone you corrected away (the
+  next status change is one of ``models.USER_CORRECTIONS``, e.g. an email
+  wrongly set "rejected" and you set it back to "submitted") is not counted;
+  the same holds for confirmations.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from typing import Any, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from job_agent.database.connection import Database, from_json
-from job_agent.models import PipelineState
+from job_agent.models import USER_CORRECTIONS, PipelineState
 from job_agent.reporting.text import parse_ts
 from job_agent.utils.time import to_iso, utcnow_iso
 
@@ -105,17 +108,40 @@ def _int(db: Database, sql: str, params: Sequence[Any] = ()) -> int:
     return int(value or 0)
 
 
+def _correction_pairs_sql(alias: str) -> str:
+    """``alias`` (an application_events row) is a move in ``models.USER_CORRECTIONS``."""
+    by_source: dict[str, set[str]] = {}
+    for src, dst in USER_CORRECTIONS:
+        by_source.setdefault(src.value, set()).add(dst.value)
+    parts = [f"({alias}.from_status = {_lit([src])} AND {alias}.to_status IN ({_lit(sorted(dsts))}))"
+             for src, dsts in sorted(by_source.items())]
+    return "(" + " OR ".join(parts) + ")" if parts else "0"
+
+
+def _corrected_sql(alias: str) -> str:
+    """The status change ``alias`` was undone by you: the application's NEXT status change is a user
+    correction (``models.USER_CORRECTIONS``) away from the state ``alias`` entered."""
+    if alias not in {"ev", "c1"}:  # code constants only
+        raise ValueError("bad event alias")
+    return (
+        f"EXISTS (SELECT 1 FROM application_events nx WHERE nx.id = (SELECT MIN(n2.id) FROM application_events n2 "
+        f"WHERE n2.application_id = {alias}.application_id AND n2.id > {alias}.id AND n2.to_status IS NOT NULL) "
+        f"AND nx.actor = 'user' AND nx.from_status = {alias}.to_status AND {_correction_pairs_sql('nx')})"
+    )
+
+
 def _milestones_sql(states: Sequence[str]) -> str:
     """(application_id, status, at) for every time an application reached ``states``.
 
-    Uses status-change events; an application currently in one of the states
+    Uses status-change events, except ones you corrected away (see
+    :func:`_corrected_sql`); an application currently in one of the states
     without a matching event (e.g. imported data) contributes its
     ``status_updated_at`` instead.
     """
     lit = _lit(states)
     return (
         f"SELECT ev.application_id AS application_id, ev.to_status AS status, ev.created_at AS at "
-        f"FROM application_events ev WHERE ev.to_status IN ({lit}) "
+        f"FROM application_events ev WHERE ev.to_status IN ({lit}) AND NOT {_corrected_sql('ev')} "
         f"UNION ALL "
         f"SELECT a.id AS application_id, a.status AS status, a.status_updated_at AS at FROM applications a "
         f"WHERE a.status IN ({lit}) AND NOT EXISTS (SELECT 1 FROM application_events e2 "
@@ -179,7 +205,7 @@ def dashboard_counts(db: Database, day_start_utc: str, day_end_utc: str) -> dict
         db,
         f"SELECT COUNT(*) FROM applications a WHERE {SUBMITTED_SQL} AND {_before(SUBMITTED_AT_SQL)} AND "
         f"(a.confirmation_status IN ({_lit(CONFIRMED_STATUSES)}) OR EXISTS (SELECT 1 FROM application_events c1 "
-        "WHERE c1.application_id = a.id AND c1.to_status = 'confirmation_received'))",
+        f"WHERE c1.application_id = a.id AND c1.to_status = 'confirmation_received' AND NOT {_corrected_sql('c1')}))",
         (e,),
     )
     for key, states in (("interviews", INTERVIEW_STATES), ("assessments", ASSESSMENT_STATES),
@@ -420,7 +446,7 @@ def confirmations(db: Database, day_start_utc: str, day_end_utc: str) -> list[di
     rows = db.query_all(
         f"SELECT {_APP_COLUMNS} FROM applications a JOIN jobs j ON j.id = a.job_id WHERE {SUBMITTED_SQL} AND ("
         f"EXISTS (SELECT 1 FROM application_events c1 WHERE c1.application_id = a.id "
-        f"AND c1.to_status = 'confirmation_received' AND {_win('c1.created_at')}) OR "
+        f"AND c1.to_status = 'confirmation_received' AND NOT {_corrected_sql('c1')} AND {_win('c1.created_at')}) OR "
         f"(a.confirmation_status IN ({_lit(CONFIRMED_STATUSES)}) AND {_win(SUBMITTED_AT_SQL)})) ORDER BY a.id",
         (*params, *params),
     )

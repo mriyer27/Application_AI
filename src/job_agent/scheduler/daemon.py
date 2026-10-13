@@ -6,7 +6,9 @@ Lifecycle of ``run_daemon``:
    of pid/host (catches a second daemon pointed at the same database from a
    different data directory or machine);
 2. recovery: runs left ``running`` by a dead process are marked interrupted,
-   task locks held by dead processes are released, approvals are expired;
+   task locks held by dead processes are released, approvals are expired, and
+   applications left in ``submission_attempted`` by a stopped process become
+   ``needs_manual_action`` with an unknown-outcome error (never retried);
 3. one APScheduler job per enabled ``scheduler.tasks`` entry (cron in
    ``app.timezone`` or a fixed interval), ``coalesce`` + ``max_instances=1`` +
    ``misfire_grace_time``; schedules are persisted to ``scheduled_tasks``;
@@ -96,6 +98,8 @@ class DaemonStartup:
     interrupted_runs: int
     released_locks: list[str]
     expired_approvals: int
+    #: applications stuck in ``submission_attempted`` recorded as unknown outcomes at start-up
+    recovered_submissions: int = 0
     scheduled: list[ScheduledTaskInfo] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)  # (task name, reason)
     catch_up: list[str] = field(default_factory=list)
@@ -195,15 +199,32 @@ def _check_recorded_daemon(db: Database, lock: InstanceLock) -> None:
     )
 
 
-def _recover(db: Database) -> tuple[int, list[str], int]:
+@dataclass
+class _Recovery:
+    interrupted: int
+    released: list[str]
+    expired: int
+    submissions: int
+
+
+def _recover(db: Database) -> _Recovery:
     interrupted = repo.mark_interrupted_runs(db)
     released = store.release_dead_task_locks(db)
     expired = repo.expire_approvals(db)
+    submissions = 0
+    try:
+        submissions = len(repo.recover_stuck_submissions(db))
+    except JobAgentError as exc:  # one stuck row must not keep the daemon from starting; it stays visible
+        log.exception("could not recover applications stuck in submission_attempted")
+        repo.record_error(db, component="scheduler:recover", error=exc)
     if interrupted:
         log.warning("%d run(s) left 'running' by a previous process were marked interrupted", interrupted)
     if released:
         log.warning("released task lock(s) held by dead processes: %s", ", ".join(released))
-    return interrupted, released, expired
+    if submissions:
+        log.warning("%d application submission(s) interrupted by a stopped process were recorded as UNKNOWN "
+                    "outcomes (needs_manual_action); check your email/portal", submissions)
+    return _Recovery(interrupted, released, expired, submissions)
 
 
 # --------------------------------------------------------------------------- #
@@ -394,7 +415,8 @@ class _Daemon:
                                 human_action="Do not run the daemon on a damaged database; restore "
                                              "data/job_agent.db from a backup (see docs/setup.md, Backups).")
         _check_recorded_daemon(db, lock)
-        interrupted, released, expired = _recover(db)
+        recovery = _recover(db)
+        interrupted, released, expired = recovery.interrupted, recovery.released, recovery.expired
         pid, host = os.getpid(), socket.gethostname()
         started_at = store.write_daemon_started(db, pid=pid, host=host, lock_path=str(lock.path),
                                                 interrupted_runs=interrupted)
@@ -411,7 +433,8 @@ class _Daemon:
 
         repo.audit(db, actor="scheduler", action="daemon_started", outcome="success",
                    details={"pid": pid, "interrupted_runs": interrupted, "released_locks": released,
-                            "expired_approvals": expired, "scheduled": [s.task_name for s in scheduled],
+                            "expired_approvals": expired, "recovered_submissions": recovery.submissions,
+                            "scheduled": [s.task_name for s in scheduled],
                             "skipped": [name for name, _ in skipped], "catch_up": catch_up})
         log.info("daemon started (pid %s): %d task(s) scheduled, catch-up: %s", pid, len(scheduled),
                  ", ".join(catch_up) or "none")
@@ -421,7 +444,7 @@ class _Daemon:
             timezone=self.config.app.timezone, db_integrity=integrity, paused=paused,
             paused_reason=repo.get_state(db, "automation_paused_reason") if paused else None,
             interrupted_runs=interrupted, released_locks=released, expired_approvals=expired,
-            scheduled=scheduled, skipped=skipped, catch_up=catch_up,
+            recovered_submissions=recovery.submissions, scheduled=scheduled, skipped=skipped, catch_up=catch_up,
             pending_approvals=len(repo.pending_approvals(db)),
             unresolved_errors=int(db.scalar("SELECT COUNT(*) FROM errors WHERE resolved = 0") or 0),
             errors_needing_action=int(db.scalar(
@@ -618,7 +641,7 @@ def run_once(ctx: AppContext, *, stop_event: threading.Event | None = None,
         previous_handlers = _install_signal_handlers(stop, abort_on_repeat=True)
         db = ctx.db
         _check_recorded_daemon(db, lock)
-        interrupted, released, expired = _recover(db)
+        recovery = _recover(db)
         for name in ctx.config.scheduler.tasks:
             if name not in tasks.TASKS:
                 _report_unknown_task(db, name)
@@ -632,8 +655,8 @@ def run_once(ctx: AppContext, *, stop_event: threading.Event | None = None,
             if on_result is not None:
                 on_result(result)
         repo.audit(db, actor="scheduler", action="daemon_run_once", outcome="success",
-                   details={"interrupted_runs": interrupted, "released_locks": released,
-                            "expired_approvals": expired,
+                   details={"interrupted_runs": recovery.interrupted, "released_locks": recovery.released,
+                            "expired_approvals": recovery.expired, "recovered_submissions": recovery.submissions,
                             "results": {r.task_name: r.status.value for r in results}})
         return results
     finally:
