@@ -11,9 +11,16 @@ Heuristics (documented limitations):
   ``aria-label``, nearby question text, ``placeholder``, ``title``, then ``name``;
 * help text (``FormField.help_text``) comes from ``aria-describedby`` /
   ``aria-details`` / ``aria-description`` of the control and of its fieldset /
-  radiogroup, and from ``.help`` / ``.hint`` / ``.description`` / ``small`` ...
-  elements in the same question container or right next to the control (also
-  when they are hidden, e.g. tooltips);
+  radiogroup; from ``.help`` / ``.hint`` / ``.description`` / ``small`` ...
+  elements in the same question container or right next to it (also when they
+  are hidden, e.g. tooltips); and from every other *visible* text in the
+  question container (the largest ancestor whose controls all belong to the
+  field) and in up to a few text-only elements right before / after it. Label,
+  legend and option texts, buttons, required / optional markers and character
+  counters are left out; the scan stops at another control, another field's
+  label, a heading, a fieldset or a button, so the next question is not read as
+  this one's help text. Text in an adjacent *heading* is a section title and is
+  not read;
 * page snapshots contain only rendered, visible text (see ``_VISIBLE_TEXT_JS``);
 * invisible controls are skipped (honeypots), except file inputs and styled
   radios/checkboxes whose label is visible; invisible *required* controls are
@@ -75,6 +82,8 @@ class FormField:
         """Metadata persisted with the prepared form (no locators, no values)."""
         return {
             "key": self.key,
+            "label": self.label,
+            "placeholder": self.placeholder,
             "type": self.type,
             "required": self.required,
             "options": [o.label for o in self.options],
@@ -333,7 +342,7 @@ const textShown = (node) => {
 const _tv = new Map();
 const INLINE = /^(inline|contents|ruby)/;
 const blockOf = (el) => { let b = el; while (b && b !== DE && INLINE.test(st(b).display)) b = up(b); return b; };
-const visibleText = (root, skipSel) => {
+const visibleText = (root, skipSel, skipEl) => {
   const parts = [];
   let last = null, nodes = 0, size = 0;
   const visit = (node) => {
@@ -355,6 +364,7 @@ const visibleText = (root, skipSel) => {
       if (VT_SKIP.has(node.tagName)) return;
       if (node.tagName === 'BR') { parts.push('\n'); return; }
       if (skipSel && node.matches(skipSel) && !node.querySelector('form, input, select, textarea')) return;
+      if (skipEl && skipEl(node)) return;
       if (st(node).display === 'none') return;
       if (node.shadowRoot) visit(node.shadowRoot);
     } else if (node.nodeType !== 11) return;
@@ -387,16 +397,27 @@ _SNAPSHOT_JS = "(markers) => {" + _COMMON_JS + _VISIBLE_TEXT_JS + r"""
           visible_controls: Array.from(new Set(visibleControls)).slice(0, 300)};
 }"""
 
-_INSPECT_JS = "() => {" + _COMMON_JS + r"""
-  const byIds = (ids) => clean((ids || '').split(/\s+/).filter(Boolean)
-      .map(id => textOf(document.getElementById(id))).join(' '));
+_INSPECT_JS = "() => {" + _COMMON_JS + _VISIBLE_TEXT_JS + r"""
+  const idEls = (ids) => (ids || '').split(/\s+/).filter(Boolean).map(id => document.getElementById(id))
+      .filter(Boolean);
+  const byIds = (ids) => clean(idEls(ids).map(textOf).join(' '));
+  // Elements a field's question / option labels are read from, recorded while the label is read (SRC).
+  // They are never another field's help text, and help text never extends past another field's label.
+  let SRC = null;
+  const note = (el) => { if (SRC && el) SRC.push(el); };
+  const labelledBy = (ids) => {
+    const els = idEls(ids);
+    const t = clean(els.map(textOf).join(' '));
+    if (t) els.forEach(note);
+    return t;
+  };
   const labelFor = (el) => {
     if (el.id) {
       const l = document.querySelector(`label[for="${q(el.id)}"]`);
-      if (l && textOf(l)) return textOf(l);
+      if (l && textOf(l)) { note(l); return textOf(l); }
     }
     const wrap = el.closest('label');
-    if (wrap && textOf(wrap)) return textOf(wrap);
+    if (wrap && textOf(wrap)) { note(wrap); return textOf(wrap); }
     return '';
   };
   const labelVisible = (el) => {
@@ -407,24 +428,24 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
   const nearbyText = (el, maxDepth) => {
     let child = el, node = el.parentElement;
     for (let d = 0; node && d < maxDepth; d++, child = node, node = node.parentElement) {
-      let last = '';
+      let last = '', lastEl = null;
       for (const c of node.children) {
         if (c === child || c.contains(child)) break;
         if (c.querySelector('input, select, textarea') || c.matches('input, select, textarea, script, style')) continue;
         const t = textOf(c);
-        if (t) last = t;
+        if (t) { last = t; lastEl = c; }
       }
-      if (last) return last;
+      if (last) { note(lastEl); return last; }
       if (node.tagName === 'FORM' || node.tagName === 'BODY') break;
     }
     return '';
   };
   const groupQuestion = (el) => {
     const fs = el.closest('fieldset');
-    if (fs) { const lg = fs.querySelector('legend'); if (lg && textOf(lg)) return textOf(lg); }
+    if (fs) { const lg = fs.querySelector('legend'); if (lg && textOf(lg)) { note(lg); return textOf(lg); } }
     const rg = el.closest('[role="radiogroup"], [role="group"]');
     if (rg) {
-      const t = clean(rg.getAttribute('aria-label')) || byIds(rg.getAttribute('aria-labelledby'));
+      const t = clean(rg.getAttribute('aria-label')) || labelledBy(rg.getAttribute('aria-labelledby'));
       if (t) return t;
     }
     const wrap = el.closest('label') || el;
@@ -455,68 +476,8 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
   const out = [];
   const groups = new Map();
   const members = new Map();  // output entry -> its controls
-  // ---- help text: aria-describedby targets and hint / help / description elements of the question ----
-  const CONTROLS = 'input:not([type="hidden"]), select, textarea';
-  const HELP_SEL = ['.help', '.hint', '.description', '.help-text', '.helper-text', '.help-block', '.form-text',
-      '.instructions', '[class*="help"]', '[class*="hint"]', '[class*="description"]', '[class*="instruction"]',
-      '[id$="-help"]', '[id$="_help"]', '[id$="-hint"]', '[id$="_hint"]', '[id$="-description"]',
-      '[id$="_description"]', '[id$="-desc"]', 'small', '[role="note"]'].join(', ');
-  const described = (el) => [byIds(el.getAttribute('aria-describedby')), byIds(el.getAttribute('aria-details')),
-                             clean(el.getAttribute('aria-description'))];
-  const ownLabels = (el) => {
-    const outL = [];
-    if (el.id) document.querySelectorAll(`label[for="${q(el.id)}"]`).forEach(l => outL.push(l));
-    const w = el.closest('label');
-    if (w) outL.push(w);
-    return outL;
-  };
-  // The largest ancestor below the form whose controls all belong to this field.
-  const questionBox = (ms) => {
-    const set = new Set(ms);
-    let node = ms[0];
-    for (let d = 0; d < 6; d++) {
-      const p = node.parentElement;
-      if (!p || p === root || p === document.body || p === document.documentElement || p.tagName === 'FORM') break;
-      if (!Array.from(p.querySelectorAll(CONTROLS)).every(c => set.has(c))) break;
-      if ((p.textContent || '').length > 3000) break;
-      node = p;
-    }
-    return node;
-  };
-  const helpFor = (ms, label) => {
-    const texts = [];
-    const own = new Set();
-    for (const m of ms) { ownLabels(m).forEach(l => own.add(l)); texts.push(...described(m)); }
-    const grp = ms[0].closest('fieldset, [role="radiogroup"], [role="group"]');
-    if (grp && Array.from(grp.querySelectorAll(CONTROLS)).every(c => ms.includes(c))) {
-      texts.push(...described(grp));
-      const lg = grp.tagName === 'FIELDSET' ? grp.querySelector('legend') : null;
-      if (lg) own.add(lg);
-    }
-    const added = [];
-    const take = (h) => {
-      if (h.querySelector(CONTROLS) || h.closest('label') || added.some(a => a.contains(h))) return;
-      for (const o of own) if (o === h || o.contains(h)) return;
-      added.push(h);
-      texts.push(textOf(h));
-    };
-    const box = questionBox(ms);
-    if (!ms.includes(box)) box.querySelectorAll(HELP_SEL).forEach(take);
-    const sib = (n, dir) => {
-      for (let x = n[dir], i = 0; x && i < 3; x = x[dir], i++) {
-        if (x.matches(CONTROLS + ', label, fieldset, legend, button') || x.querySelector(CONTROLS)) break;
-        if (x.matches(HELP_SEL)) take(x);
-      }
-    };
-    sib(box, 'nextElementSibling');
-    sib(box, 'previousElementSibling');
-    const seen = new Set([clean(label).toLowerCase()]);
-    const uniq = [];
-    for (const t of texts.map(clean)) {
-      if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); uniq.push(t); }
-    }
-    return uniq.join(' ').slice(0, 1000);
-  };
+  const srcOf = new Map();  // output entry -> elements its question / option labels come from
+  const skippedSrc = [];  // label elements of controls that are not reported (invisible, optional)
   const els = Array.from(root.querySelectorAll('input, select, textarea'));
   els.forEach((el, index) => {
     const tag = el.tagName.toLowerCase();
@@ -527,12 +488,12 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
     const name = el.getAttribute('name') || '';
     if (type === 'radio' || type === 'checkbox') {
       const visible = vis(el) || labelVisible(el);
-      const optLabel = labelFor(el) || clean(el.getAttribute('aria-label')) || el.value || '';
       const shared = name && root.querySelectorAll(`input[type="${type}"][name="${q(name)}"]`).length > 1;
       if (type === 'radio' || shared) {
         const gkey = type + '|' + name;
         let g = groups.get(gkey);
         if (!g) {
+          SRC = [];
           const question = groupQuestion(el);
           g = {index, tag, type: type === 'radio' ? 'radio' : 'checkbox_group', name, id: null,
                label: question || name, required: false, options: [], is_file: false,
@@ -541,26 +502,38 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
           groups.set(gkey, g);
           out.push(g);
           members.set(g, []);
+          srcOf.set(g, SRC);
         }
+        SRC = srcOf.get(g);
+        const optLabel = labelFor(el) || clean(el.getAttribute('aria-label')) || el.value || '';
+        SRC = null;
         members.get(g).push(el);
         g.required = g.required || isRequired(el, g.label);
         g.visible = g.visible || visible;
         g.options.push({label: optLabel, value: el.value, locator: selectorOf(el)});
         return;
       }
-      const label = labelFor(el) || clean(el.getAttribute('aria-label')) || byIds(el.getAttribute('aria-labelledby'))
-          || nearbyText(el, 3) || clean(el.getAttribute('title')) || name;
-      if (!visible && !isRequired(el, label)) return;
+      SRC = [];
+      const label = labelFor(el) || clean(el.getAttribute('aria-label'))
+          || labelledBy(el.getAttribute('aria-labelledby')) || nearbyText(el, 3) || clean(el.getAttribute('title'))
+          || name;
+      const src = SRC;
+      SRC = null;
+      if (!visible && !isRequired(el, label)) { skippedSrc.push(...src); return; }
       const entry = {index, tag, type: 'checkbox', name, id: el.id || null, label, required: isRequired(el, label),
                      options: [], is_file: false, locator: selectorOf(el), placeholder: null, accept: null, visible};
       out.push(entry);
       members.set(entry, [el]);
+      srcOf.set(entry, src);
       return;
     }
     const visible = vis(el);
-    const label = byIds(el.getAttribute('aria-labelledby')) || labelFor(el) || clean(el.getAttribute('aria-label'))
+    SRC = [];
+    const label = labelledBy(el.getAttribute('aria-labelledby')) || labelFor(el) || clean(el.getAttribute('aria-label'))
         || nearbyText(el, 3) || clean(el.getAttribute('placeholder')) || clean(el.getAttribute('title')) || name;
-    if (!visible && type !== 'file' && !isRequired(el, label)) return;
+    const src = SRC;
+    SRC = null;
+    if (!visible && type !== 'file' && !isRequired(el, label)) { skippedSrc.push(...src); return; }
     let options = [];
     if (tag === 'select') {
       options = Array.from(el.options).filter(o => !o.disabled && o.value !== '')
@@ -571,9 +544,123 @@ _INSPECT_JS = "() => {" + _COMMON_JS + r"""
                    accept: el.getAttribute('accept'), visible: visible || type === 'file'};
     out.push(entry);
     members.set(entry, [el]);
+    srcOf.set(entry, src);
   });
+  // ---- help text ----
+  // (1) aria-describedby / aria-details / aria-description of the control and of its fieldset / radiogroup;
+  // (2) hint / help / description elements in the question box or next to it (also when hidden: tooltips);
+  // (3) every other VISIBLE text in the question box: the largest ancestor whose controls are all this field's
+  //     (without labels / legends / option labels, buttons and other fields' labels);
+  // (4) visible text of up to a few text-only elements right before / after the box, stopping at another
+  //     control, another field's label, a heading, a fieldset or a button.
+  const CONTROLS = 'input:not([type="hidden"]), select, textarea';
+  const WIDGET = '[role="combobox"], [role="listbox"], [role="radiogroup"], [role="group"], [role="textbox"], '
+      + '[role="searchbox"], [role="spinbutton"], [role="slider"], [contenteditable="true"], [contenteditable=""]';
+  const ANY_CONTROL = CONTROLS + ', ' + WIDGET + ', [role="checkbox"], [role="radio"], [role="switch"]';
+  const BOUNDARY = 'fieldset, legend, button, [role="button"], h1, h2, h3, h4, h5, h6, [role="heading"], form, hr';
+  const NOT_HELP = 'button, [role="button"]';
+  //: Required / optional markers and character counters are not help text.
+  const NOISE = /^(?:[*✱]+|\(?\s*(?:required|optional)\s*\)?|\d+\s*\/\s*\d+(?:\s*char\w*)?)$/i;
+  const HELP_SEL = ['.help', '.hint', '.description', '.help-text', '.helper-text', '.help-block', '.form-text',
+      '.instructions', '[class*="help"]', '[class*="hint"]', '[class*="description"]', '[class*="instruction"]',
+      '[id$="-help"]', '[id$="_help"]', '[id$="-hint"]', '[id$="_hint"]', '[id$="-description"]',
+      '[id$="_description"]', '[id$="-desc"]', 'small', '[role="note"]'].join(', ');
+  const described = (el) => [byIds(el.getAttribute('aria-describedby')), byIds(el.getAttribute('aria-details')),
+                             clean(el.getAttribute('aria-description'))];
+  const describedEls = (el) => [...idEls(el.getAttribute('aria-describedby')),
+                                ...idEls(el.getAttribute('aria-details'))];
+  const ownLabels = (el) => {
+    const outL = [];
+    if (el.id) document.querySelectorAll(`label[for="${q(el.id)}"]`).forEach(l => outL.push(l));
+    const w = el.closest('label');
+    if (w) outL.push(w);
+    return outL;
+  };
+  const FIELD_EL = new Set();
+  const ALL_SRC = new Set(skippedSrc);
+  for (const [entry, ms] of members) {
+    ms.forEach(m => { FIELD_EL.add(m); ownLabels(m).forEach(l => ALL_SRC.add(l)); });
+    (srcOf.get(entry) || []).forEach(e => ALL_SRC.add(e));
+  }
+  root.querySelectorAll('label').forEach(l => { if (l.control) ALL_SRC.add(l); });
+  // The largest ancestor below the form whose controls all belong to this field.
+  const questionBox = (ms) => {
+    const set = new Set(ms);
+    let node = ms[0];
+    for (let d = 0; d < 6; d++) {
+      const p = node.parentElement;
+      if (!p || p === root || p === document.body || p === document.documentElement || p.tagName === 'FORM') break;
+      if (!Array.from(p.querySelectorAll(CONTROLS)).every(c => set.has(c))) break;
+      if (Array.from(p.querySelectorAll(WIDGET)).some(w => !ms.some(m => w.contains(m)))) break;  // custom widget
+      if ((p.textContent || '').length > 3000) break;
+      node = p;
+    }
+    return node;
+  };
+  const hasControl = (x) => x.matches(ANY_CONTROL) || !!x.querySelector(ANY_CONTROL);
+  // A control / custom widget that is not one of the reported fields (its label is not recorded).
+  const foreignControl = (x) => hasControl(x)
+      && !(x.matches(CONTROLS) ? [x] : Array.from(x.querySelectorAll(CONTROLS))).some(c => FIELD_EL.has(c));
+  const helpFor = (entry) => {
+    const ms = members.get(entry);
+    const texts = [];
+    const own = new Set(srcOf.get(entry) || []);
+    const skipEls = new Set();
+    for (const m of ms) {
+      ownLabels(m).forEach(l => own.add(l));
+      texts.push(...described(m));
+      describedEls(m).forEach(e => skipEls.add(e));
+    }
+    const grp = ms[0].closest('fieldset, [role="radiogroup"], [role="group"]');
+    if (grp && Array.from(grp.querySelectorAll(CONTROLS)).every(c => ms.includes(c))) {
+      texts.push(...described(grp));
+      describedEls(grp).forEach(e => skipEls.add(e));
+      const lg = grp.tagName === 'FIELDSET' ? grp.querySelector('legend') : null;
+      if (lg) own.add(lg);
+    }
+    const added = [];
+    const take = (h) => {
+      if (h.querySelector(CONTROLS) || h.closest('label') || added.some(a => a.contains(h))) return;
+      for (const o of own) if (o === h || o.contains(h)) return;
+      added.push(h);
+      texts.push(textOf(h));
+    };
+    const skip = (n) => own.has(n) || ALL_SRC.has(n) || skipEls.has(n) || added.includes(n) || n.matches(NOT_HELP);
+    const visibleLines = (x) => visibleText(x, null, skip).split('\n');
+    const otherLabel = (x) => {
+      for (const s of ALL_SRC) if (!own.has(s) && (s === x || x.contains(s))) return true;
+      return false;
+    };
+    const box = questionBox(ms);
+    if (!ms.includes(box)) {
+      box.querySelectorAll(HELP_SEL).forEach(take);
+      texts.push(...visibleLines(box));
+    }
+    const sib = (n, dir) => {
+      for (let x = n[dir], i = 0; x && i < 4; x = x[dir], i++) {
+        if (x.matches(BOUNDARY) || hasControl(x) || x.querySelector('fieldset, legend, form, h1, h2, h3, h4, h5, h6, '
+                                                                    + '[role="heading"]')) break;
+        if (own.has(x)) continue;
+        if (otherLabel(x) || (x.tagName === 'LABEL' && x.control)) break;
+        // text right before a custom widget / unreported control is that control's question
+        if (dir === 'nextElementSibling' && x.nextElementSibling && foreignControl(x.nextElementSibling)) break;
+        if (x.matches(HELP_SEL)) { take(x); continue; }
+        const lines = visibleLines(x);
+        if (lines.some(Boolean)) { added.push(x); texts.push(...lines); }
+      }
+    };
+    sib(box, 'nextElementSibling');
+    sib(box, 'previousElementSibling');
+    const seen = new Set([clean(entry.label).toLowerCase()]);
+    for (const o of entry.options || []) seen.add(clean(o.label).toLowerCase());
+    const uniq = [];
+    for (const t of texts.map(clean)) {
+      if (t && !NOISE.test(t) && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); uniq.push(t); }
+    }
+    return uniq.join(' ').slice(0, 1000);
+  };
   for (const entry of out) {
-    try { entry.help_text = helpFor(members.get(entry), entry.label) || null; } catch (e) { entry.help_text = null; }
+    try { entry.help_text = helpFor(entry) || null; } catch (e) { entry.help_text = 'help text could not be read'; }
   }
   return out;
 }"""

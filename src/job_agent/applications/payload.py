@@ -5,23 +5,87 @@
 event). ``repo.create_approval`` stores its SHA-256; at submission the payload
 is rebuilt and must hash to the approved value, so any change after approval
 (an edited answer, a regenerated document) requires a new approval.
+
+The payload also pins every question as the page asked it when it was prepared
+(``questions``: field key -> ``question_digest`` of its label, help text,
+placeholder, type, option labels and legal flag). Before the browser types
+anything at submission, each field it will fill and each required field must
+still ask exactly that question; otherwise nothing is entered or submitted.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from job_agent.applications import documents as docs
 from job_agent.applications import repository as arepo
-from job_agent.applications.field_mapping import VERIFIED_SOURCE_PREFIXES, FieldCategory, classify_field
+from job_agent.applications.field_mapping import (
+    VERIFIED_SOURCE_PREFIXES,
+    FieldCategory,
+    classify_field,
+    field_is_legal,
+)
+from job_agent.browser.forms import FormField, norm
 from job_agent.database import Database, repo
 from job_agent.errors import ApprovalError
 from job_agent.models import ApprovalType
 
-PAYLOAD_VERSION = 1
+PAYLOAD_VERSION = 2
 FORM_PREPARED_EVENT = "form_prepared"
 #: ``document_versions.status`` of a version you rejected: never uploaded, approved or offered.
 REJECTED_DOCUMENT_STATUS = "rejected"
+#: Key of a field's ``question_digest`` in the ``form_prepared`` event's field list.
+QUESTION_DIGEST_KEY = "question_sha256"
+
+
+def question_is_legal(fld: FormField) -> bool:
+    """Legal / eligibility wording anywhere in the question (label, key, help text, placeholder, options)."""
+    return field_is_legal(fld) or classify_field(fld.label, fld.key, fld.type) is FieldCategory.LEGAL
+
+
+def question_signature(fld: FormField, *, wording: bool = True) -> dict[str, Any]:
+    """The question a field asks, normalized: what an approved answer answers.
+
+    ``wording=False`` leaves out the help text, which may legitimately change while typing
+    (character counters, inline validation messages); the legal flag still covers it.
+    """
+    sig: dict[str, Any] = {
+        "label": norm(fld.label),
+        "placeholder": norm(fld.placeholder),
+        "type": fld.type,
+        "options": sorted({norm(o.label) for o in fld.options}),
+        "legal": question_is_legal(fld),
+    }
+    if wording:
+        sig["help_text"] = norm(getattr(fld, "help_text", None))
+    return sig
+
+
+#: Hex digits -> letters: event details are redacted (phone-number-like digit runs are masked), which
+#: must never alter a stored digest.
+_HEX_AS_LETTERS = str.maketrans("0123456789", "ghijklmnop")
+
+
+def question_digest(fld: FormField) -> str:
+    """SHA-256 of ``question_signature(fld)``, written with the letters a-p only (stored when the form is
+    prepared, pinned by the approval)."""
+    data = json.dumps(question_signature(fld), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest().translate(_HEX_AS_LETTERS)
+
+
+def prepared_questions(prepared: dict[str, Any]) -> dict[str, str]:
+    """Field key -> question digest from a ``form_prepared`` event's details (empty for old events)."""
+    fields = prepared.get("fields")
+    if not isinstance(fields, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in fields:
+        if isinstance(item, dict) and isinstance(item.get("key"), str) and isinstance(item.get(QUESTION_DIGEST_KEY),
+                                                                                     str):
+            out[item["key"]] = item[QUESTION_DIGEST_KEY]
+    return out
 
 
 def _fill_value(row: Any) -> str | None:
@@ -142,6 +206,7 @@ def build_payload(db: Database, application_id: int) -> dict[str, Any]:
         "screenshot": prepared.get("screenshot"),
         "prepared_at": app["prepared_at"],
         "work_authorization_reference": prepared.get("eligibility_reference") or {},
+        "questions": prepared_questions(prepared),
         **({"blocked_data_requests": blocked} if (blocked := list(prepared.get("blocked_data_requests") or []))
            else {}),
     }

@@ -6,8 +6,9 @@ Used wherever a legal declaration or an unverified claim could slip through:
   and the local-LLM answer drafter (``llm.generation.draft_answer``);
 * ``mentions_work_authorization`` / ``mentions_legal_matter`` -- statements in
   drafted replies and follow-ups ("I am authorized to work for any employer");
-* ``draft_claim_problems`` -- drafted text that asserts numbers, tools/skills or
-  leadership that do not trace to the verified profile.
+* ``draft_claim_problems`` -- drafted text that asserts numbers (also with a
+  changed qualifier or unit), tools/skills, leadership, credentials, degrees,
+  employers or job titles that do not trace to the verified profile.
 
 The rules are conservative on purpose: a false positive only sends a question
 to you for review (or replaces an LLM draft by the safe template); a false
@@ -23,7 +24,9 @@ joined ("s p o n s o r"), and with near-misses of the key words corrected
 Portuguese, French, Italian, German and Dutch wordings are covered, and text in
 a script these patterns cannot read counts as legal.
 
-No feature-module imports and no model calls: plain regular expressions.
+No model calls: plain regular expressions. ``draft_claim_problems`` reuses the
+résumé validator's number / credential / name rules (``resume.validation``,
+imported lazily inside the function); nothing else imports a feature module.
 """
 
 from __future__ import annotations
@@ -400,6 +403,9 @@ _SCALES = {"hundred": 100, "thousand": 1000, "million": 1_000_000}
 _TIME_UNITS = frozenset({"year", "years", "yr", "yrs", "month", "months", "week", "weeks", "decade", "decades"})
 _VAGUE = frozenset({"several", "many", "multiple", "numerous", "few", "countless", "dozens", "hundreds",
                     "thousands"})
+#: Multiplier words ("cut the effort in half", "doubled throughput", "fivefold"): quantities a fact must state.
+_MULTIPLIER_WORDS = re.compile(r"\b(half|halved|halving|double|doubled|doubling|triple|tripled|tripling|quadruple|"
+                               r"quadrupled|twice|thrice|[a-z0-9]+fold)\b(?! check)")
 
 
 def _canon(number: str) -> str:
@@ -467,7 +473,8 @@ _CLAIM_CUE = re.compile(
     r"maintain(?:ed|ing)?|support(?:ed|ing)|ran|run|running|own|owned|ownership|led|lead|leads|leading|"
     r"manag(?:e|ed|es|ing)|supervis(?:e|ed|ing)|head(?:ed|ing)|direct(?:ed|ing)|direct reports?|"
     r"overs(?:aw|ee|eeing)|spearhead(?:ed|ing)|mentor(?:ed|ing)|coach(?:ed|ing)|found(?:ed)|chair(?:ed|ing)|"
-    r"responsib(?:le|ility|ilities)|in charge)\b"
+    r"responsib(?:le|ility|ilities)|in charge|cut|cutting|slashed|boosted|accelerated|streamlined|modernized|"
+    r"halved|doubled|tripled)\b"
 )
 #: Sentences that start with one of these are claims even without "I" ("Led a team of five").
 _CLAIM_START = re.compile(
@@ -577,7 +584,7 @@ def _tool_supported(tool: str, skills: set[str], fact_norms: list[str]) -> bool:
             or any(padded in f" {f} " for f in fact_norms))
 
 
-def _without(text: str, items: Iterable[str]) -> str:
+def without_items(text: str, items: Iterable[str]) -> str:
     """``text`` with each (short) trusted context item removed."""
     for item in items:
         if item and len(item) <= 200:
@@ -585,30 +592,107 @@ def _without(text: str, items: Iterable[str]) -> str:
     return text
 
 
+#: Words that make a sentence about you a credential / education / background claim.
+_IDENTITY_CUE = re.compile(
+    r"\b(?:hold|holds|held|holding|graduat\w*|alumn\w*|degrees?|diplomas?|phd|ph d|doctorate|doctoral|mba|masters?|"
+    r"bachelors?|certif\w*|licen[cs]\w*|accredited|as an?|am an?|was an?|time at|tenure|stint|interned|internship|"
+    r"served|studied|studying|student|pursuing|pursue|enrolled|attended|majored|minored|joined|spent|former|"
+    r"formerly|ex|awards?|awarded|won)\b"
+)
+_IDENTITY_PERSON = _FIRST_PERSON | {"me"}
+_SPELLED_NUMBER = re.compile(
+    r"(?<![A-Za-z])(?:(?P<tens>twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[\s-]+(?P<unit1>two|three|four|five|six|seven|eight|nine|one))?|"
+    r"(?P<unit>zero|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
+    r"seventeen|eighteen|nineteen)|(?:an?\s+)?(?P<dozen>dozen))(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+
+def _spelled_as_digits(text: str) -> str:
+    """Spelled-out counts as digits ("nine or more" -> "9 or more", "about a dozen" -> "about 12")."""
+    def repl(m: re.Match[str]) -> str:
+        if m.group("dozen"):
+            return "12"
+        if m.group("tens"):
+            return str(_TENS[m.group("tens").lower()] + _UNITS.get((m.group("unit1") or "").lower(), 0))
+        return str(_UNITS[m.group("unit").lower()])
+    return _SPELLED_NUMBER.sub(repl, text)
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENTENCE_SPLIT.split(normalize_text(text)) if normalize(s)]
+
+
+def identity_sentences(text: str | None, *, every: bool = False) -> list[str]:
+    """Sentences about you that can carry a credential, education, title or background claim.
+
+    First-person sentences ("I", "my", "me", ...) with an experience or identity
+    word ("hold", "graduated", "certified", "as a", "my time at", ...), sentences
+    that start like a résumé bullet, or -- ``every`` -- all sentences (form
+    answers are about you as a whole).
+    """
+    from job_agent.resume import validation as rv  # degree abbreviations are case-sensitive ("MS", not "ms")
+
+    out = []
+    for raw in _sentences(text or ""):
+        norm = normalize(raw)
+        person = bool(_IDENTITY_PERSON.intersection(norm.split()))
+        cue = (_CLAIM_CUE.search(norm) or _IDENTITY_CUE.search(norm)
+               or any(rx.search(raw) for rx in (rv._DEGREE_WORDS, rv._CREDENTIAL, rv._GRADUATION)))
+        if every or _CLAIM_START.search(norm) or (person and cue):
+            out.append(raw)
+    return out
+
+
+def verified_education_dates(profile: Any) -> list[str]:
+    """The profile's verbatim education start / end dates ("Fall 2025", "May 2027")."""
+    return [d for e in (getattr(profile, "education", None) or ()) for d in (e.start, e.end) if d and d.strip()]
+
+
 def draft_claim_problems(text: str | None, *, facts: Iterable[Any] | None = None,
-                         skills: Iterable[str] | None = None, context: Iterable[str] = ()) -> list[str]:
-    """Reasons a drafted reply / follow-up asserts something not traceable to the verified profile.
+                         skills: Iterable[str] | None = None, context: Iterable[str] = (),
+                         profile: Any = None, about_candidate: bool = False) -> list[str]:
+    """Reasons a drafted reply / follow-up / form answer asserts something not traceable to the verified profile.
 
     ``facts`` are verified fact texts (or objects with ``text`` / ``skills``) and
     ``skills`` the profile skill list; ``None`` means unknown, in which case any
     first-person experience claim with numbers, tools or leadership is rejected.
-    ``context`` holds trusted application data (e.g. the date you applied) whose
-    numbers may be repeated, but never as part of an experience claim.
+    ``profile`` (a ``CandidateProfile``) supplies the verified education,
+    certifications, employers and titles (and the facts / skills when those are
+    not given); without it any degree or graduation wording the facts lack is
+    rejected. ``context`` holds trusted application data (e.g. the employer, the
+    job title, the date you applied): its numbers may be repeated and its names
+    named, but never as part of an experience claim ("my time at Acme").
+    ``about_candidate`` treats every sentence as a statement about you (form
+    answers).
 
-    Work-authorization and other legal statements (also misspelled or in another
-    language) are always rejected, and so are numerals that are not ASCII digits
-    ("⑳", "Ⅻ") and letters in a script these checks cannot read. Everything is
-    checked on ``normalize_text(text)``; callers store that normalized text.
+    Rejected: work-authorization and other legal statements (also misspelled or
+    in another language), numerals that are not ASCII digits ("⑳", "Ⅻ"),
+    letters in a script these checks cannot read, and in sentences about you
+    numbers / tools / leadership not in the facts, numbers whose qualifier or unit
+    differs from the fact ("9 or more", "more than 9", "9×" for a plain 9),
+    certifications or degrees not in the profile, an expected degree presented as
+    completed ("I graduated", "I hold an MS"), and organizations or job titles
+    the profile does not contain ("As a Senior Data Scientist at Google"). The
+    credential / number / name rules are ``resume.validation``'s (imported
+    lazily). Everything is checked on ``normalize_text(text)``; callers store
+    that normalized text.
     """
+    from job_agent.resume import validation as rv  # lazy: keeps this module free of feature imports at load time
+
     raw = text or ""
     text = normalize_text(raw)
     context = tuple(normalize_text(c) for c in context if c)
+    if profile is not None:
+        facts = profile.all_facts() if facts is None else facts
+        skills = profile.skills if skills is None else skills
     problems: list[str] = []
     if has_non_ascii_numerals(raw):
         problems.append("uses numerals that are not plain digits (circled, roman, superscript or other scripts)")
     if mentions_work_authorization(text) or _legal_topic(text):
         problems.append("makes a work-authorization or other legal statement")
-    if has_unreadable_letters(_without(text, context)):
+    if has_unreadable_letters(without_items(text, context)):
         problems.append("contains letters in a script these checks cannot read")
     known = facts is not None
     fact_texts, fact_skills = _fact_parts(facts or ())
@@ -617,13 +701,31 @@ def draft_claim_problems(text: str | None, *, facts: Iterable[Any] | None = None
     fact_numbers: set[str] = set().union(*(numbers_mentioned(t) for t in fact_texts)) if fact_texts else set()
     context_numbers: set[str] = set().union(*(numbers_mentioned(c) for c in context)) if context else set()
 
-    extra = sorted(numbers_mentioned(text) - fact_numbers - context_numbers)
+    # Verbatim education dates ("expected May 2027") are verified profile data, not new numbers.
+    dates = verified_education_dates(profile)
+    extra = sorted(numbers_mentioned(without_items(text, dates)) - fact_numbers - context_numbers)
     if extra:
         problems.append(f"mentions numbers not found in your verified facts ({', '.join(extra)})")
+    verified = [*fact_texts, *fact_skills, *(skills or ())]
+    problems += rv.own_experience_problems(text, verified_texts=verified, profile=profile)
     # Application data (employer, job title) is not a claim: "Engineering Manager" names the role.
-    for sentence in claim_sentences(_without(text, context)):
+    stripped = without_items(text, context)
+    for sentence in identity_sentences(stripped, every=about_candidate):
+        problems += rv.credential_claim_problems(sentence, verified_texts=verified, profile=profile,
+                                                 context=context)
+    for sentence in _sentences(stripped):
         norm = normalize(sentence)
-        numbers = numbers_mentioned(sentence) | vague_quantities(sentence)
+        if about_candidate or _IDENTITY_PERSON.intersection(norm.split()) or _CLAIM_START.search(norm):
+            multipliers = sorted({w for w in _MULTIPLIER_WORDS.findall(norm)
+                                  if not any(re.search(rf"\b{w}\b", f) for f in fact_norms)})
+            if multipliers:
+                problems.append(f"makes an experience claim with quantities not in your verified facts "
+                                f"({', '.join(multipliers)})")
+    digit_facts = [_spelled_as_digits(t) for t in fact_texts]
+    claims = _sentences(stripped) if about_candidate else claim_sentences(stripped)
+    for sentence in claims:
+        norm = normalize(sentence)
+        numbers = numbers_mentioned(without_items(sentence, dates)) | vague_quantities(sentence)
         tools = tools_mentioned(sentence)
         leadership = [(claim, stem) for claim, stem in _LEADERSHIP if claim.search(norm)]
         if not known:
@@ -641,6 +743,10 @@ def draft_claim_problems(text: str | None, *, facts: Iterable[Any] | None = None
         if bad_numbers:
             problems.append(f"makes an experience claim with quantities not in your verified facts "
                             f"({', '.join(bad_numbers)})")
+        # A verified value with another qualifier or unit ("9 or more", "about a dozen", "9×" for a plain 9).
+        changed = rv.draft_number_problems(_spelled_as_digits(without_items(sentence, dates)), digit_facts)
+        if changed:
+            problems.append(f"changes how a verified number is qualified or counted ({'; '.join(changed)})")
         bad_tools = [t for t in tools if not _tool_supported(t, allowed_skills, fact_norms)]
         if bad_tools:
             problems.append(f"claims tools/skills not in your profile ({', '.join(bad_tools)})")

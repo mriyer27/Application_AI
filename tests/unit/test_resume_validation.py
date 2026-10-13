@@ -683,3 +683,116 @@ def test_pdf_transliteration_never_folds_disguised_text_into_ascii():
     assert to_latin1("Lеd") == "L?d"  # Cyrillic е
     assert to_latin1("⑤⓪⓪ ³⁰ Ⅻ") == "??? ³? ?"
     assert to_latin1("Zoë Dvořák – “ok” …") == 'Zoë Dvorák - "ok" ...'  # accents and typography still work
+
+
+# --------------------------------------------------------------------------- #
+# Round 3: qualifiers after the number, the "×" multiplier, background wording in slots
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("fact_id, text, code", [
+    ("agency_python_migration", MIGR.replace("Converted 9 legacy", "Converted 9 or more legacy"), "qualifier_added"),
+    ("agency_python_migration", MIGR.replace("Converted 9 legacy", "Converted 9 or so legacy"), "qualifier_added"),
+    ("agency_python_migration", MIGR.replace("Converted 9 legacy", "Converted 9-odd legacy"), "qualifier_added"),
+    ("agency_python_migration", MIGR.replace("9 legacy SAS programs", "9 legacy SAS programs or more"),
+     "qualifier_added"),
+    ("agency_python_migration", MIGR.replace("Converted 9 legacy", "Converted 9 or fewer legacy"), "qualifier_added"),
+    ("agency_regression", REGRESSION.replace("12 categories", "12 categories and more"), "qualifier_added"),
+    ("agency_regression", REGRESSION.replace("12 categories", "12 categories and up"), "qualifier_added"),
+    ("agency_python_migration", MIGR.replace("approximately 25%.", "approximately 25% or more."),
+     "qualifier_changed"),
+    ("agency_python_migration", MIGR.replace("by approximately 25%", "by 25% plus"), "qualifier_changed"),
+    ("agency_python_migration", MIGR.replace("by approximately 25%.", "9×."), "number_unit_changed"),
+    ("agency_python_migration", MIGR.replace("by approximately 25%.", "9X."), "number_unit_changed"),
+    ("agency_python_migration", MIGR.replace("by approximately 25%.", "x9."), "number_unit_changed"),
+])
+def test_trailing_qualifiers_and_multiplier_signs_are_checked(profile, fact_id, text, code):
+    issues = validate_claim(text, [profile.fact_by_id(fact_id)], profile)
+    assert code in codes(issues), [i.message for i in issues]
+
+
+@pytest.mark.parametrize("fact_id, text", [
+    ("agency_python_migration", "Improved processing efficiency by approximately 25% by converting 9 legacy SAS "
+                                "programs to Python with AI-assisted development."),
+    ("agency_regression", "Using SAS Enterprise Guide, analyzed regression results across 12 categories, "
+                          "contributing to approximately 30% less manual review effort."),
+    ("agency_python_migration", MIGR.replace("by approximately 25%", "by nearly 25%")),
+])
+def test_faithful_rewordings_keep_passing_with_trailing_qualifier_rules(profile, fact_id, text):
+    assert validate_claim(text, [profile.fact_by_id(fact_id)], profile) == []
+
+
+def test_trailing_qualifier_of_the_next_number_is_not_borrowed():
+    from job_agent.resume.validation import _number_spans
+
+    spans = {n.val: n.qual for n in _number_spans("Converted 9 programs and over 30 reports, and 12 categories "
+                                                  "and more importantly 5 dashboards")}
+    assert spans == {"9": "", "30": "lower bound", "12": "", "5": ""}
+
+
+def test_stub_llm_inflation_after_the_number_falls_back_to_the_fact(profile, listing_kw):
+    from job_agent.llm.generation import RewordOut
+    from job_agent.resume.llm_assist import LLMAssist
+    from job_agent.resume.models import JobListing
+    from job_agent.resume.service import generate_resume, keywords_for
+
+    class Stub:
+        model = "stub"
+
+        def generate_json(self, *, system, prompt, schema, model=None, max_tokens=None):
+            assert schema is RewordOut
+            fact = prompt.split("Verified statement (trusted):\n", 1)[1].split("\n\n", 1)[0]
+            return RewordOut(text=fact.replace("Converted 9 legacy", "Converted 9 or more legacy")
+                             .replace("across 12 categories", "across 12 categories and more"))
+
+    job = JobListing(id=1, job_uid="J-1", employer="Globex Corporation", title="Data Analyst",
+                     description_text="Dashboards and reporting with SQL, Python, SAS; regression analysis.",
+                     required_qualifications=["SQL", "Python", "SAS"], preferred_qualifications=["IBM Cognos"])
+    result = generate_resume(profile, job, keywords_for(job), max_bullets_per_role=4,
+                             assist=LLMAssist(client=Stub(), model="stub", on_error=lambda *a: None))
+    texts = [c.text for c in result.claims]
+    assert MIGR in texts and REGRESSION in texts
+    assert not any("or more" in t or "and more" in t for t in texts)
+
+
+@pytest.mark.parametrize("employer", [
+    "Acme as a Stanford graduate", "Acme as a certified PMP", "Acme as a Python expert", "Acme as an MBA holder",
+    "Acme as a former Google engineer", "Acme as a senior data scientist", "Acme and Google alumni network",
+    "Acme, bringing a PhD in statistics", "Acme as a TS/SCI cleared analyst", "Acme with a PhD", "Acme, ex-Google",
+    "Acme, certified PMP", "Acme Master of Business Administration",
+])
+def test_employer_slot_rejects_background_and_credential_wording(employer):
+    from job_agent.resume.cover_letter import employer_slot
+
+    assert employer_slot(employer) is None
+
+
+@pytest.mark.parametrize("title", [
+    "Data Analyst position as a Stanford graduate for the", "Data Analyst (as a certified PMP)",
+    "Data Analyst as a Python expert and former Google engineer for the", "Data Analyst and as an MBA graduate the",
+    "TS/SCI Cleared Data Analyst", "Data Analyst with proven expertise", "Analyst, Stanford graduate",
+])
+def test_title_slot_rejects_background_wording(title):
+    from job_agent.resume.cover_letter import title_slot
+
+    assert title_slot(title) is None
+
+
+@pytest.mark.parametrize("title", [
+    "Graduate Assistant", "Graduate Assistant - Data Analytics", "Sr. Data Analyst", "Analyst 2",
+    "Statistician (GS-1530-11)", "IT Specialist (Programmer/Analyst) Trainee 1", "Program Research Specialist 3",
+    "Infrastructure as a Service Engineer", "Subject Matter Expert", "Advanced Analytics Manager",
+    "Certified Nursing Assistant", "New Graduate Data Analyst", "Data Analyst - Class of 2027",
+])
+def test_real_titles_with_graduate_or_service_words_still_fill_the_slot(title):
+    from job_agent.resume.cover_letter import title_slot
+
+    assert title_slot(title) == title
+
+
+@pytest.mark.parametrize("employer", [
+    "AT&T", "U.S. Bank", "L'Oréal USA", "Société Générale", "NYS Office of Information Technology Services",
+    "Stanford Graduate School of Business", "Advanced Micro Devices", "Expert Global Solutions",
+])
+def test_real_employers_still_fill_the_slot(employer):
+    from job_agent.resume.cover_letter import employer_slot
+
+    assert employer_slot(employer) == employer

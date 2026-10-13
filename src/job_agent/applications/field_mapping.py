@@ -11,8 +11,9 @@ Deterministic rules only (no LLM decides anything here):
   text or options mention a legal topic (``security.legal_text.is_legal_question``)
   -- are always flagged (``is_legal_declaration`` + ``requires_review``), never
   drafted by the LLM, and filled *only* from a ``verified_answers`` entry marked
-  ``is_legal_declaration: true`` whose pattern covers the whole question (no
-  extra clause, negation, condition or other country) and whose answer exactly
+  ``is_legal_declaration: true`` whose pattern covers the whole question -- the
+  label, its ``(e.g. ...)`` examples, the help text and the placeholder (no
+  extra clause, negation, condition or other country) -- and whose answer exactly
   matches an available option (or the field is free text). Non-legal verified
   answers and ``work_authorization`` booleans are never used to answer them;
 * EEO / voluntary self-identification is left blank for you;
@@ -646,10 +647,41 @@ def covering_verified_answers(fld: FormField, answers: list[VerifiedAnswer]) -> 
     return covered
 
 
+#: Visa / status names an example in a legal question may list ("(e.g. H-1B visa status)").
+_VISA_NAMES = re.compile(r"\b(?:[fjm] ?1|h ?1 ?b ?1?|h ?1|h ?2 ?[ab]|h ?4|l ?1 ?[ab]?|o ?1 ?[ab]?|e ?3|tn|opt|cpt|"
+                         r"stem opt|j 1|ead)\b")
+_EXAMPLE_PREFIX = re.compile(r"^\W*(?:e\.?\s?g\.?|i\.?\s?e\.?|for example|such as|ex\.)", re.I)
+
+
+def _legal_extras(fld: FormField) -> list[str]:
+    """Wording of a legal question outside its label proper: placeholder, help text, and the ``(e.g. ...)`` /
+    ``(i.e. ...)`` parentheses that label matching strips."""
+    examples = [m.group(0) for m in _LABEL_NOISE.finditer(fld.label or "") if _EXAMPLE_PREFIX.match(m.group(0))]
+    return [str(t) for t in (fld.placeholder, getattr(fld, "help_text", None), getattr(fld, "description", None),
+                             *examples) if t]
+
+
+def _legal_extra_covered(text: str, answer: VerifiedAnswer) -> bool:
+    """Does ``text`` (help text / placeholder / example) add nothing the legal verified answer does not cover?
+
+    It must be neutral filler ("Select...", "e.g. H-1B visa status"), or the answer's pattern plus legal filler
+    must cover it. Another clause ("Answering No also certifies you have never been convicted") never is.
+    """
+    bare = _LABEL_TAGS.sub(" ", _EXAMPLE_PREFIX.sub(" ", text.strip().strip("()"), count=1))
+    words = normalize(_YES_NO.sub(" ", _VISA_NAMES.sub(" ", normalize(bare)))).split()
+    pattern_words = {w for p in answer.question_patterns for w in normalize(p).split()}
+    if not any(w in _NEGATIONS for w in words) and set(words) <= _PLACEHOLDER_NEUTRAL | _LEGAL_FILLER | pattern_words:
+        return True
+    return answer in matching_verified_answers(text, [answer], strict=True)
+
+
 def _legal(fld: FormField, answers: list[VerifiedAnswer]) -> MappedAnswer:
     cat = FieldCategory.LEGAL
     legal_answers = [a for a in answers if a.is_legal_declaration]
-    matches = matching_verified_answers(fld.label, legal_answers, strict=True)
+    label_matches = matching_verified_answers(fld.label, legal_answers, strict=True)
+    # Whole-question coverage: the help text, placeholder and examples must not add a clause either.
+    extras = _legal_extras(fld)
+    matches = [a for a in label_matches if all(_legal_extra_covered(t, a) for t in extras)]
     if len(matches) > 1:
         ids = ", ".join(m.id for m in matches)
         return _review(fld, cat, f"legal/eligibility question matches several verified answers ({ids}); "
@@ -658,7 +690,10 @@ def _legal(fld: FormField, answers: list[VerifiedAnswer]) -> MappedAnswer:
         return _from_verified(fld, cat, matches[0], force_legal=True)
     reason = ("legal/eligibility question: never answered automatically -- answer it with `job-agent approvals "
               "answer` or save a verified answer with is_legal_declaration: true in your profile")
-    partial = [a.id for a in matching_verified_answers(fld.label, legal_answers)]
+    if label_matches:
+        reason += (f"; verified answer(s) {', '.join(a.id for a in label_matches)} match the question, but its help "
+                   "text / placeholder / example adds wording they do not cover")
+    partial = [a.id for a in matching_verified_answers(fld.label, legal_answers) if a not in label_matches]
     if partial:
         reason += f"; verified answer(s) {', '.join(partial)} match only part of this question"
     other = [a.id for a in matching_verified_answers(fld.label, [a for a in answers if not a.is_legal_declaration])]

@@ -203,7 +203,7 @@ def test_guard_third_party_gets_stop_once_filling_begins():
     g.lock()
     assert "after filling began" in g.decide(_req(page, third, rtype="script"))
     assert "after filling began" in g.decide(_req(page, "https://evil.example.net/p.gif?e=x", rtype="image"))
-    assert g.decide(_req(page, OFFICIAL + "/data.json")) is None  # official host GETs still fine
+    assert g.decide(_req(page, OFFICIAL + "/logo.png", rtype="image")) is None  # official host assets still fine
     # the ATS asset allowlist: static types only
     assert g.decide(_req(page, "https://boards.cdn.greenhouse.io/a.js", rtype="script")) is None
     assert g.decide(_req(page, "https://boards.cdn.greenhouse.io/a.json", rtype="fetch")) is not None
@@ -577,12 +577,15 @@ def test_guard_structural_rules_after_filling_began():
     # known before filling: requested earlier, or referenced by the page (fragment ignored)
     assert g.decide(_req(page, OFFICIAL + "/pixel.gif?seen=1", rtype="image")) is None
     assert g.decide(_req(page, OFFICIAL + "/lazy.png?v=7", rtype="image")) is None
-    # a few new static assets without a query string keep loading ...
-    for i in range(g.new_asset_budget):
+    # a few new static assets without a query string keep loading (every request counts) ...
+    for i in range(g.new_asset_budget - 3):
         assert g.decide(_req(page, f"{OFFICIAL}/chunk{i}.js", rtype="script")) is None
-    assert g.decide(_req(page, f"{OFFICIAL}/chunk0.js", rtype="script")) is None  # same URL again
-    # ... but not an unbounded number
-    assert "too many new requests" in g.decide(_req(page, f"{OFFICIAL}/one-more.css", rtype="stylesheet"))
+    assert g.decide(_req(page, f"{OFFICIAL}/chunk0.js", rtype="script")) is None  # same URL again: counted too
+    assert g.requests_after_lock == g.new_asset_budget
+    # ... but not an unbounded number, not even of URLs loaded before
+    assert "too many requests" in g.decide(_req(page, f"{OFFICIAL}/one-more.css", rtype="stylesheet"))
+    assert "too many requests" in g.decide(_req(page, OFFICIAL + "/pixel.gif?seen=1", rtype="image"))
+    assert g.leaks == []  # nothing here carried typed data
 
 
 def test_guard_before_filling_and_after_the_approved_click():

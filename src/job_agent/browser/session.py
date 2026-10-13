@@ -19,12 +19,16 @@ every frame in it and of any window it opens, before the request is sent:
 * **data-loss prevention** from the moment filling begins until the approved
   click, for every host *including the job's own*: every navigation of the
   page or of any frame in it (GET form posts, ``location`` changes, iframe
-  loads) is aborted -- a top-level one also stops the session; a URL that was
-  requested or referenced by the page before anything was typed may be fetched
-  again; any other request is aborted if its decoded URL or body contains a
-  typed value or a chunk of an uploaded file (``dlp.ProtectedData``), if it has
-  a query string, if it is not a static asset (fetch / XHR / beacon /
-  EventSource...), or once ``NEW_ASSET_BUDGET`` new asset URLs were loaded;
+  loads) is aborted -- a top-level one also stops the session; a static file
+  (image / stylesheet / font / script / media) the page actually loaded before
+  anything was typed may be loaded again; any other request is aborted if its
+  decoded URL or body contains a typed value or a chunk of an uploaded file
+  (``dlp.ProtectedData``), if it is not a static asset (fetch / XHR / beacon /
+  EventSource...; one to a URL the page used or referenced before typing is
+  also recorded as a leak, since *which* known URLs a script fetches can encode
+  what was typed), or if it has a query string and is not a URL the page
+  referenced before typing. Every request allowed after filling began counts
+  against ``NEW_ASSET_BUDGET``; once it is used up, everything else is aborted;
 * WebSockets are always refused (``context.route_web_socket``), new windows /
   popups are closed and every request from them is aborted;
 * server-side redirects are not interceptable in Playwright, so they are
@@ -39,7 +43,9 @@ DNS prefetches and WebRTC. Closing those needs network-level enforcement (a
 filtering proxy); SharedWorkers are disabled outright (``CHROMIUM_ARGS``).
 Also not covered: a script that encodes typed data in a form the content check
 does not decode (e.g. reversed, as character codes) in the *path* of one of
-the ``NEW_ASSET_BUDGET`` new asset URLs allowed after filling began.
+the ``NEW_ASSET_BUDGET`` asset requests allowed after filling began, or in
+which of the page's own static files it loads as images / stylesheets (at most
+``NEW_ASSET_BUDGET`` requests in all).
 
 At most ``max_concurrent`` sessions run per process (a semaphore). The Playwright
 sync API must not be used from inside an asyncio event loop; call it from a
@@ -312,11 +318,11 @@ def launch_chromium(pw: "Playwright", *, headless: bool) -> "Browser":
 _SAFE_METHODS = frozenset({"GET", "HEAD"})
 #: Resource types that may be fetched from ``policy.asset_request_allowed`` hosts after filling began.
 _STATIC_TYPES = frozenset({"stylesheet", "image", "media", "font", "script", "texttrack"})
-#: New (not requested / referenced before filling began) asset URLs allowed before the approved click.
+#: Requests (static assets) allowed after filling began, before the approved click.
 NEW_ASSET_BUDGET = 16
 
 #: Every URL the document references before anything is typed (elements, inline styles, same-origin CSS).
-#: Fetching one of these later cannot carry typed data, so it is exempt from the data-loss checks.
+#: Its own text cannot carry typed data, so it may keep its query string; it is still checked and counted.
 _REFERENCED_URLS_JS = r"""() => {
   const out = new Set();
   const add = (u, base) => {
@@ -399,10 +405,14 @@ class _Guard:
     armed_until: float | None = None
     #: What was typed / attached (see ``dlp.ProtectedData``).
     protected: ProtectedData = field(default_factory=ProtectedData)
-    #: URLs requested, or referenced by the page, before filling began (fragment removed).
-    known_urls: set[str] = field(default_factory=set)
-    #: New asset URLs allowed after filling began (bounded by ``new_asset_budget``).
+    #: URLs actually requested before filling began (fragment removed).
+    requested_urls: set[str] = field(default_factory=set)
+    #: URLs the page referenced (but had not necessarily requested) before filling began.
+    referenced_urls: set[str] = field(default_factory=set)
+    #: New asset URLs allowed after filling began.
     new_urls: set[str] = field(default_factory=set)
+    #: Requests allowed after filling began, before the approved click (bounded by ``new_asset_budget``).
+    requests_after_lock: int = 0
     new_asset_budget: int = NEW_ASSET_BUDGET
     violations: list[tuple[str, str]] = field(default_factory=list)
     blocked: list[tuple[str, str, str]] = field(default_factory=list)  # (method, clipped url, reason)
@@ -421,8 +431,13 @@ class _Guard:
         ``referenced_urls`` are the URLs the page referenced before anything was typed.
         """
         if not self.locked:
-            self.known_urls.update(_url_key(u) for u in referenced_urls)
+            self.referenced_urls.update(_url_key(u) for u in referenced_urls)
         self.locked = True
+
+    @property
+    def known_urls(self) -> set[str]:
+        """URLs requested or referenced before filling began."""
+        return self.requested_urls | self.referenced_urls
 
     def protect_value(self, value: str | None) -> None:
         self.protected.add_value(value)
@@ -498,18 +513,26 @@ class _Guard:
             kind = "navigation" if main else "frame navigation"
             return f"{kind} after filling began, before the approved submission"
         key = _url_key(url)
-        if key in self.known_urls:
-            return None  # requested / referenced before anything was typed: carries nothing typed
-        leak = self.protected.match(url, _post_body(request))
-        if leak:
-            self.leaks.append(self.safe_url(url))
-            return f"request carries {leak} before the approved submission"
-        if urlsplit(url).query or url.endswith("?"):
-            return "new request with a query string after filling began, before the approved submission"
-        if request.resource_type not in _STATIC_TYPES:
-            return f"new {request.resource_type} request after filling began, before the approved submission"
-        if key not in self.new_urls and len(self.new_urls) >= self.new_asset_budget:
-            return "too many new requests after filling began, before the approved submission"
+        static = request.resource_type in _STATIC_TYPES
+        # A static file the page already loaded before anything was typed carries nothing typed itself;
+        # every other request is checked. Every request counts against the budget: WHICH known URLs a page
+        # fetches, and in what order, can encode what was typed.
+        if not (static and key in self.requested_urls):
+            leak = self.protected.match(url, _post_body(request))
+            if leak:
+                self.leaks.append(self.safe_url(url))
+                return f"request carries {leak} before the approved submission"
+            if not static:
+                if key in self.requested_urls or key in self.referenced_urls:
+                    # A script re-fetching URLs it loaded / referenced before typing: a signalling channel.
+                    self.leaks.append(self.safe_url(url))
+                    return (f"{request.resource_type} request to a URL the page used before filling began, after "
+                            "filling began (it could signal what was typed)")
+                return f"new {request.resource_type} request after filling began, before the approved submission"
+            if key not in self.referenced_urls and (urlsplit(url).query or url.endswith("?")):
+                return "new request with a query string after filling began, before the approved submission"
+        if self.requests_after_lock >= self.new_asset_budget:
+            return "too many requests after filling began, before the approved submission"
         return None
 
     def safe_url(self, url: str) -> str:
@@ -523,9 +546,11 @@ class _Guard:
     def _allow(self, url: str) -> None:
         key = _url_key(url)
         if not self.locked:
-            self.known_urls.add(key)
-        elif not self.released and key not in self.known_urls:
-            self.new_urls.add(key)
+            self.requested_urls.add(key)
+        elif not self.released:
+            self.requests_after_lock += 1
+            if key not in self.requested_urls and key not in self.referenced_urls:
+                self.new_urls.add(key)
         return None
 
     # -- Playwright callbacks -------------------------------------------- #

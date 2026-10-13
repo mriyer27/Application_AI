@@ -388,3 +388,99 @@ def test_round2_neutral_sentences_are_not_legal(text):
 ])
 def test_is_yes_no_answer(answer, expected):
     assert is_yes_no_answer(answer) is expected
+
+
+# --------------------------------------------------------------------------- #
+# Round 3: qualifiers after numbers, multiplier signs, degrees, titles, employers
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("text", [
+    "I converted 9 or more legacy SAS programs to Python.",
+    "I converted 9 or so legacy SAS programs to Python.",
+    "I converted more than 9 legacy SAS programs to Python.",
+    "I converted nine or more legacy SAS programs to Python.",
+    "I converted about a dozen legacy SAS programs to Python.",  # "dozen" = 12, a number the facts state plainly
+    "I made processing 9× faster by converting legacy SAS programs to Python.",
+    "I converted 25 legacy SAS programs to Python.",  # the facts only have 25%
+    "I improved processing efficiency by 25%.",  # the fact says approximately 25%
+    "I cut manual review effort roughly in half.",
+])
+def test_draft_numbers_keep_the_verified_qualifier_and_unit(text):
+    assert draft_claim_problems(text, facts=FACTS + [REGRESSION_FACT], skills=SKILLS), text
+
+
+REGRESSION_FACT = ("Analyzed regression results across 12 categories using SAS Enterprise Guide, contributing to "
+                   "approximately 30% less manual review effort.")
+
+
+@pytest.mark.parametrize("text", [
+    "I converted 9 legacy SAS programs to Python, improving efficiency by about 25%.",
+    "I converted nine legacy SAS programs to Python.",
+    "I analyzed regression results across 12 categories, contributing to roughly 30% less manual review effort.",
+])
+def test_faithful_draft_numbers_still_pass(text):
+    assert draft_claim_problems(text, facts=FACTS + [REGRESSION_FACT], skills=SKILLS) == [], text
+
+
+ROUND3_FABRICATED = [
+    "Thank you, [name]. I recently graduated with a PhD in Statistics from Stanford and remain very interested.",
+    "Thank you, [name]. I hold an MBA and remain very interested in the role.",
+    "Thank you, [name]. As a Senior Data Scientist at Google I remain very interested in the role.",
+    "Thank you, [name]. My time at Google and Meta prepared me well for this role.",
+    "I am a certified PMP and a Certified Scrum Master.",
+    "I hold an MS in Information Systems.",
+    "I graduated from Example State University.",
+    "I have completed my Master of Science in Information Systems.",
+    "I earned a Master of Business Administration.",
+    "I am pursuing an MS in Statistics, expected May 2027.",
+    "I am a senior data scientist.",
+    "I interned at Google last summer.",
+    "I studied at Stanford University.",
+    "I am a Stanford alumnus.",
+    "At Globex, I analyzed regression results across 12 categories.",
+    "I graduated in May 2026.",
+]
+
+
+@pytest.mark.parametrize("text", ROUND3_FABRICATED)
+def test_fabricated_degrees_titles_and_employers_are_rejected(profile, text):
+    assert draft_claim_problems(text, profile=profile, context=("[name]",)), text
+    assert draft_claim_problems(text, facts=profile.all_facts(), skills=profile.skills), text
+    assert draft_claim_problems(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "I am pursuing a Master of Science in Information Systems at Example State University, expected May 2027.",
+    "I am currently pursuing my Master of Science in Information Systems at Example State University (expected "
+    "graduation: May 2027).",
+    "I am pursuing an MS in Information Systems, expected May 2027.",
+    "I will graduate in May 2027.",
+    "I am a graduate student in Information Systems.",
+    "I completed my Bachelor of Technology in Computer Science at Sample Institute of Technology in June 2025.",
+    "As a Student Intern at Example State Agency, I supported IBM Cognos dashboards and reporting using DB2.",
+    "During my internship at Example State Agency, I worked with Python.",
+    "I remain very interested in the Data Analyst role and look forward to hearing from you.",
+    "Thank you for reaching out. I would be glad to discuss my experience with SQL and Python.",
+    "Please let me know if Thursday works for the team.",
+])
+def test_verified_education_titles_and_employers_pass_with_the_profile(profile, text):
+    assert draft_claim_problems(text, profile=profile, context=("[name]",)) == [], text
+
+
+def test_employer_from_the_application_may_be_named_but_not_claimed(profile):
+    context = ("Applied on 2026-09-30; no response for 12 days.", "Acme Retail Inc.", "Data Analyst")
+    named = ("I applied for the Data Analyst position at Acme Retail Inc. on 2026-09-30 and wanted to follow up. "
+             "I remain interested in the role and would welcome the chance to discuss my experience.")
+    assert draft_claim_problems(named, profile=profile, context=context) == []
+    assert draft_claim_problems("Thank you, Acme Retail Inc. I am glad to hear from you.", profile=profile,
+                                context=context) == []
+    for claimed in ("My time at Acme Retail Inc. prepared me well for this role.",
+                    "I worked at Acme Retail Inc. as an intern.",
+                    "As a Data Analyst, I analyzed regression results across 12 categories."):
+        assert draft_claim_problems(claimed, profile=profile, context=context), claimed
+
+
+def test_form_answers_treat_every_sentence_as_about_the_candidate(profile):
+    answer = "PhD in Statistics, Stanford University."  # no "I": still a claim in a form answer
+    assert draft_claim_problems(answer, profile=profile, about_candidate=True)
+    ok = "Master of Science in Information Systems at Example State University, expected May 2027."
+    assert draft_claim_problems(ok, profile=profile, about_candidate=True) == []

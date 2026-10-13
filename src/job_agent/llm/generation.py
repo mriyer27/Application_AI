@@ -31,7 +31,7 @@ from job_agent.llm.analysis import clean_field
 from job_agent.llm.client import OllamaClient
 from job_agent.llm.errors import LegalQuestionRefused, LLMInvalidOutput
 from job_agent.models import EmailCategory, EmailClassification
-from job_agent.profile import Fact
+from job_agent.profile import CandidateProfile, Fact
 from job_agent.security import legal_text
 from job_agent.security.redaction import redact_text
 from job_agent.security.textnorm import has_non_ascii_numerals, normalize_text
@@ -164,22 +164,28 @@ def unverified_numbers(text: str, sources: Iterable[str]) -> list[str]:
 
 
 def unsafe_draft_problems(text: str, *, facts: Sequence[Fact | str] | None = None,
-                          profile_skills: Sequence[str] | None = None, context: Sequence[str] = ()) -> list[str]:
+                          profile_skills: Sequence[str] | None = None, context: Sequence[str] = (),
+                          profile: CandidateProfile | None = None) -> list[str]:
     """Reasons a reply/follow-up draft is unsafe.
 
     Disclosure, commitment and negotiation patterns, any work-authorization or
-    other legal statement, and claims (numbers, tools/skills, leadership) not
-    traceable to ``facts`` / ``profile_skills``. When ``facts`` is ``None`` (not
-    provided) every first-person experience claim with numbers, tools or
-    leadership is rejected. Numbers in ``context`` (trusted application data such
-    as the date you applied) may be repeated outside experience claims.
+    other legal statement, and claims (numbers -- also with a changed qualifier
+    or unit --, tools/skills, leadership, degrees, certifications, employers,
+    job titles) not traceable to ``facts`` / ``profile_skills`` / ``profile``
+    (``security.legal_text.draft_claim_problems``). When ``facts`` is ``None``
+    (not provided) every first-person experience claim with numbers, tools or
+    leadership is rejected; without ``profile`` so is any degree or graduation
+    wording the facts lack. Numbers and names in ``context`` (trusted application
+    data such as the employer or the date you applied) may be repeated outside
+    experience claims.
 
     Checks run on ``normalize_text(text)`` (plus a check for non-ASCII numerals in
     ``text`` itself); store that normalized text, not ``text``.
     """
     norm = normalize_text(text)
     problems = [reason for pattern, reason in _UNSAFE_DRAFT_PATTERNS if pattern.search(norm)]
-    problems += legal_text.draft_claim_problems(text, facts=facts, skills=profile_skills, context=context)
+    problems += legal_text.draft_claim_problems(text, facts=facts, skills=profile_skills, context=context,
+                                                profile=profile)
     return list(dict.fromkeys(problems))
 
 
@@ -263,13 +269,15 @@ def classify_email(client: OllamaClient, *, subject: str, sender: str, body: str
 
 
 def _checked_draft(text: str, kind: str, *, facts: Sequence[Fact | str] | None = None,
-                   profile_skills: Sequence[str] | None = None, context: Sequence[str] = ()) -> str:
+                   profile_skills: Sequence[str] | None = None, context: Sequence[str] = (),
+                   profile: CandidateProfile | None = None) -> str:
     """The normalized draft (exactly the text that was checked), or ``LLMInvalidOutput``."""
     draft = clean_multiline(normalize_text(text), 2500)
     problems = []
     if has_non_ascii_numerals(text):
         problems.append("uses numerals that are not plain digits (circled, roman, superscript or other scripts)")
-    problems += unsafe_draft_problems(draft, facts=facts, profile_skills=profile_skills, context=context)
+    problems += unsafe_draft_problems(draft, facts=facts, profile_skills=profile_skills, context=context,
+                                      profile=profile)
     problems = list(dict.fromkeys(problems))
     if problems:
         raise LLMInvalidOutput(f"{kind} draft rejected: {', '.join(problems)}",
@@ -279,13 +287,17 @@ def _checked_draft(text: str, kind: str, *, facts: Sequence[Fact | str] | None =
 
 def draft_email_reply(client: OllamaClient, *, category: str, subject: str, body: str, candidate_name: str,
                       model: str | None = None, facts: Sequence[Fact | str] | None = None,
-                      profile_skills: Sequence[str] | None = None) -> str:
+                      profile_skills: Sequence[str] | None = None, profile: CandidateProfile | None = None,
+                      employer: str | None = None) -> str:
     """Reply draft that never accepts times, negotiates, commits, discloses sensitive information,
     states anything about work authorization or claims unverified experience.
 
-    ``facts`` / ``profile_skills`` (verified profile data) are used only to check
-    the draft; without them any experience claim with numbers, tools or
-    leadership is rejected. The email itself is never a source of allowed claims.
+    ``facts`` / ``profile_skills`` / ``profile`` (verified profile data) are used
+    only to check the draft; without them any experience claim with numbers,
+    tools or leadership (and, without ``profile``, any degree wording) is
+    rejected. The email itself is never a source of allowed claims; the
+    ``employer`` it is from (trusted application data) may be named, never
+    claimed as your background.
     """
     valid = {c.value for c in EmailCategory}
     category = category if category in valid else EmailCategory.OTHER.value
@@ -294,36 +306,41 @@ def draft_email_reply(client: OllamaClient, *, category: str, subject: str, body
                                prompt=prompts.email_reply_prompt(category, wrapped, candidate_name),
                                schema=ReplyOut, model=model, max_tokens=400)
     return _checked_draft(out.reply, "reply", facts=facts, profile_skills=profile_skills,
-                          context=(candidate_name,))
+                          context=(candidate_name, employer or ""), profile=profile)
 
 
 def draft_followup(client: OllamaClient, *, employer: str, job_title: str, context: str, candidate_name: str,
                    model: str | None = None, facts: Sequence[Fact | str] | None = None,
-                   profile_skills: Sequence[str] | None = None) -> str:
+                   profile_skills: Sequence[str] | None = None, profile: CandidateProfile | None = None) -> str:
     """Follow-up draft with the same checks as ``draft_email_reply``.
 
-    Numbers from the application data (employer, title, ``context`` such as the
-    date you applied) may be repeated, but never as part of an experience claim.
+    Numbers and names from the application data (employer, title, ``context``
+    such as the date you applied) may be repeated, but never as part of an
+    experience claim ("my time at <employer>", "as a <job title>").
     """
     wrapped = wrap_untrusted(f"Employer: {employer}\nJob title: {job_title}\n\n{context}", label="APPLICATION_CONTEXT",
                              max_chars=4000)
     out = client.generate_json(system=prompts.FOLLOWUP_SYSTEM, prompt=prompts.followup_prompt(wrapped, candidate_name),
                                schema=FollowupOut, model=model, max_tokens=350)
     return _checked_draft(out.message, "follow-up", facts=facts, profile_skills=profile_skills,
-                          context=(employer, job_title, context, candidate_name))
+                          context=(employer, job_title, context, candidate_name), profile=profile)
 
 
 def draft_answer(client: OllamaClient, *, question: str, facts: list[Fact], model: str | None = None,
-                 profile_skills: Sequence[str] | None = None) -> AnswerDraft:
+                 profile_skills: Sequence[str] | None = None,
+                 profile: CandidateProfile | None = None) -> AnswerDraft:
     """Answer an ordinary (non-legal) form question from verified facts.
 
     Legal / eligibility / compensation / EEO / identity questions -- also
     misspelled, in another language or in a script the checks cannot read -- are
     refused before any model call (``LegalQuestionRefused``, a
     ``PermanentError``). Answers that are a bare yes/no, make a legal statement,
-    use non-ASCII numerals or claim numbers, tools or leadership absent from the
-    facts are rejected (``LLMInvalidOutput``). The returned answer is the
-    normalized text that was checked.
+    use non-ASCII numerals or claim numbers (also with a changed qualifier or
+    unit), tools, leadership, degrees, certifications, employers or job titles
+    absent from the facts / ``profile`` are rejected (``LLMInvalidOutput``);
+    every sentence of an answer counts as a statement about you. Without
+    ``profile`` any degree or graduation wording the facts lack is rejected. The
+    returned answer is the normalized text that was checked.
     """
     if is_legal_question(question):
         raise LegalQuestionRefused("this question concerns legal, eligibility or compensation matters and must be "
@@ -338,10 +355,13 @@ def draft_answer(client: OllamaClient, *, question: str, facts: list[Fact], mode
     if legal_text.is_yes_no_answer(answer):
         raise LLMInvalidOutput("answer is a bare yes/no; open-ended questions are answered from facts, and yes/no "
                                "questions by you")
-    extra = unverified_numbers(answer, [f.text for f in facts])
+    # The profile's verbatim education dates ("expected May 2027") may be repeated.
+    dated = legal_text.without_items(answer, legal_text.verified_education_dates(profile))
+    extra = unverified_numbers(dated, [f.text for f in facts])
     if extra:
         raise LLMInvalidOutput(f"answer contains numbers not found in verified facts: {extra}")
-    problems = legal_text.draft_claim_problems(answer, facts=facts, skills=profile_skills)
+    problems = legal_text.draft_claim_problems(answer, facts=facts, skills=profile_skills, profile=profile,
+                                               about_candidate=True)
     if problems:
         raise LLMInvalidOutput(f"answer rejected: {', '.join(problems)}")
     ids = _fact_ids(out.fact_ids, {f.id for f in facts})

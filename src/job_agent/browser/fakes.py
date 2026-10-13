@@ -52,6 +52,8 @@ class FakeForm:
     redirect_to: str | None = None
     refuse_fill: set[str] = field(default_factory=set)
     blocked_leaks: list[str] = field(default_factory=list)  # requests the data-loss guard would abort
+    #: What the form shows once something was typed into it (a script rewriting questions); None = unchanged.
+    fields_after_fill: list[FormField] | None = None
 
     def __post_init__(self) -> None:
         if self.outcome not in OUTCOMES:
@@ -95,6 +97,8 @@ class FakePage:
 
     def inspect_form(self) -> list[FormField]:
         self.check_navigation()
+        if self.values and self.form.fields_after_fill is not None:
+            return list(self.form.fields_after_fill)
         return list(self.form.fields)
 
     def fill(self, fld: FormField, value: str) -> None:

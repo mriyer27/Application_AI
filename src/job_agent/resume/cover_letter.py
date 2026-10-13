@@ -17,8 +17,12 @@ when they look like a plain title / name (no sentence punctuation, no
 first-person words, no instructions, at most 12 words, no full-width /
 look-alike / invisible characters, and nothing claim-like: no words about a
 person such as "candidate" or "he", no verbs such as "led" / "is" / "holds",
-no counts of people / years / money, no work-authorization wording; a job
-title's numbers may only be years, versions or level numerals). Otherwise the
+no counts of people / years / money, no work-authorization wording, no
+background wording such as "as a ...", "bringing", "with a/my", "former",
+"ex-", "alumni", "cleared", proficiency words ("proven", "hands-on") or
+graduation wording other than a leading "Graduate" / a school or program
+name, and in an employer no degree / certification wording; a job title's
+numbers may only be years, versions or level numerals). Otherwise the
 letter says "the advertised position" / "your organization" and a ``review``
 issue is added. They are never a source for any claim.
 
@@ -103,7 +107,24 @@ _SLOT_QUANTITY = re.compile(
     r"|(?<![A-Za-z])(?:team|group|staff|department|organization)\s+of\s+\d"
     r"|[$£€%]|\d\s*\+|(?<![A-Za-z])percent(?![A-Za-z])",
     re.IGNORECASE)
-_SLOT_MULTIPLIER = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[kKmMbBxX](?![A-Za-z0-9])")
+#: Wording that describes the candidate's background rather than naming a job / organization
+#: ("Acme as a Stanford graduate", "Acme, bringing a PhD", "former Google engineer", "TS/SCI Cleared Analyst").
+_SLOT_BACKGROUND = re.compile(
+    r"(?<![A-Za-z'’-])(?:as\s+(?:an?|the)(?!\s+service(?![A-Za-z]))|bringing|with\s+(?:an?|my)|former(?:ly)?|cleared|"
+    r"alumn\w*)(?![A-Za-z'’-])|(?<![A-Za-z])ex-(?=[A-Za-z])",
+    re.IGNORECASE)
+#: Proficiency claims ("Python expertise", "proven", "hands-on"); "Specialist" / "Expert" / "Advanced" are title words.
+_SLOT_PROFICIENCY = re.compile(
+    r"(?<![A-Za-z'’-])(?:expertise|proficient|proficiency|mastery|skilled|seasoned|fluent|track\s+record|proven|"
+    r"hands-on|in-depth|extensive)(?![A-Za-z'’-])",
+    re.IGNORECASE)
+#: "Graduate" followed by a word that makes it a program, school or job ("Graduate School of Business").
+_SLOT_GRADUATE_NOUN = re.compile(
+    r"\s+(?:school|college|institute|center|centre|studies|programs?|division|assistant|research|student|teaching|"
+    r"management|hotels?)(?![A-Za-z])",
+    re.IGNORECASE)
+_SLOT_MULTIPLIER = re.compile(r"(?<![A-Za-z0-9.])\d+(?:\.\d+)?\s*[kKmMbBxX×](?![A-Za-z0-9])|"
+                              r"(?<![A-Za-z0-9.])[xX×]\d")
 _SLOT_NUMBER = re.compile(r"(?<![A-Za-z0-9.,])\d+(?:[.,]\d+)*(?![A-Za-z0-9])")
 _LEVEL_WORDS = frozenset("level tier grade band step class phase gs ic".split())
 
@@ -126,12 +147,37 @@ def _title_numbers_ok(cleaned: str) -> bool:
     return True
 
 
+def _graduation_claim(cleaned: str, *, title: bool) -> bool:
+    """Graduation wording other than a leading "Graduate" or a program / school / job name.
+
+    "Graduate Assistant", "New Graduate Analyst", "Stanford Graduate School of
+    Business" and (in a job title) a cohort such as "Class of 2027" name
+    something; "Acme and Stanford graduate network" or "Acme alumni" describe the
+    candidate.
+    """
+    for m in validation._GRADUATION.finditer(cleaned):
+        if title and re.fullmatch(r"class\s+of", m.group(0), re.IGNORECASE) and re.match(
+                r"\s+(?:19|20)\d{2}(?![\w])", cleaned[m.end():]):
+            continue
+        if m.group(0).lower() == "graduate":
+            before = cleaned[: m.start()]
+            if (not before.strip() or re.search(r"(?<![A-Za-z])(?:new|recent)\s+$", before, re.IGNORECASE)
+                    or _SLOT_GRADUATE_NOUN.match(cleaned[m.end():])):
+                continue
+        return True
+    return False
+
+
 def _claim_like(cleaned: str, *, title: bool) -> bool:
-    """True when slot text states something about a person (claims, counts, legal status) instead of naming."""
+    """True when slot text states something about a person (claims, counts, legal status, background) instead of naming."""
     if _SLOT_PEOPLE.search(cleaned) or _SLOT_CLAIM_WORDS.search(cleaned) or _SLOT_QUANTITY.search(cleaned):
         return True
     if validation.work_authorization_terms(cleaned):
         return True
+    if _SLOT_BACKGROUND.search(cleaned) or _SLOT_PROFICIENCY.search(cleaned) or _graduation_claim(cleaned, title=title):
+        return True
+    if not title and (validation._CREDENTIAL.search(cleaned) or validation._DEGREE_WORDS.search(cleaned)):
+        return True  # degrees / certifications never name an employer ("Acme, certified PMP")
     if title:
         return bool(_SLOT_PRONOUNS.search(cleaned)) or not _title_numbers_ok(cleaned)
     return False

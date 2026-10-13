@@ -9,6 +9,10 @@ Invariants enforced here and in ``database.repo`` (not by prompts):
 * final submission needs an approval decided by you and consumed exactly once
   (``SUBMISSION_ATTEMPTED`` is recorded *before* the click, with the rebuilt
   payload whose hash must equal the approved one);
+* the approval pins each question as the page asked it (``payload.questions``):
+  if a field to be filled or a required field now reads differently (label,
+  help text, placeholder, type, options, legal wording), or the questions change
+  while the answers are typed, the browser stops before the click;
 * browser submission is off unless ``applications.browser_submission_enabled``;
 * an unknown outcome is never retried automatically: once the click may have
   happened (including Ctrl+C / a stop signal / a killed process) the outcome is
@@ -41,9 +45,13 @@ from job_agent.applications.field_mapping import (
 )
 from job_agent.applications.payload import (
     FORM_PREPARED_EVENT,
+    QUESTION_DIGEST_KEY,
     REJECTED_DOCUMENT_STATUS,
     approval_view,
     build_payload,
+    question_digest,
+    question_is_legal,
+    question_signature,
     submission_blockers,
     summary_line,
     usable_document,
@@ -267,16 +275,18 @@ def _make_drafter(ctx: "AppContext") -> tuple[Drafter | None, Callable[[], None]
         return None, noop
     from job_agent.security.untrusted import clean_untrusted
 
-    facts = ctx.profile.all_facts()
+    profile = ctx.profile
+    facts = profile.all_facts()
     valid_ids = {f.id for f in facts}
-    skills = list(ctx.profile.skills)
+    skills = list(profile.skills)
 
     def drafter(question: str) -> SuggestedAnswer | None:
         # The label comes from the employer's page (untrusted). draft_answer wraps it with
-        # security.untrusted.wrap_untrusted itself and refuses legal/eligibility questions.
+        # security.untrusted.wrap_untrusted itself and refuses legal/eligibility questions. The
+        # profile lets it check degrees, certifications, employers and titles in the answer.
         try:
             result = draft_answer(client, question=clean_untrusted(question, max_chars=1500), facts=facts,
-                                  profile_skills=skills)
+                                  profile_skills=skills, profile=profile)
         except JobAgentError as exc:
             repo.record_error(ctx.db, component="applications:draft", error=exc)
             return None
@@ -644,7 +654,8 @@ def prepare_application(ctx: "AppContext", job_ref: str | int, *, browser_factor
         for key, reason in failures.items():
             arepo.mark_fill_failed(db, app_id, key, reason)
         repo.add_application_event(db, app_id, FORM_PREPARED_EVENT, actor="browser", details={
-            "fields": [m.field.describe() for m in mapped],
+            # Each question as the page asked it; the approval pins these digests (see payload.questions).
+            "fields": [{**m.field.describe(), QUESTION_DIGEST_KEY: question_digest(m.field)} for m in mapped],
             "validation_errors": validation_errors,
             "screenshot": shot,
             "eligibility_reference": _eligibility_reference(ctx),
@@ -900,9 +911,53 @@ def _approval_problem(row: "sqlite3.Row") -> str | None:
     }.get(status) if status != ApprovalStatus.APPROVED.value else None
 
 
+def _checked_keys(answers: dict[str, Any], live: dict[str, FormField]) -> list[str]:
+    """Fields whose question must be unchanged: every field that will be filled, and every required one."""
+    return list(dict.fromkeys([*answers, *(k for k, f in live.items() if f.required)]))
+
+
+def _changed_questions(payload: dict[str, Any], rows: dict[str, Any], live: dict[str, FormField],
+                       keys: list[str]) -> list[str]:
+    """Keys whose live question differs from the one you approved an answer to (label, help text, placeholder,
+    type, option labels, legal flag), or that is now legal although its answer was not a legal declaration."""
+    approved = payload.get("questions") or {}
+    changed = []
+    for key in keys:
+        fld = live.get(key)
+        if fld is None:
+            continue  # missing fields are reported separately
+        row = rows.get(key)
+        newly_legal = row is not None and not fld.is_file and question_is_legal(fld) \
+            and not row["is_legal_declaration"]
+        if approved.get(key) != question_digest(fld) or newly_legal:
+            changed.append(key)
+    return changed
+
+
+def _drift_after_filling(before: dict[str, FormField], after: dict[str, FormField], keys: list[str],
+                         answered: set[str]) -> str | None:
+    """Did typing change the questions (a label swapped by a script, a new required question appearing)?"""
+    gone = [k for k in keys if k in before and k not in after]
+    if gone:
+        return f"fields disappeared while the answers were entered: {', '.join(gone[:5])}"
+    changed = [k for k in keys if k in after and k in before
+               and question_signature(after[k], wording=False) != question_signature(before[k], wording=False)]
+    if changed:
+        return f"questions changed while the answers were entered: {', '.join(changed[:5])}"
+    new_required = [k for k, f in after.items()
+                    if f.required and k not in answered and (k not in before or not before[k].required)]
+    if new_required:
+        return f"required questions appeared that were not approved: {', '.join(new_required[:5])}"
+    return None
+
+
 def submit_approved(ctx: "AppContext", approval_uid: str, *,
                     browser_factory: BrowserFactory | None = None) -> SubmissionResult:
-    """Submit an approved application with the browser: re-fill exactly the approved answers, click once."""
+    """Submit an approved application with the browser: re-fill exactly the approved answers, click once.
+
+    Nothing is typed unless every field to be filled and every required field still asks exactly the
+    question you approved (``payload.questions``); after typing, the questions must not have changed.
+    """
     cfg, db = ctx.config, ctx.db
     if not cfg.applications.browser_submission_enabled:
         raise PermissionDenied(
@@ -948,6 +1003,7 @@ def submit_approved(ctx: "AppContext", approval_uid: str, *,
     url = str(payload["application_url"] or "")
     answers = {a["field_key"]: a for a in payload["answers"]}
     blank_keys = {b["field_key"] for b in payload.get("left_blank_by_you") or []}
+    rows = {r["field_key"]: r for r in arepo.get_answers(db, app_id)}
     factory = browser_factory or default_factory
     options = BrowserOptions.from_config(cfg)
 
@@ -974,8 +1030,17 @@ def submit_approved(ctx: "AppContext", approval_uid: str, *,
             unexpected = [f.key for f in live.values() if f.required and f.key not in answers and f.key not in blank_keys]
             if unexpected:
                 raise _Manual(f"the form has required fields that were not approved: {', '.join(unexpected[:5])}")
+            keys = _checked_keys(answers, live)
+            changed = _changed_questions(payload, rows, live, keys)
+            if changed:
+                raise _Manual("the form changed since approval (these questions no longer read as you approved "
+                              f"them: {', '.join(changed[:5])})")
             for key, item in answers.items():
                 _enter(ctx, page, live[key], str(item["answer"]), item.get("source"))
+            drift = _drift_after_filling(live, {f.key: f for f in page.inspect_form()}, keys,
+                                         set(answers) | blank_keys)
+            if drift:
+                raise _Manual(f"the form changed since approval ({drift})")
             ensure_no_challenge(page)
             page.check_navigation()
             errors = page.validation_errors()
