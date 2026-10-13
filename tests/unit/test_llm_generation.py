@@ -318,3 +318,93 @@ def test_unsafe_draft_problems_reports_claims():
     problems = generation.unsafe_draft_problems(PROBE_REPLY)
     assert any("work-authorization" in p for p in problems)
     assert generation.unsafe_draft_problems("Hi [name], thank you for reaching out. Best, T") == []
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: misspelled / non-English legal questions and statements, numerals
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question", [
+    "Will you now or in the future require sponsership? Please explain.",
+    "¿Tiene permiso para trabajar en Estados Unidos? Explique.",
+    "Have you ever committed a crime? Please explain.",
+    "Are you a US citzen?",
+    "Benötigen Sie ein Visum?",
+    "What is your current status in the U.S.?",
+    "Describe your religious background.",
+    "您是否需要签证担保?",
+])
+def test_draft_answer_refuses_misspelled_foreign_and_sensitive_questions(fake, cfg, profile, question):
+    with pytest.raises(LegalQuestionRefused):
+        draft_answer(fake.client(cfg), question=question, facts=profile.all_facts())
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("answer, reason", [
+    ("No, not now or in the future.", "yes/no"),
+    ("Yes.", "yes/no"),
+    ("I bring ⑳ years of analytics experience.", "not plain digits"),
+    ("I converted ⑨ legacy SAS programs to Python.", "not plain digits"),
+    ("I am a U.S. citzen and need no sponser.", "legal"),
+    ("I'm cleared at the TS level.", "legal"),
+])
+def test_draft_answer_rejects_yes_no_numerals_and_misspelled_legal_statements(fake, cfg, profile, answer, reason):
+    fake.queue({"answer": answer, "fact_ids": ["agency_python_migration"], "confidence": "medium"})
+    with pytest.raises(LLMInvalidOutput, match=reason):
+        draft_answer(fake.client(cfg), question="Tell us about a project.", facts=profile.all_facts())
+
+
+def test_draft_answer_returns_the_normalized_text_it_checked(fake, cfg, profile):
+    fake.queue({"answer": "I converted 9 legacy ＳＡＳ programs to Python.", "fact_ids": ["agency_python_migration"],
+                "confidence": "medium"})
+    draft = draft_answer(fake.client(cfg), question="Describe a time you automated a process.",
+                         facts=profile.all_facts())
+    assert draft.answer == "I converted 9 legacy SAS programs to Python."
+
+
+#: Reviewer's probe_reply_e2e.py bodies (each was accepted as source=llm before).
+ROUND2_REPLY_BODIES = [
+    "Yes, I am a U.S. citzen and need no sponser.",
+    "Tengo permiso para trabajar en Estados Unidos, sin restricciones.",
+    "Ich brauche kein Visum.",
+    "I will never need the company to file anything on my behalf to keep working.",
+    "I'm cleared at the TS level.",
+    "I bring ⑳ years in this field.",
+]
+
+
+def _reply_text(body: str) -> str:
+    return (f"Hi [recruiter name],\n\nThank you for reaching out. {body} I am generally available "
+            "[your availability].\n\nBest regards,\nTest Candidate")
+
+
+@pytest.mark.parametrize("body", ROUND2_REPLY_BODIES)
+def test_draft_email_reply_rejects_round2_bodies(fake, cfg, profile, body):
+    fake.queue({"reply": _reply_text(body)}, {"reply": _reply_text(body)})
+    with pytest.raises(LLMInvalidOutput):
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="Data Analyst role",
+                          body="Are you authorized to work in the US?", candidate_name="Test Candidate")
+    with pytest.raises(LLMInvalidOutput):  # verified facts do not make any of these acceptable
+        draft_email_reply(fake.client(cfg), category="recruiter_message", subject="Data Analyst role",
+                          body="Are you authorized to work in the US?", candidate_name="Test Candidate",
+                          facts=profile.all_facts(), profile_skills=profile.skills)
+
+
+def test_draft_followup_rejects_german_no_visa_with_circled_numeral(fake, cfg):
+    fake.queue({"message": "Hi [name], following up on my application. Ich brauche kein Visum und ich bringe ⑳ "
+                           "Jahre Erfahrung mit. Best, Test Candidate"})
+    with pytest.raises(LLMInvalidOutput) as info:
+        draft_followup(fake.client(cfg), employer="Acme", job_title="Data Analyst", context="applied 2 weeks ago",
+                       candidate_name="Test Candidate")
+    assert "work-authorization" in str(info.value) and "not plain digits" in str(info.value)
+
+
+def test_safe_reply_is_returned_normalized_and_non_ascii_names_still_work(fake, cfg):
+    fake.queue({"reply": "Hi [name],\n\nThank you for reaching out. I would be glad to learn more about the "
+                         "ｒｏｌｅ.\n\nBest regards,\nŁukasz Żółć"},
+               {"reply": "Hi [name],\n\nThank you for reaching out.\n\nBest regards,\n王伟"})
+    text = draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                             candidate_name="Łukasz Żółć")
+    assert "about the role." in text and text.endswith("Łukasz Żółć")
+    signed = draft_email_reply(fake.client(cfg), category="recruiter_message", subject="s", body="b",
+                               candidate_name="王伟")
+    assert signed.endswith("王伟")

@@ -462,18 +462,18 @@ class _Guard:
             problem = self.policy.navigation_problem(url)
             if problem:
                 if main:
-                    self.violations.append((_clip(url), problem))
+                    self.violations.append((self.safe_url(url), problem))
                 return f"{'navigation' if main else 'frame navigation'} refused: {problem}"
         if method not in _SAFE_METHODS:
             if not self.armed:
-                self.blocked_posts.append(_clip(url))
+                self.blocked_posts.append(self.safe_url(url))
                 return f"{method} request before the approved submission"
             problem = self.policy.navigation_problem(url)
             if problem:
                 return f"{method} request outside the policy: {problem}"
             if is_nav:
                 self.disarm()  # the one approved form post
-            self.posts.append(_clip(url))
+            self.posts.append(self.safe_url(url))
             return None
         if self.locked and not self.released:
             reason = self._before_approval(request, url, is_nav=is_nav, main=main)
@@ -493,16 +493,16 @@ class _Guard:
         """Data-loss rules between the first typed value and the approved click (any host)."""
         if is_nav:
             if main:
-                self.violations.append((_clip(url), "the page tried to navigate after filling began, before your "
-                                                    "approval (the navigation could carry what was typed)"))
-            return f"{'navigation' if main else 'frame navigation'} after filling began, before the approved " \
-                   "submission"
+                self.violations.append((self.safe_url(url), "the page tried to navigate after filling began, before "
+                                                            "your approval (it could carry what was typed)"))
+            kind = "navigation" if main else "frame navigation"
+            return f"{kind} after filling began, before the approved submission"
         key = _url_key(url)
         if key in self.known_urls:
             return None  # requested / referenced before anything was typed: carries nothing typed
         leak = self.protected.match(url, _post_body(request))
         if leak:
-            self.leaks.append(_clip(url))
+            self.leaks.append(self.safe_url(url))
             return f"request carries {leak} before the approved submission"
         if urlsplit(url).query or url.endswith("?"):
             return "new request with a query string after filling began, before the approved submission"
@@ -511,6 +511,14 @@ class _Guard:
         if key not in self.new_urls and len(self.new_urls) >= self.new_asset_budget:
             return "too many new requests after filling began, before the approved submission"
         return None
+
+    def safe_url(self, url: str) -> str:
+        """``_clip(url)``, with the path dropped too when it carries typed data / file content (never logged)."""
+        clipped = _clip(url)
+        if self.locked and self.protected and self.protected.match(clipped):
+            parts = urlsplit(url)
+            return f"{parts.scheme}://{parts.netloc}/[typed data removed]"
+        return clipped
 
     def _allow(self, url: str) -> None:
         key = _url_key(url)
@@ -530,8 +538,9 @@ class _Guard:
             if reason is None:
                 route.continue_()
                 return
-            self.blocked.append((request.method, _clip(request.url), reason))
-            log.debug("blocked %s %s: %s", request.method, _clip(request.url), reason)
+            shown = self.safe_url(request.url)
+            self.blocked.append((request.method, shown, reason))
+            log.debug("blocked %s %s: %s", request.method, shown, reason)
             route.abort("blockedbyclient")
         except Exception as exc:  # noqa: BLE001 - page/context closed while routing
             log.debug("route: %s", exc)
@@ -562,7 +571,7 @@ class _Guard:
             return
         problem = self.policy.navigation_problem(request.url)
         if problem and (main_nav or request.method.upper() not in _SAFE_METHODS):
-            self.violations.append((_clip(request.url), f"redirect: {problem}"))
+            self.violations.append((self.safe_url(request.url), f"redirect: {problem}"))
 
     def on_new_page(self, new_page: "Page") -> None:
         # New windows/tabs/popups: every request from them is aborted; close them unused.

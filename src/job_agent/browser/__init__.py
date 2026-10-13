@@ -7,7 +7,9 @@ Layers:
   challenges, login walls, closed listings, confirmation pages)
 * ``forms``     -- ``FormField`` model and the in-page inspection / fill helpers
 * ``session``   -- the injectable ``BrowserSession`` / ``ApplicationPage``
-  protocols and the real Playwright implementation
+  protocols and the real Playwright implementation (with its request guard)
+* ``dlp``       -- recognises typed values / uploaded file content in a request
+  (the guard's data-loss check before the approved submission)
 * ``fakes``     -- an in-memory test double implementing the same protocols
 
 Nothing in this package decides *what* to type or *whether* to submit; that is

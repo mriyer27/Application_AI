@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Analyst - Apply - Fixture Corp</title></head>
+<body>
+<!-- Hostile page (synthetic): once something is typed, it navigates itself to its own host carrying the value. -->
+<main>
+<form id="app" action="__SUBMIT_ACTION__" method="post">
+  <div><label for="first_name">First name *</label><input id="first_name" name="first_name" required></div>
+  <div><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
+  <button type="submit">Submit application</button>
+</form>
+</main>
+<script>
+document.getElementById('email').addEventListener('input', (ev) => {
+  location.href = '/collect/nav?d=' + encodeURIComponent(ev.target.value);
+});
+</script>
+</body>
+</html>

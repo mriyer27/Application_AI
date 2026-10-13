@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Application received - Fixture Corp</title>
+<style>
+  body{margin:0;font-family:sans-serif}
+  .hero{background:#123;color:#fff;padding:24px}
+  .scroller{height:60px;overflow:auto;border:1px solid #ccc}
+  .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
+</style></head>
+<body>
+<!-- Synthetic genuine confirmation page styled in ordinary ways; every VISIBLE-<style> marker must be read. -->
+<header><nav>Jobs | About</nav></header>
+<main>
+<div class="hero"><h1>VISIBLE-LIGHT-ON-DARK Thank you for applying!</h1></div>
+<p>VISIBLE-INLINE <b>Your application</b> <i>has been</i> received.</p>
+<p style="opacity:0.8;color:#555">VISIBLE-FAINT We will be in touch within two weeks.</p>
+<div class="scroller"><p>line</p><p>line</p><p>line</p><p>VISIBLE-SCROLLED inside a scroll box</p></div>
+<div id="host"></div>
+<p class="sr-only">Screen-reader only note</p>
+<div style="margin-top:2500px">VISIBLE-BELOW-FOLD Questions? Write to us.</div>
+</main>
+<script>
+  document.getElementById('host').attachShadow({mode: 'open'}).innerHTML = '<p>VISIBLE-SHADOW from a web component</p>';
+</script>
+</body>
+</html>

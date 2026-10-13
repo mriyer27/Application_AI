@@ -106,3 +106,18 @@ def test_prepare_prints_llm_and_listing_text_literally(cli, job_uid, monkeypatch
     assert result.exit_code == 0, result.output
     out = result.output
     assert "[bold red]Hire me[/bold red]" in out and "llm:[/]" in out and "experience:[x]" in out
+
+
+def test_prepare_after_submission_tells_you_the_documents_stay(cli, job_uid, db):
+    from job_agent.database import repo
+    from job_agent.models import PipelineState
+
+    assert cli("prepare", job_uid, "--no-llm").exit_code == 0
+    app_id = db.scalar("SELECT id FROM applications")
+    linked = db.scalar("SELECT resume_document_id FROM applications")
+    repo.transition_application(db, app_id, PipelineState.SUBMITTED, actor="user")
+    result = cli("prepare", job_uid, "--no-llm")
+    assert result.exit_code == 0, result.output
+    assert "documents_not_linked" in result.output and "already submitted" in result.output
+    assert db.scalar("SELECT resume_document_id FROM applications") == linked
+    assert db.scalar("SELECT status FROM applications") == "submitted"

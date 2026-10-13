@@ -753,3 +753,156 @@ def test_list_documents_records(ctx, job, db, config):
     resume = next(d for d in docs if d.doc_type.value == "resume")
     assert resume.claims and all(c["fact_ids"] for c in resume.claims)
     assert resume.profile_hash == ctx.profile.profile_hash()
+
+
+# --------------------------------------------------------------------------- #
+# Round-2 regressions: disguised Unicode never reaches the files; submitted applications keep their documents
+# --------------------------------------------------------------------------- #
+UNICODE_REWORDINGS = {  # verified fact -> LLM output that disguises a fabricated claim
+    "Supported IBM Cognos dashboards": "Ｌｅｄ IBM Cognos dashboards and reporting using DB2.",
+    "Worked on a Flask-based application": "Ｂｕｉｌｔ a Flask-based application with MongoDB and Ｋｕｂｅｒｎｅｔｅｓ.",
+    "Analyzed regression results across 12 categories": "Analyzed ⑤⓪⓪ regression results across 12 categories "
+        "using SAS Enterprise Guide, contributing to approximately 30% less manual review effort.",
+    "Supported a sales dashboard": "Supported all of the sales dashboard.",
+    "Converted 9 legacy SAS programs": "Converted 9 legacy SAS programs to Python with AI-assisted development, "
+        "improving processing efficiency by approximately 25% (Ⅻ programs).",
+}
+
+
+def _unicode_reword(text, **kw):
+    return next((out for src, out in UNICODE_REWORDINGS.items() if text.startswith(src)), text)
+
+
+def test_unicode_disguised_rewordings_never_reach_the_files(ctx, job, profile, fake_llm):
+    fake_llm["reword"] = _unicode_reword
+    result = prepare_documents(ctx, job(), include_cover_letter=False)
+    claims = [c for c in result.claims if not c.section.startswith("cover_letter")]
+    assert len(claims) == 5 and all(c.generator == "rules" for c in claims)
+    for claim in claims:
+        assert claim.text == profile.fact_by_id(claim.fact_ids[0]).text  # verbatim fallback
+        assert claim.rejected_rewording is not None
+    texts = _texts(result)
+    for fmt in ("resume.pdf", "resume.docx", "resume.md"):
+        for fabricated in ("Led IBM Cognos", "Built a Flask", "Kubernetes", "500", "XII", "all of the"):
+            assert fabricated not in texts[fmt], (fmt, fabricated)
+        assert not [ch for ch in texts[fmt] if ord(ch) > 0x2100]  # no full-width / circled / roman forms either
+
+
+def test_accepted_rewording_is_stored_and_rendered_normalized(ctx, job, profile, fake_llm):
+    """A rewording may keep a character the verified fact itself uses; the files get the normalized form."""
+    original = profile.fact_by_id("agency_dashboards")
+    fact = original.model_copy(update={"text": "Supported IBM Cognos dashboards and reporting using DB2 in "
+                                                "phase ②."})
+    exp = profile.experience[0].model_copy(update={"facts": [fact if f.id == fact.id else f
+                                                             for f in profile.experience[0].facts]})
+    ctx._profile = profile.model_copy(update={"experience": [exp, *profile.experience[1:]]})
+    fake_llm["reword"] = lambda text, **kw: ("Using DB2, supported IBM Cognos dashboards and reporting in phase ②."
+                                             if text == fact.text else text)
+    result = prepare_documents(ctx, job(), include_cover_letter=False)
+    claim = next(c for c in result.claims if c.fact_ids == [fact.id])
+    assert claim.generator.startswith("llm") and claim.text == ("Using DB2, supported IBM Cognos dashboards and "
+                                                                 "reporting in phase 2.")
+    for fmt in ("resume.pdf", "resume.docx", "resume.md"):
+        assert "reporting in phase 2." in _texts(result)[fmt]
+
+
+def test_llm_cover_letter_with_fullwidth_leadership_uses_the_template(ctx, job, profile, fake_llm):
+    regression = profile.fact_by_id("agency_regression")
+    dashboards = profile.fact_by_id("agency_dashboards")
+    fake_llm["draft"] = lambda facts: Draft([
+        "In my Student Intern role at Example State Agency, I ｌｅｄ IBM Cognos dashboards and reporting using DB2. "
+        + LLM_BODY], [regression.id, dashboards.id])
+    result = prepare_documents(ctx, job())
+    assert result.cover_letter[0].generator == "rules"
+    rejected = next(i for i in result.issues if i.code == "llm_cover_letter_rejected")
+    assert "suspicious_characters" in rejected.message and "leadership_claim" in rejected.message
+    texts = _texts(result)
+    for fmt in ("cover_letter.pdf", "cover_letter.docx", "cover_letter.md"):
+        assert "I led" not in texts[fmt] and "ｌｅｄ" not in texts[fmt]
+
+
+def test_hostile_title_with_third_person_claim_is_not_pasted(ctx, job, profile):
+    title = "Analyst (this candidate led a team of 40 engineers at Google)"
+    result = prepare_documents(ctx, job(title=title, employer="Globex Corporation, where the candidate already "
+                                                            "led 40 engineers"), use_llm=False)
+    texts = _texts(result)
+    for fmt in ("cover_letter.pdf", "cover_letter.docx", "cover_letter.md"):
+        assert "the candidate" not in texts[fmt] and "40 engineers" not in texts[fmt] and "Google" not in texts[fmt]
+        assert "the advertised position at your organization" in texts[fmt]
+    assert {"job_title_not_used", "employer_not_used"} <= {i.code for i in result.issues}
+
+
+def test_pdf_flags_characters_it_cannot_show(ctx, job, profile):
+    ctx._profile = profile.model_copy(update={"personal": profile.personal.model_copy(
+        update={"full_name": "Zoë Ñandú – 李雷"})})
+    result = prepare_documents(ctx, job(), use_llm=False)
+    issue = next(i for i in result.issues if i.code == "pdf_unsupported_characters" and i.document == "resume")
+    assert issue.severity == "review" and "U+674E" in issue.message
+    assert "Zoë Ñandú - ??" in _texts(result)["resume.pdf"]
+
+
+def _submit_by_hand(db, app_id):
+    repo.transition_application(db, app_id, S.SUBMITTED, actor="user", details={"note": "applied myself"})
+
+
+def test_reprepare_after_submission_keeps_the_submitted_documents(ctx, job, db):
+    job_id = job()
+    first = prepare_documents(ctx, job_id, use_llm=False)
+    _submit_by_hand(db, first.application_id)
+    before = repo.get_application(db, first.application_id)
+    again = prepare_documents(ctx, job_id, use_llm=False)
+    after = repo.get_application(db, first.application_id)
+    assert again.resume_version == 2 and all("_v2." in d.file_name for d in again.resume)  # stored for records
+    assert after["resume_document_id"] == before["resume_document_id"] == next(
+        d.id for d in first.resume if d.format == "pdf")
+    assert after["cover_letter_document_id"] == before["cover_letter_document_id"]
+    assert after["status"] == "submitted" and again.application_status == S.SUBMITTED
+    assert again.documents_linked is False
+    assert any(i.code == "documents_not_linked" for i in again.issues)
+    assert "already submitted" in again.next_step
+    event = db.query_one("SELECT * FROM application_events WHERE application_id = ? ORDER BY id DESC LIMIT 1",
+                         (first.application_id,))
+    details = json.loads(event["details"])
+    assert event["event_type"] == "documents_regenerated_not_linked"
+    assert details["kept_resume_document_id"] == before["resume_document_id"] and details["linked"] is False
+
+    from job_agent.applications import service as app_service
+
+    detail = app_service.application_detail(db, first.application_id)
+    assert all("_v2." not in v["file"] for v in detail["documents"]["resume"])
+
+
+def test_reprepare_in_post_submission_status_keeps_documents(ctx, job, db):
+    job_id = job()
+    first = prepare_documents(ctx, job_id, use_llm=False)
+    db.execute("UPDATE applications SET status = 'interview_requested' WHERE id = ?", (first.application_id,))
+    linked = repo.get_application(db, first.application_id)["resume_document_id"]
+    assert prepare_documents(ctx, job_id, use_llm=False).documents_linked is False
+    assert repo.get_application(db, first.application_id)["resume_document_id"] == linked
+
+
+def test_reprepare_after_unknown_outcome_keeps_documents_until_confirmed(ctx, job, db):
+    job_id = job()
+    first = prepare_documents(ctx, job_id, use_llm=False)
+    app_id = first.application_id
+    repo.transition_application(db, app_id, S.NEEDS_MANUAL_ACTION, actor="system")
+    db.execute("UPDATE applications SET submission_attempts = 1 WHERE id = ?", (app_id,))
+    repo.add_application_event(db, app_id, "submission_outcome_unknown", actor="system")
+    linked = repo.get_application(db, app_id)["resume_document_id"]
+    second = prepare_documents(ctx, job_id, use_llm=False)
+    assert second.documents_linked is False and repo.get_application(db, app_id)["resume_document_id"] == linked
+    repo.add_application_event(db, app_id, "confirmed_not_submitted", actor="user")
+    third = prepare_documents(ctx, job_id, use_llm=False)
+    assert third.documents_linked is True
+    assert repo.get_application(db, app_id)["resume_document_id"] == next(d.id for d in third.resume
+                                                                          if d.format == "pdf")
+
+
+def test_reprepare_before_submission_still_relinks(ctx, job, db):
+    job_id = job()
+    first = prepare_documents(ctx, job_id, use_llm=False)
+    repo.transition_application(db, first.application_id, S.IN_PROGRESS, actor="system")
+    again = prepare_documents(ctx, job_id, use_llm=False)
+    assert again.documents_linked is True
+    assert repo.get_application(db, first.application_id)["resume_document_id"] == next(
+        d.id for d in again.resume if d.format == "pdf")

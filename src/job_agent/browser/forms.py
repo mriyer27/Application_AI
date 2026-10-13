@@ -213,7 +213,10 @@ const colorHidden = (el) => {
   const l1 = lum(eff), l2 = lum(bg);
   return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05) < 1.25;
 };
-const lenOf = (v, ref) => { v = String(v || '0').trim(); return v.endsWith('%') ? parseFloat(v) / 100 * ref : (parseFloat(v) || 0); };
+const lenOf = (v, ref) => {
+  v = String(v || '0').trim();
+  return v.endsWith('%') ? parseFloat(v) / 100 * ref : (parseFloat(v) || 0);
+};
 const clipHides = (el, s) => {
   if ((s.position === 'absolute' || s.position === 'fixed') && s.clip && s.clip !== 'auto') {
     const m = /rect\(([^)]*)\)/.exec(s.clip);
@@ -231,11 +234,14 @@ const clipHides = (el, s) => {
   let m;
   if ((m = /^inset\(([^)]*)\)/.exec(cp))) {
     const p = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/);
-    const t = lenOf(p[0], H), rr = lenOf(p[1] ?? p[0], W), b = lenOf(p[2] ?? p[0], H), l = lenOf(p[3] ?? p[1] ?? p[0], W);
+    const t = lenOf(p[0], H), rr = lenOf(p[1] ?? p[0], W);
+    const b = lenOf(p[2] ?? p[0], H), l = lenOf(p[3] ?? p[1] ?? p[0], W);
     return H - t - b < 4 || W - l - rr < 2;
   }
   if ((m = /^circle\(\s*([-\d.]+(?:px|%))/.exec(cp))) return lenOf(m[1], Math.hypot(W, H) / Math.SQRT2) < 2;
-  if ((m = /^ellipse\(\s*([-\d.]+(?:px|%))\s+([-\d.]+(?:px|%))/.exec(cp))) return lenOf(m[1], W) < 2 || lenOf(m[2], H) < 4;
+  if ((m = /^ellipse\(\s*([-\d.]+(?:px|%))\s+([-\d.]+(?:px|%))/.exec(cp))) {
+    return lenOf(m[1], W) < 2 || lenOf(m[2], H) < 4;
+  }
   if (/^(circle|ellipse)\(/.test(cp)) return false;  // keyword radius (closest-side, ...)
   if ((m = /^polygon\(([^)]*)\)/.exec(cp))) {
     const pts = m[1].replace(/^\s*(nonzero|evenodd)\s*,/, '').split(',').map(pt => pt.trim().split(/\s+/));

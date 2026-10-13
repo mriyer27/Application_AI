@@ -3,7 +3,10 @@ outcome polling."""
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import pytest
 
@@ -469,3 +472,154 @@ def test_fake_browser_applies_policy_and_challenge_detection():
     with pytest.raises(NavigationBlocked):
         fake.open_application("https://a.com/redirect", policy)
     assert fake.submissions == 0
+
+
+# ------------------------------------------- round 2: data-loss prevention ---- #
+RESUME = b"%PDF-1.4\n" + bytes(range(256)) * 3 + b"\nSECRET-RESUME-CONTENT 0123456789\n%%EOF"
+EMAIL = "test.candidate@example.com"
+
+
+def _protected():
+    from job_agent.browser.dlp import ProtectedData
+
+    p = ProtectedData()
+    for value in ("Test", "Candidate", EMAIL, "+1 315 555 0100", "Company careers page", "yes", "No", "checked",
+                  "I have led the migration of our reporting stack to dbt and taught the team to use it."):
+        p.add_value(value)
+    p.add_file(RESUME, "Test_Candidate_resume.pdf")
+    return p
+
+
+@pytest.mark.parametrize("url", [
+    f"https://careers.acme.com/collect/img?d={quote(EMAIL)}",
+    f"https://careers.acme.com/collect?d={quote(quote(EMAIL))}",  # double-encoded
+    "https://careers.acme.com/c?d=Test+Candidate",  # form encoding, short value on a token boundary
+    "https://careers.acme.com/c?d=" + base64.b64encode(f"x|{EMAIL}|y".encode()).decode(),
+    "https://careers.acme.com/c?d=" + base64.urlsafe_b64encode(f"ab{EMAIL}".encode()).decode().rstrip("="),
+    "https://careers.acme.com/c?d=" + base64.b64encode(f"{EMAIL}".encode()).decode()[4:],  # sliced mid-string
+    "https://careers.acme.com/c/" + EMAIL.encode().hex() + ".gif",
+    "https://careers.acme.com/c?d=" + quote(json.dumps({"e": "\\u0074est.candidate@example.com"})),
+    "https://careers.acme.com/c?p=315-555-0100",  # phone digits, reformatted
+    "https://careers.acme.com/c?u=TEST.CANDIDATE",  # e-mail local part, case-insensitive
+    "https://careers.acme.com/c?t=" + quote("the migration of our reporting stack to dbt"),  # fragment of a long answer
+])
+def test_dlp_recognises_typed_values_in_every_encoding(url):
+    assert _protected().match(url) == "typed data"
+
+
+@pytest.mark.parametrize("encode", [
+    lambda b: "c=" + quote(base64.b64encode(b[40:120]).decode()),
+    lambda b: "c=" + quote(base64.b64encode(b[41:121]).decode()),  # another byte alignment
+    lambda b: "c=" + base64.urlsafe_b64encode(b[200:300]).decode(),
+    lambda b: "c=" + b[300:360].hex(),
+    lambda b: "c=" + quote(b[500:560].decode("latin-1")),  # FileReader.readAsBinaryString + encodeURIComponent
+])
+def test_dlp_recognises_chunks_of_an_uploaded_file(encode):
+    assert _protected().match("https://careers.acme.com/collect/file?" + encode(RESUME)) == "uploaded file content"
+
+
+@pytest.mark.parametrize("url", [
+    "https://careers.acme.com/static/latest.js",  # "test" inside a word is not the value "Test"
+    "https://careers.acme.com/static/app.3f9a8b7c6d5e4f30.js",
+    "https://careers.acme.com/api/jobs/42?lang=en&yes=1&checked=false",  # short / generic values ignored
+    "https://cdn.example.org/fonts/inter.woff2",
+    "https://careers.acme.com/img/" + base64.b64encode(b"just some other bytes here!!").decode() + ".png",
+])
+def test_dlp_ignores_ordinary_urls(url):
+    assert _protected().match(url) is None
+
+
+def _locked_guard(*, referenced=(), strict=False):
+    g, page = _guard(strict=strict)
+    g.decide(_req(page, OFFICIAL + "/pixel.gif?seen=1", rtype="image"))  # requested before filling began
+    g.lock(referenced)
+    g.protect_value(EMAIL)
+    g.protect_file(RESUME, "resume.pdf")
+    return g, page
+
+
+def test_guard_blocks_same_host_gets_carrying_typed_data_or_file_chunks():
+    """Reviewer repro (SEC-1): same-host image / fetch GETs with the e-mail or résumé chunks after filling."""
+    g, page = _locked_guard()
+    leak = f"https://careers.acme.com/collect/img?d={quote(EMAIL)}"
+    assert "carries typed data" in g.decide(_req(page, leak, rtype="image"))
+    chunk = "https://careers.acme.com/collect/file?i=0&c=" + quote(base64.b64encode(RESUME[:90]).decode())
+    assert "carries uploaded file content" in g.decide(_req(page, chunk, rtype="image"))
+    path_leak = f"https://careers.acme.com/collect/{quote(EMAIL)}.png"  # no query string: content check
+    assert "carries typed data" in g.decide(_req(page, path_leak, rtype="image"))
+    assert len(g.leaks) == 3 and all("test.candidate" not in u and "?" not in u for u in g.leaks)
+    assert g.safe_url(path_leak) == "https://careers.acme.com/[typed data removed]"
+
+
+def test_guard_blocks_every_navigation_after_filling_began():
+    g, page = _locked_guard()
+    # GET form posted into an iframe (reviewer repro), to the job's own host
+    form_get = "https://careers.acme.com/collect/form?d=x"
+    assert "frame navigation after filling began" in g.decide(_req(page, form_get, nav=True, iframe=True,
+                                                                     rtype="document"))
+    assert g.violations == []
+    # top-level navigation: aborted and stops the session; the recorded URL has no query / typed data
+    nav = f"https://careers.acme.com/next?d={quote(EMAIL)}"
+    assert "navigation after filling began" in g.decide(_req(page, nav, nav=True, rtype="document"))
+    with pytest.raises(NavigationBlocked) as exc:
+        g.raise_if_violated()
+    assert "test.candidate" not in exc.value.url and "?" not in exc.value.url
+
+
+def test_guard_structural_rules_after_filling_began():
+    """Data a content check cannot recognise (2-character chunks, transformations) has no channel left except
+    a few new asset paths."""
+    g, page = _locked_guard(referenced=[OFFICIAL + "/lazy.png?v=7#frag"])
+    assert "query string" in g.decide(_req(page, OFFICIAL + "/c?i=0&c=te", rtype="image"))
+    assert "query string" in g.decide(_req(page, OFFICIAL + "/c?", rtype="image"))
+    assert "new fetch request" in g.decide(_req(page, OFFICIAL + "/api/state", rtype="fetch"))
+    assert "new eventsource request" in g.decide(_req(page, OFFICIAL + "/sse", rtype="eventsource"))
+    # known before filling: requested earlier, or referenced by the page (fragment ignored)
+    assert g.decide(_req(page, OFFICIAL + "/pixel.gif?seen=1", rtype="image")) is None
+    assert g.decide(_req(page, OFFICIAL + "/lazy.png?v=7", rtype="image")) is None
+    # a few new static assets without a query string keep loading ...
+    for i in range(g.new_asset_budget):
+        assert g.decide(_req(page, f"{OFFICIAL}/chunk{i}.js", rtype="script")) is None
+    assert g.decide(_req(page, f"{OFFICIAL}/chunk0.js", rtype="script")) is None  # same URL again
+    # ... but not an unbounded number
+    assert "too many new requests" in g.decide(_req(page, f"{OFFICIAL}/one-more.css", rtype="stylesheet"))
+
+
+def test_guard_before_filling_and_after_the_approved_click():
+    g, page = _guard()
+    leak = f"https://careers.acme.com/collect?d={quote(EMAIL)}"
+    # before filling: nothing typed yet, navigations and fetches on the official host are fine
+    assert g.decide(_req(page, OFFICIAL + "/step?x=1", nav=True, rtype="document")) is None
+    assert g.decide(_req(page, OFFICIAL + "/api/x?y=1", rtype="fetch")) is None
+    g.lock()
+    g.protect_value(EMAIL)
+    assert g.decide(_req(page, leak, rtype="image")) is not None
+    g.arm()  # the approved click: you approved sending these answers to the employer
+    assert g.released and g.decide(_req(page, leak, rtype="image")) is None
+    assert g.decide(_req(page, OFFICIAL + "/thanks?ref=done", nav=True, rtype="document")) is None
+    g.disarm()  # non-GET rules are unchanged: nothing more is posted after the approved post
+    assert g.decide(_req(page, OFFICIAL + "/autosave", "POST")) is not None
+    assert g.decide(_req(page, "https://evil.example.net/p.gif", rtype="image")) is not None  # third party: never
+
+
+# ------------------------------------------- round 2: visible text / help text ---- #
+def test_measured_empty_main_content_never_falls_back_to_page_chrome():
+    chrome = "Thank you for applying through our careers site!"
+    snap = PageSnapshot(url="https://a.com/apply/2", text=chrome, main_text="", main_measured=True)
+    assert detect_confirmation(snap, PageSnapshot(url="https://a.com/apply")) is None
+    legacy = PageSnapshot(url="https://a.com/apply/2", text=chrome)  # fakes / old snapshots: text is used
+    assert detect_confirmation(legacy, PageSnapshot(url="https://a.com/apply")) is not None
+
+
+def test_help_text_is_carried_by_fields_and_makes_them_legal():
+    from job_agent.applications.field_mapping import field_is_legal
+
+    raw = [{"name": "relocate", "label": "Are you willing to relocate?", "type": "radio", "locator": "#r",
+            "help_text": "  Answering Yes also confirms that you will not\n require visa sponsorship. "},
+           {"name": "city", "label": "City", "type": "text", "locator": "#c"}]
+    relocate, city = build_fields(raw)
+    assert relocate.help_text == "Answering Yes also confirms that you will not require visa sponsorship."
+    assert relocate.describe()["help_text"] == relocate.help_text
+    assert city.help_text is None and city.describe()["help_text"] is None
+    assert field_is_legal(relocate) and not field_is_legal(city)
+    assert not field_is_legal(FormField("relocate", "Are you willing to relocate?", "radio"))

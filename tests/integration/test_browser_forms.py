@@ -21,7 +21,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
+from job_agent.applications import repository as arepo
 from job_agent.applications import service
+from job_agent.applications.payload import FORM_PREPARED_EVENT
+from job_agent.browser.detection import detect_confirmation
 from job_agent.browser.errors import ChallengeDetected, NavigationBlocked
 from job_agent.browser.policy import NavigationPolicy
 from job_agent.browser.session import BrowserOptions, PlaywrightBrowser, chromium_launchable
@@ -77,6 +80,8 @@ class FixtureServer:
                     return self._send(302, headers={"Location": f"http://localhost:{port}/forms/simple_form.html"})
                 if parts.path == "/apply/confirm":
                     return self._send(200, (FORMS / "review_step.html").read_bytes())
+                if parts.path.startswith(("/static/", "/collect/")):  # assets / a hostile page's "collector"
+                    return self._send(200, b"/* ok */")
                 if parts.path.startswith("/forms/"):
                     file = FORMS / parts.path.removeprefix("/forms/")
                     if file.is_file() and file.parent == FORMS:
@@ -98,6 +103,8 @@ class FixtureServer:
                     return self._send(303, headers={"Location": "/forms/thank-you.html"})
                 if self.path == "/submit/review":
                     return self._send(303, headers={"Location": "/apply/confirm"})
+                if self.path == "/submit/hidden":
+                    return self._send(303, headers={"Location": "/forms/hidden_confirm.html"})
                 if self.path == "/submit/screening":
                     return self._send(200, (FORMS / "screening_step.html").read_bytes())
                 if self.path == "/submit/xhr":
@@ -189,12 +196,12 @@ def offline_factory(options: BrowserOptions) -> PlaywrightBrowser:
 # --------------------------------------------------------------------------- #
 # Data helpers
 # --------------------------------------------------------------------------- #
-def _setup(ctx, make_job, url: str) -> dict:
+def _setup(ctx, make_job, url: str, resume: bytes = b"%PDF-1.4 fixture resume") -> dict:
     db = ctx.db
     job_id = make_job(job_url=url, job_url_canonical=url, application_url=url)
     app_id = repo.create_application(db, job_id, actor="system", application_url=url)
     doc_ids = []
-    for doc_type, fmt, content in (("resume", "pdf", b"%PDF-1.4 fixture resume"),
+    for doc_type, fmt, content in (("resume", "pdf", resume),
                                    ("cover_letter", "pdf", b"%PDF-1.4 fixture cover letter")):
         rel = Path(f"Fixture-Corp-{job_id}") / f"Fixture-Corp_Analyst_{doc_type}.{fmt}"
         path = ctx.config.documents_dir / rel
@@ -569,3 +576,145 @@ def test_find_submit_accepts_only_final_submit_labels(server):
         page = browser.open_application(gh, NavigationPolicy.for_job(job_url=gh, application_url=None))
         assert page.find_submit().text == "Submit Application"
     assert server.non_get() == []
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: only rendered, visible text confirms a submission
+# --------------------------------------------------------------------------- #
+def _snapshot_of(server, page: str):
+    url = server.url(f"/forms/{page}")
+    with offline_factory(BrowserOptions(timeout_seconds=10)) as browser:
+        return browser.open_application(url, NavigationPolicy.for_job(job_url=url, application_url=None)).snapshot()
+
+
+def test_invisible_confirmation_text_is_not_in_the_snapshot(server):
+    """Off-screen, opacity 0, 1px, sr-only, clip-path, same colour, transparent, zero height, text-indent,
+    scale(0), fixed off-viewport, visibility/display, closed <details>, covered by an opaque box."""
+    baseline = _snapshot_of(server, "simple_form.html")
+    snap = _snapshot_of(server, "hidden_confirm.html")
+    assert "Your information is ready" in snap.main_text and "Continue" in snap.main_text
+    assert "HIDDEN-" not in snap.text and "HIDDEN-" not in snap.main_text
+    assert "Thank you" not in snap.text and "application has been" not in snap.text
+    assert detect_confirmation(snap, baseline) is None
+    assert server.non_get() == []
+
+
+def test_visible_confirmation_text_in_ordinary_styles_is_read(server):
+    snap = _snapshot_of(server, "visible_confirm.html")
+    for marker in ("LIGHT-ON-DARK", "INLINE", "FAINT", "SCROLLED", "SHADOW", "BELOW-FOLD"):
+        assert f"VISIBLE-{marker}" in snap.main_text, marker
+    assert "Your application has been received." in snap.main_text  # inline <b>/<i> joined like innerText
+    assert "Jobs | About" in snap.text and "Jobs | About" not in snap.main_text  # page chrome is not main content
+    assert "Screen-reader only" not in snap.text
+    found = detect_confirmation(snap, _snapshot_of(server, "simple_form.html"))
+    assert found is not None and "Thank you for applying" in found.matched_text
+
+
+def test_submit_landing_on_invisible_confirmation_is_unknown_not_submitted(ctx, make_job, server):
+    """Reviewer repro: the approved POST lands on a page whose only confirmation text is invisible."""
+    info, approval_uid = _approve_simple(ctx, make_job, server, "hidden")
+    ctx.config.applications.browser_timeout_seconds = 3
+    result = service.submit_approved(ctx, approval_uid, browser_factory=offline_factory)
+    assert result.outcome == "unknown" and result.status == S.NEEDS_MANUAL_ACTION, result.message
+    assert "no confirmation wording" in result.message
+    assert server.non_get() == [("POST", "/submit/hidden")]
+    app = repo.get_application(ctx.db, info["app_id"])
+    assert app["status"] == S.NEEDS_MANUAL_ACTION.value and app["confirmation_status"] != "page_evidence"
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: legal clauses in help text are read
+# --------------------------------------------------------------------------- #
+def test_help_text_is_collected_from_describedby_and_hint_elements(server):
+    url = server.url("/forms/help_text_legal.html")
+    with offline_factory(BrowserOptions(timeout_seconds=10)) as browser:
+        page = browser.open_application(url, NavigationPolicy.for_job(job_url=url, application_url=None))
+        fields = {f.key: f for f in page.inspect_form()}
+    assert "visa sponsorship" in fields["relocate"].help_text  # fieldset aria-describedby (+ .help in it)
+    assert fields["relocate"].help_text.count("Answering Yes") == 1  # no duplicates
+    assert "U.S. citizen" in fields["relo2"].help_text  # control aria-describedby / .hint in the question box
+    assert "security clearance" in fields["relo3"].help_text  # hidden tooltip in the question box
+    assert "authorized to work" in fields["relo4"].help_text  # <small> right after an unwrapped control
+    assert "do not require sponsorship" in fields["relo5"].help_text  # aria-description
+    assert fields["email"].help_text == "We never share your email address."
+    assert fields["first_name"].help_text is None and fields["resume"].help_text is None
+    assert fields["relocate"].label == "Are you willing to relocate?"  # the label itself is unchanged
+    assert fields["relocate"].describe()["help_text"] == fields["relocate"].help_text
+
+
+def test_legal_clause_in_help_text_is_never_autofilled(ctx, make_job, server):
+    """Reviewer repro: a non-legal verified answer ('willing to relocate' -> Yes) must not answer a question
+    whose help text adds a legal declaration."""
+    path = ctx.config.profile_path
+    data = yaml.safe_load(path.read_text())
+    data["verified_answers"].append({"id": "relocate", "question_patterns": ["willing to relocate"], "answer": "Yes",
+                                     "is_legal_declaration": False})
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    ctx.reload_profile()
+    info = _setup(ctx, make_job, server.url("/forms/help_text_legal.html"))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory)
+    assert result.status == S.AWAITING_APPROVAL, result.message
+    a = _answers(ctx, info["app_id"])
+    for key in ("relocate", "relo2", "relo3", "relo4", "relo5"):
+        assert a[key]["is_legal_declaration"] == 1 and a[key]["requires_review"] == 1, key
+        assert a[key]["answer"] is None, key
+    assert a["first_name"]["answer"] == "Test" and a["first_name"]["confidence"] == "verified"
+    payload = repo.approval_payload(repo.get_approval(ctx.db, result.approval_uid))
+    assert {"relocate", "relo2", "relo3", "relo4", "relo5"} <= {d["field_key"] for d in payload["legal_declarations"]}
+    meta = {f["key"]: f for f in arepo.latest_event_details(ctx.db, info["app_id"], FORM_PREPARED_EVENT)["fields"]}
+    assert "visa sponsorship" in meta["relocate"]["help_text"]
+    assert server.posts == []
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: nothing typed or attached leaves via GET requests either
+# --------------------------------------------------------------------------- #
+RESUME_BYTES = b"%PDF-1.4\n" + bytes(range(256)) * 4 + b"\nSECRET-RESUME-CONTENT Test Candidate 0123456789\n%%EOF"
+
+
+@pytest.mark.parametrize("factory", [offline_factory, default_factory_fast], ids=["strict", "default"])
+def test_prepare_same_host_get_exfiltration_is_blocked(ctx, make_job, server, attacker, factory):
+    """Reviewer repro + variants: image / fetch / base64 / path / EventSource / prefetch / CSS / 2-char chunks /
+    GET form into an iframe, and the résumé in base64 chunks -- all to the job's own host, GET only."""
+    _profile_with_answers(ctx)
+    info = _setup(ctx, make_job, server.url("/forms/get_leak.html"), resume=RESUME_BYTES)
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=factory)
+    assert result.status == S.AWAITING_APPROVAL, result.message
+    assert result.filled >= 5  # it did fill (and so fired every handler) ...
+    assert repo.get_approval(ctx.db, result.approval_uid)["status"] == "pending"
+    assert [p for _, p in server.requests if p.startswith("/collect")] == []  # ... and nothing was collected
+    assert attacker.hits == [] and server.non_get() == []
+    # Legitimate lazy assets kept loading after filling began: an image referenced by the HTML, a new stylesheet.
+    assert ("GET", "/static/lazy.png?v=7") in server.requests
+    assert ("GET", "/static/late.css") in server.requests
+
+
+def test_session_reports_what_the_data_loss_guard_blocked(server, attacker, tmp_path):
+    url = server.url("/forms/get_leak.html")
+    resume = tmp_path / "Test_Candidate_resume.pdf"
+    resume.write_bytes(RESUME_BYTES)
+    with offline_factory(BrowserOptions(timeout_seconds=10)) as browser:
+        page = browser.open_application(url, NavigationPolicy.for_job(job_url=url, application_url=None))
+        fields = {f.key: f for f in page.inspect_form()}
+        page.fill(fields["email"], "jane.doe@example.com")
+        page.attach_file(fields["resume"], resume)
+        page.wait(1.0)
+        page.check_navigation()  # nothing navigated the page itself
+        blocked = page.blocked_requests
+        leaks = page.blocked_leaks
+    reasons = " | ".join(r for _, _, r in blocked)
+    assert "carries typed data" in reasons and "carries uploaded file content" in reasons
+    assert "frame navigation after filling began" in reasons  # the GET form posted into the iframe
+    assert "query string" in reasons  # the 2-character chunks
+    assert any(u.endswith("/collect/img") for u in leaks)
+    assert all("jane" not in u and "?" not in u for _, u, _ in blocked)  # typed data is never logged
+    assert [p for _, p in server.requests if p.startswith("/collect")] == [] and attacker.hits == []
+
+
+def test_navigation_carrying_typed_data_stops_preparation(ctx, make_job, server):
+    _profile_with_answers(ctx)
+    info = _setup(ctx, make_job, server.url("/forms/nav_leak.html"))
+    result = service.prepare_application(ctx, info["job_uid"], browser_factory=offline_factory)
+    assert result.status == S.NEEDS_MANUAL_ACTION and "navigate after filling began" in result.message
+    assert "test.candidate" not in result.message and "%40" not in result.message
+    assert [p for _, p in server.requests if p.startswith("/collect")] == [] and server.non_get() == []

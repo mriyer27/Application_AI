@@ -478,3 +478,143 @@ def test_prepare_with_unapproved_documents(ctx, make_job):
     assert "documents approve" in review["resume"]
     assert review["cl"].startswith("approve the cover letter first (job-agent documents approve ")
     assert review["clf"].startswith("approve the cover letter first (job-agent documents approve ")
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: a non-legal verified answer covers only labels it fully explains
+# (structural guard that holds even when legal detection misses a clause)
+# --------------------------------------------------------------------------- #
+from job_agent.applications.field_mapping import may_draft  # noqa: E402
+
+RELOCATE = {"id": "relocate", "question_patterns": ["willing to relocate"], "answer": "Yes"}
+
+COMBINED_LABELS = [
+    "Are you willing to relocate, and will you require sponsership now or in the future?",
+    "Are you willing to relocate? / ¿Tiene permiso para trabajar en Estados Unidos?",
+    "Are you willing to relocate (Benötigen Sie ein Visum?)",
+    "Are you willing to relocate, and are you a US citzen?",
+    "Are you willing to relocate? Avez-vous le droit de travailler au Canada?",
+    "Are you willing to relocate, and have you ever committed a crime?",
+]
+#: Clauses no detector recognizes (Swahili, Finnish, made-up paraphrases): only the structural rule catches them.
+UNDETECTED_CLAUSE_LABELS = [
+    "Are you willing to relocate? / Kuna haja ya kudhaminiwa na mwajiri?",
+    "Are you willing to relocate ja tarvitsetko meiltä apua oleskeluun?",
+    "Are you willing to relocate and will you require the company to file papers for you?",
+    "Are you willing to relocate (e.g. would you need employer help to stay in the country)?",
+    "Are you willing to relocate to Austin, and when?",
+]
+
+
+@pytest.mark.parametrize("label", COMBINED_LABELS)
+def test_non_legal_answer_never_fills_typo_or_foreign_legal_clause(profile, label):
+    m = map_field(FormField("q", label, "radio", required=True, options=opt("Yes", "No")),
+                  _inputs(_with_answers(profile, RELOCATE)))
+    assert m.category is C.LEGAL and m.is_legal and m.requires_review and m.fill_value is None, label
+
+
+@pytest.mark.parametrize("label", UNDETECTED_CLAUSE_LABELS)
+def test_unrecognized_extra_clause_is_never_filled_even_if_not_detected_as_legal(profile, label):
+    m = map_field(FormField("q", label, "radio", required=True, options=opt("Yes", "No")),
+                  _inputs(_with_answers(profile, RELOCATE)))
+    assert m.fill_value is None and m.requires_review and m.source is None, label
+    assert m.is_legal or m.unrecognized_clause, label
+
+
+@pytest.mark.parametrize("label,ftype,expected", [
+    ("Are you willing to relocate?", "radio", "Yes"),
+    ("Are you willing to relocate for this role? *", "radio", "Yes"),
+    ("Are you willing to relocate (required)", "radio", "Yes"),
+    ("Are you willing to relocate (Yes/No)", "radio", "Yes"),
+    ("Willing to relocate", "radio", "Yes"),
+    ("How did you hear about this job?", "text", "Company careers page"),
+    ("How did you hear about us?", "text", "Company careers page"),
+    ("If hired, when can you start?", "text", "June 2027"),
+    ("When can you start?", "text", "June 2027"),
+])
+def test_fully_covered_labels_are_still_filled(profile, label, ftype, expected):
+    prof = _with_answers(profile, RELOCATE, {"id": "start", "question_patterns": ["when can you start"],
+                                             "answer": "June 2027"})
+    fld = FormField("q", label, ftype, required=True, options=opt("Yes", "No") if ftype == "radio" else ())
+    m = map_field(fld, _inputs(prof))
+    assert (m.fill_value, m.requires_review, m.is_legal, m.unrecognized_clause) == (expected, False, False, False), label
+
+
+def test_placeholder_must_be_covered_too(profile):
+    inp = _inputs(_with_answers(profile, RELOCATE))
+    neutral = map_field(FormField("q", "Are you willing to relocate?", "radio", options=opt("Yes", "No"),
+                                  placeholder="Select one"), inp)
+    assert neutral.fill_value == "Yes"
+    unknown = map_field(FormField("q", "Are you willing to relocate?", "radio", options=opt("Yes", "No"),
+                                  placeholder="Kuna haja ya kudhaminiwa"), inp)
+    assert unknown.fill_value is None and unknown.requires_review and unknown.unrecognized_clause
+    legal = map_field(FormField("q", "Are you willing to relocate?", "radio", options=opt("Yes", "No"),
+                                placeholder="Benötigen Sie ein Visum?"), inp)
+    assert legal.fill_value is None and legal.is_legal
+
+
+@pytest.mark.parametrize("label", [
+    "Will you now or in the future require sponsership? Please explain.",
+    "¿Tiene permiso para trabajar en Estados Unidos? Explique.",
+    "Have you ever committed a crime? Please explain.",
+    "Describe your current status in the U.S.",
+    "Please describe your age and background.",          # sensitive (identity)
+    "Describe your religious background.",               # sensitive (identity)
+    "Tell us about a project / Kuna haja ya kudhaminiwa na mwajiri?",  # partial verified-answer match
+    "Описание вашего опыта",                               # unreadable script
+])
+def test_llm_drafter_never_called_for_legal_sensitive_or_unrecognized_questions(profile, label):
+    prof = _with_answers(profile, RELOCATE, {"id": "project", "question_patterns": ["tell us about a project"],
+                                             "answer": "See my portfolio."})
+    m = map_field(FormField("q", label, "textarea", required=True), _inputs(prof))
+    assert m.category in {C.OPEN_ENDED, C.LEGAL}, label
+    calls = []
+
+    def drafter(question):
+        calls.append(question)
+        return SuggestedAnswer("No, not now or in the future.", ())
+
+    out = apply_drafts([m], drafter)[0]
+    assert calls == [] and not may_draft(m), label
+    assert out.answer is None and out.source is None and out.fill_value is None and out.requires_review
+
+
+def test_yes_no_or_legal_drafts_are_dropped_and_good_drafts_kept(profile):
+    mapped = map_fields([FormField("a", "Why do you want to work here?", "textarea"),
+                         FormField("b", "What interests you about this role?", "textarea"),
+                         FormField("c", "Tell us about a project you are proud of.", "textarea")], _inputs(profile))
+    answers = iter(["No, not now or in the future.", "I am a US citzen and need no sponser.",
+                    "I enjoy building dashboards for public agencies."])
+    out = apply_drafts(mapped, lambda q: SuggestedAnswer(next(answers), ("agency_dashboards",)), max_drafts=3)
+    assert out[0].answer is None and out[1].answer is None
+    assert out[2].answer == "I enjoy building dashboards for public agencies." and out[2].source == "llm_draft"
+    assert all(m.fill_value is None and m.requires_review for m in out)
+
+
+def test_prepare_never_fills_typo_or_foreign_legal_clause_from_non_legal_answer(ctx, make_job):
+    """Reviewer's test_legal_typo_e2e.py, inverted: nothing filled, every field flagged legal and blocking."""
+    from job_agent.applications.payload import submission_blockers
+
+    update_profile(ctx, lambda d: d["verified_answers"].append({**RELOCATE, "is_legal_declaration": False}))
+    labels = {
+        "relo_spons": "Are you willing to relocate, and will you require sponsership now or in the future?",
+        "relo_es": "Are you willing to relocate? / ¿Tiene permiso para trabajar en Estados Unidos?",
+        "relo_de": "Are you willing to relocate (Benötigen Sie ein Visum?)",
+        "relo_sw": "Are you willing to relocate? / Kuna haja ya kudhaminiwa na mwajiri?",
+        "relo_ok": "Are you willing to relocate?",
+    }
+    fields = [FormField("first_name", "First name", "text", required=True, locator="#first_name"),
+              FormField("resume", "Resume", "file", required=True, is_file=True, accept=".pdf", locator="#resume")]
+    fields += [FormField(k, v, "radio", required=True, options=opt("Yes", "No"), locator=f"input[name={k}]")
+               for k, v in labels.items()]
+    fake, payload = _prepare(ctx, make_job, fields)
+    assert fake.filled.get("relo_ok") == "Yes"  # the plain relocation question is still answered
+    assert not {"relo_spons", "relo_es", "relo_de", "relo_sw"} & set(fake.filled)
+    legal = {d["field_key"] for d in payload["legal_declarations"]}
+    assert {"relo_spons", "relo_es", "relo_de"} <= legal
+    blockers = " | ".join(submission_blockers(payload))
+    for key in ("relo_spons", "relo_es", "relo_de", "relo_sw"):
+        assert key in blockers, key
+    rows = {r["field_key"]: dict(r) for r in ctx.db.query_all("SELECT * FROM application_answers")}
+    assert all(rows[k]["requires_review"] == 1 and rows[k]["answer"] is None
+               for k in ("relo_spons", "relo_es", "relo_de", "relo_sw"))

@@ -214,7 +214,8 @@ RULES: tuple[_Rule, ...] = (
             r"(?:support|assistance|help|processing|transfers?|sponsorship|petitions?|filings?|paperwork)\b",
             r"\b(?:visa|immigration|work[\s\-]permit)\s+(?:support|assistance|help|processing|transfers?)\s+"
             r"(?:is\s+|are\s+)?(?:not\s+|un)(?:available|offered|provided|possible|supported)\b",
-            r"\b(?:visa|immigration)\s+(?:support|assistance)\s*[:\-–]\s*(?:no|none|not\s+(?:available|offered|provided))\b",
+            r"\b(?:visa|immigration)\s+(?:support|assistance)\s*[:\-–]\s*"
+            r"(?:no|none|not\s+(?:available|offered|provided))\b",
             # "authorized to work ... without (the need for) sponsorship / a visa"
             r"\bwithout\s+(?:the\s+need\s+(?:for|of)\s+|(?:requiring|needing)\s+|"
             r"(?:any\s+)?(?:need|requirement)\s+(?:for|of)\s+)?(?:an?\s+|any\s+|the\s+)?"
@@ -228,7 +229,8 @@ RULES: tuple[_Rule, ...] = (
             r"\b(?:able|authori[sz]ed|eligible|permitted|right|legally|allowed|entitled)\s+to\s+(?:legally\s+)?work\b"
             r"[^;]{0,60}?\bwithout\s+(?:any\s+)?(?:\w+\s+)?restrictions?\b",
             rf"\bwork\s+in\s+{_USA}[^;]{{0,30}}?\bwithout\s+(?:any\s+)?(?:\w+\s+)?restrictions?\b",
-            r"\bunrestricted\s+(?:\w+\s+){0,2}?(?:work|employment)\s+(?:authori[sz]ation|rights?|status|eligibility|permits?)\b",
+            r"\bunrestricted\s+(?:\w+\s+){0,2}?(?:work|employment)\s+"
+            r"(?:authori[sz]ation|rights?|status|eligibility|permits?)\b",
             r"\bunrestricted\s+(?:legal\s+)?(?:right|authori[sz]ation|ability|permission|eligibility)\s+to\s+work\b",
             # "permanent work authorization that does not expire", "lifetime right to work in the US"
             r"\b(?:permanent|lifetime|indefinite|non[\s\-]?expiring|unlimited|perpetual|open[\s\-]ended)\s+(?:\w+\s+){0,2}?"
@@ -260,6 +262,7 @@ RULES: tuple[_Rule, ...] = (
             rf"\b(?:{_US}|united\s+states)\s+nationals\b",
             rf"\b(?:{_US}|united\s+states)\s+national\b(?=\s*(?:$|[.,;:)!?]|(?:or|and|only|status)\b))",
             r"\bcitizens?\s*(?:or|and|/)\s*nationals?\b",
+            rf"\bnationals?\s+of\s+{_USA}\b",
             # a U.S. passport is issued only to U.S. nationals
             rf"\b(?:hold|have|possess|obtain|carry|present)\s+(?:an?\s+)?(?:valid\s+|current\s+|active\s+|unexpired\s+)?"
             rf"(?:{_US}|american|united\s+states)\s+passports?\b",

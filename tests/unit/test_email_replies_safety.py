@@ -140,3 +140,89 @@ def test_gmail_sync_never_stores_probe_reply(ctx, monkeypatch):
     assert replies, "fixture mailbox should contain at least one message that gets a suggested reply"
     for reply in replies:
         assert "authorized" not in reply and "Snowflake" not in reply and "five analysts" not in reply
+
+
+# --------------------------------------------------------------------------- #
+# Round 2: misspelled / non-English statements, clearance claims, numerals
+# --------------------------------------------------------------------------- #
+from types import SimpleNamespace  # noqa: E402
+
+from job_agent.errors import JobAgentError  # noqa: E402
+from job_agent.llm.generation import draft_email_reply  # noqa: E402
+
+ROUND2_BODIES = [
+    "Yes, I am a U.S. citzen and need no sponser.",
+    "Tengo permiso para trabajar en Estados Unidos, sin restricciones.",
+    "Ich brauche kein Visum.",
+    "I will never need the company to file anything on my behalf to keep working.",
+    "I'm cleared at the TS level.",
+    "I bring ⑳ years in this field.",
+    "Je n'ai pas besoin de visa.",
+    "I hold an active TS.",
+]
+
+
+def _round2_reply(body: str) -> str:
+    return (f"Hi [recruiter name],\n\nThank you for reaching out. {body} I am generally available "
+            "[your availability].\n\nBest regards,\nTest Candidate")
+
+
+class _StubClient:
+    """Stands in for OllamaClient: returns ``text`` for whatever schema is asked."""
+
+    config = SimpleNamespace(max_input_chars=12000)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def generate_json(self, *, system, prompt, schema, model=None, max_tokens=None):
+        return schema(**{"reply" if schema.__name__ == "ReplyOut" else "message": self.text})
+
+
+def _service_drafter(text: str):
+    """Like email.service: the real draft_email_reply, an error means no LLM draft."""
+    def draft(**kwargs):
+        try:
+            return draft_email_reply(_StubClient(text), **kwargs)
+        except JobAgentError:
+            return ""
+    return draft
+
+
+@pytest.mark.parametrize("body", ROUND2_BODIES)
+def test_round2_llm_replies_fall_back_to_template(body, profile):
+    text = _round2_reply(body)
+    expected = template_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="Test Candidate")
+    for drafter in (_llm(text), _service_drafter(text)):  # unchecked raw text, and the real drafter
+        for kwargs in ({}, {"facts": profile.all_facts(), "profile_skills": profile.skills}):
+            draft, source = suggest_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="Test Candidate",
+                                          subject="Data Analyst role", body="Are you authorized to work in the US?",
+                                          llm_draft=drafter, **kwargs)
+            assert (draft, source) == (expected, "template"), body
+    assert reply_problems(text)
+
+
+def test_round2_followup_with_german_no_visa_and_circled_numeral_is_rejected():
+    text = ("Hi [name], following up on my application. Ich brauche kein Visum und ich bringe ⑳ Jahre Erfahrung "
+            "mit. Best, Test Candidate")
+    assert llm_followup_draft(_llm(text), dict(CTX)) is None
+    for body in ROUND2_BODIES:
+        assert llm_followup_draft(_llm(f"Dear Hiring Team,\n\n{body}\n\nBest regards,\nTest Candidate"),
+                                  dict(CTX)) is None, body
+
+
+def test_accepted_drafts_are_stored_exactly_as_validated():
+    wide = GOOD.replace("the role", "the ｒｏｌｅ")  # full-width letters render as ASCII
+    text, source = suggest_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="Test Candidate",
+                                 llm_draft=_llm(wide))
+    assert source == "llm" and text == GOOD
+    followup = ("Dear Hiring Team,\n\nI applied for the Data Analyst position at Ａｃｍｅ on 2026-09-30 and wanted "
+                "to follow up.\n\nBest regards,\nTest Candidate")
+    assert llm_followup_draft(_llm(followup), dict(CTX)) == followup.replace("Ａｃｍｅ", "Acme")
+
+
+def test_candidate_name_in_another_script_does_not_block_a_safe_reply():
+    text = GOOD.replace("Test Candidate", "王伟")
+    assert suggest_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="王伟", llm_draft=_llm(text)) == (text, "llm")
+    other = GOOD.replace("Test Candidate", "Мне нужна виза")  # unreadable text that is not the candidate's name
+    assert suggest_reply(EmailCategory.RECRUITER_MESSAGE, candidate_name="王伟", llm_draft=_llm(other))[1] == "template"
