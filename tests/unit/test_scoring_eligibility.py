@@ -622,3 +622,148 @@ def test_fallback_flag_moves_the_job_to_needs_review(config, profile):
     assert flagged.category == MatchCategory.NEEDS_REVIEW
     assert flagged.recommended_next_action == "Review eligibility statement before investing time"
     assert any(r.startswith("Eligibility-related wording") for r in flagged.reasons_not_to_apply)
+
+
+# --------------------------------------------------------------------------- #
+# Round 3: employer boilerplate that put whole employers into needs_review (E1), and requirement wording that
+# got no flag at all (E2-E4). Corpus scan: round3/elig (1,080 real listings).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "text",
+    [
+        # anti-scam notices (Duolingo, every listing)
+        "Duolingo and our employees will never ask for your Social Security number, bank details, or passport info, "
+        "and we’ll never ask you to deposit a check, purchase equipment, or exchange money during the interview "
+        "process.",
+        "We will never ask for your bank details, Social Security number, or passport during the interview process.",
+        # Form I-9 wording phrased as "verification of your identity and eligibility to work"
+        "Employment is contingent upon verification of your identity and eligibility to work in the United States.",
+        # "clearance" of a drug screen / background check
+        "Offers are contingent on a background check and drug screen clearance.",
+        # business senses seen in live listings
+        "- Manage Integrated Solutions approvals and vetting across The Ringer podcast portfolio, triaging incoming "
+        "sponsorship requests, coordinating with the right partners, and tracking requests through resolution.",
+        "- You understand change management, including sponsorship models, adoption curves, resistance patterns, and "
+        "how to build internal champions.",
+        "- Formulate pricing and deal economics for sponsorships, tentpole packages, and multi-product bundles, "
+        "balancing revenue optimization with competitive positioning and advertiser value",
+        "- Collaborate with business stakeholders to ensure alignment and secure sponsorship for AI initiatives",
+        "Exposure to trademark matters, such as clearance, enforcement, or prosecution support, or to hardware or "
+        "consumer product compliance, is a plus.",
+        "Experience recruiting in Ireland or Portugal, including local compensation norms, notice periods, and "
+        "relocation and work authorization requirements.",
+        "Experience coordinating immigration, work authorization, relocation, or external counsel/vendor workflows.",
+        "- Coordinate active immigration, work-authorization, relocation, and business-travel cases with employees, "
+        "external counsel, vendors, and internal partners.",
+        "- 3+ years in People Operations, immigration operations, global mobility, employee lifecycle operations, or "
+        "another high-detail service environment.",
+        "Our team is building an investment account for every child born in America, in partnership with the U.S. "
+        "Treasury — one that grows with them into adulthood.",
+        "Benefits include relocation assistance and immigration support for eligible employees.",
+        "We offer visa and relocation support for international hires.",
+        "Our team represents more than 40 nationalities.",
+        "Right To Work Poster (English)",
+        "Must have a valid passport and be able to travel internationally.",
+        # physical clearances
+        "Ground clearance of at least 8 inches is required for the field vehicle.",
+        "Minimum clearance of 36 inches is required in front of the electrical panel.",
+        "Ensure a 36-inch clearance in front of all panels.",
+    ],
+)
+def test_round3_boilerplate_raises_no_flags(profile, text):
+    flags = detect_eligibility_flags({"description_text": text, "title": "Data Analyst"}, profile)
+    assert flags == [], flags
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Samsara (every listing): a plain right-to-work condition, like "must be authorized to work"
+        "All offers of employment are contingent upon an individual’s ability to secure and maintain the legal right "
+        "to work at the company and in the specified work location, if applicable.",
+        "Candidates must have the right to work in the UK.",
+        "Eligibility to Work in Singapore",
+        "ELIGIBILITY TO WORK IN SG",
+        "You must have the legal right to work in Canada.",
+    ],
+)
+def test_round3_plain_right_to_work_is_info(profile, text):
+    flags = detect_eligibility_flags({"description_text": text, "title": "Data Analyst"}, profile)
+    assert [(f.code, f.severity) for f in flags] == [("work_authorization_required", "info")], flags
+    assert flags[0].excerpt == text and flags[0].message.startswith("Review: the listing states")
+    assert not needs_review(flags)
+
+
+@pytest.mark.parametrize(
+    "sentence,codes",
+    [
+        # E2: "minimum" no longer hides a security clearance
+        ("Minimum Clearance Required: Secret", {"clearance_required"}),
+        ("Candidates must hold a minimum clearance of Secret.", {"clearance_required"}),
+        ("Clearance Level: Secret", {"clearance_required"}),
+        ("Clearance: Secret required.", {"clearance_required"}),
+        # E3: words between "sponsorship" and "is unavailable"
+        ("Sponsorship for this program is unavailable.", {"no_sponsorship"}),
+        ("Sponsorship for this team is unavailable.", {"no_sponsorship"}),
+        # E4
+        ("Candidates must be able to obtain and maintain a DoD Secret.", {"clearance_required"}),
+        ("This role requires Secret eligibility.", {"clearance_required"}),
+        ("Applicants must be U.S.-born.", {"citizenship_required"}),
+        ("Without regard to race, color, or sex we hire U.S. citizens exclusively.", {"citizenship_required"}),
+        ("This position is only open to people who will not need us to file paperwork with USCIS.", {FALLBACK}),
+        ("Candidates must be able to work for us without us filing any petitions.", {FALLBACK}),
+        ("Only candidates who are local and US work eligible.", {FALLBACK}),
+        ("Foreign-born applicants will not be considered.", {FALLBACK}),
+    ],
+)
+def test_round3_requirements_are_flagged(profile, sentence, codes):
+    # one line each: some of these are headings without a full stop
+    description = f"We build analytics products for retailers.\n{sentence}\nApply on our careers page."
+    flags = detect_eligibility_flags({"description_text": description, "title": "Data Analyst"}, profile)
+    assert needs_review(flags), f"{sentence!r} is not sent to review: {flags}"
+    by_code = {f.code: f for f in flags}
+    assert codes <= set(by_code), f"{codes - set(by_code)} not detected in {sentence!r}: {flags}"
+    for code in codes:
+        flag = by_code[code]
+        assert flag.severity == SEVERITY.get(code, "review")
+        assert flag.excerpt == sentence
+        assert "legal determination" in flag.message
+        assert not _CLAIMS.search(flag.message), flag.message
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        # the boilerplate exemptions above must not hide a requirement next to them
+        "We will never ask for your passport, but you must hold a passport from a NATO country.",
+        "Must have a valid passport issued by a NATO country and be able to travel.",
+        "Candidates must have the right to work in the UK without sponsorship.",
+        "Candidates must have the full right to work in the UK.",
+        "Candidates must have the existing right to work in the UK.",
+        "You must have the right to work in the UK; we are unable to sponsor visas.",
+        "Employment is contingent upon verification of your identity and eligibility to work, and you must not "
+        "require a visa.",
+        "Offers are contingent on a background check and drug screen clearance and an active Secret clearance.",
+        "Drug screen clearance and a Top Secret clearance are required.",
+        "Exposure to trademark matters is a plus; candidates must hold a security clearance.",
+        "Experience recruiting is a plus; candidates must hold work authorization that is not tied to a visa.",
+        "Experience coordinating immigration cases; candidates must not need a visa.",
+        "We offer visa and relocation support only for senior roles.",
+        "Benefits include immigration support, except for candidates on OPT.",
+        "Our team represents more than 40 nationalities; applicants must be EU nationals.",
+        "Sponsorship requests will not be considered.",
+        "We cannot accommodate sponsorship requests.",
+        "Executive sponsorship for this program is unavailable, and so is visa sponsorship.",
+        "Minimum Clearance Required: Top Secret with polygraph.",
+        "Applicants must be able to obtain clearance; ground clearance is irrelevant.",
+        "Must hold an active security clearance and be able to climb 20 ft ladders.",
+        "Patent attorneys with clearance preferred.",
+        "Must hold a valid passport that allows travel to Israel.",
+        "Own work authorization.",
+        "Our team has 40 nationalities, but applicants must be US citizens.",
+        "Every child born in the U.S. is a citizen, and candidates must be U.S. citizens.",
+    ],
+)
+def test_round3_exemptions_cannot_hide_a_requirement(profile, sentence):
+    flags = detect_eligibility_flags({"description_text": sentence, "title": "Data Analyst"}, profile)
+    assert needs_review(flags), f"{sentence!r} is not sent to review: {flags}"

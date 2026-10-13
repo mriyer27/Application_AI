@@ -68,14 +68,14 @@ questions on application forms are always routed to you (CLAUDE.md rule 2).
 
 | Code | Severity | Triggered by (examples) |
 |---|---|---|
-| `no_sponsorship` | review | "will not sponsor", "not in a position to sponsor", "unable to sponsor / support visa applications", "no visa sponsorship", "no visa support", "sponsorship will not be provided", "visas are not sponsored", "does not qualify for sponsorship", "not eligible for sponsorship", "without (the need for) sponsorship / an H-1B visa", "must not require sponsorship", "must not need assistance with work authorization", "without our support for immigration paperwork", "authorized to work … for any employer", "work for any employer without restriction", "unrestricted / permanent / lifetime work authorization or right to work", "work authorization that does not expire"; visa wording (H-1B, OPT, CPT, EAD, F-1, J-1, student visas, employment-based immigration, "a petition on their behalf", misspelled "sponser ship") next to an exclusion: "OPT/CPT candidates will not be considered", "F-1 students are not eligible", "not open to candidates on student visas", "… are excluded"; Spanish "no ofrecemos patrocinio" |
-| `citizenship_required` | blocker | "U.S. citizen", "US citizenship required", "must be a citizen", "citizen of the United States", "citizens only", "U.S. national(s)", "citizen or national", "non-U.S. citizens need not apply", "valid U.S. passport", "must be a USC" / "USC/GC", "born in the United States", "natural-born", "Americans only"; Spanish "se requiere ciudadanía estadounidense" |
+| `no_sponsorship` | review | "will not sponsor", "not in a position to sponsor", "unable to sponsor / support visa applications", "no visa sponsorship", "no visa support", "sponsorship will not be provided", "sponsorship (for this program) is unavailable", "visas are not sponsored", "does not qualify for sponsorship", "not eligible for sponsorship", "without (the need for) sponsorship / an H-1B visa", "must not require sponsorship", "must not need assistance with work authorization", "without our support for immigration paperwork", "authorized to work … for any employer", "work for any employer without restriction", "unrestricted / permanent / lifetime work authorization or right to work", "work authorization that does not expire"; visa wording (H-1B, OPT, CPT, EAD, F-1, J-1, student visas, employment-based immigration, "a petition on their behalf", misspelled "sponser ship") next to an exclusion: "OPT/CPT candidates will not be considered", "F-1 students are not eligible", "not open to candidates on student visas", "… are excluded"; Spanish "no ofrecemos patrocinio" |
+| `citizenship_required` | blocker | "U.S. citizen", "US citizenship required", "must be a citizen", "citizen of the United States", "citizens only", "U.S. national(s)", "citizen or national", "non-U.S. citizens need not apply", "valid U.S. passport", "must be a USC" / "USC/GC", "born in the United States", "U.S.-born", "natural-born", "Americans only"; Spanish "se requiere ciudadanía estadounidense" |
 | `permanent_residency_required` | blocker | "green card", "permanent resident(ce)", "LPR", "GC holders" (but not "green card sponsorship") |
-| `clearance_required` | blocker | "security clearance", "TS/SCI", "(top) secret clearance", "active Secret / TS", "Top Secret", "Public Trust", "position of public trust", "polygraph", "full scope poly", "clearable", "clearance-eligible", "eligible for a DoD clearance", "obtain clearance", "federal / government background or security investigation", "Tier 3 / Tier 5 investigation", "SF-86", "e-QIP", "access to classified information", "DOE Q / L access authorization", "cleared candidates", "candidates with no active clearance will not be considered", "not required, but you must be able to obtain / get one" (but not "no clearance required" or "customs clearance") |
+| `clearance_required` | blocker | "security clearance", "TS/SCI", "(top) secret clearance", "active Secret / TS", "DoD Secret", "Secret eligibility", "Clearance Level: Secret", "minimum clearance of Secret", "Top Secret", "Public Trust", "position of public trust", "polygraph", "full scope poly", "clearable", "clearance-eligible", "eligible for a DoD clearance", "obtain clearance", "federal / government background or security investigation", "Tier 3 / Tier 5 investigation", "SF-86", "e-QIP", "access to classified information", "DOE Q / L access authorization", "cleared candidates", "candidates with no active clearance will not be considered", "not required, but you must be able to obtain / get one" (but not "no clearance required", "customs clearance", "drug screen clearance" or "ground clearance of 8 inches"; a Secret / TS / SCI / DoD / polygraph / classified cue in the sentence always counts as a security clearance) |
 | `export_control` | blocker | "ITAR", "EAR" (uppercase), "export control(led)", "export-restricted", "export regulations", "deemed export", "U.S. person", "22 CFR …" / "15 CFR …", "nationals of embargoed / sanctioned countries" |
-| `work_authorization_required` | info | "must be (currently) authorized / eligible to work", "authorized to work in the United States", "right to work in the US", "work authorization required". Not raised for Form I-9 / E-Verify onboarding wording, and dropped when the same sentence already raises `no_sponsorship`. Info only: it does not move a job to `needs_review`. |
+| `work_authorization_required` | info | "must be (currently) authorized / eligible to work", "authorized to work in the United States", "(legal) right to work (in the UK / at the company)", "eligibility to work in Singapore", "work authorization required". Not raised for Form I-9 / E-Verify onboarding wording, a "Right to Work Poster", or a qualified right ("full / existing / independent right to work", which goes to the fallback), and dropped when the same sentence already raises `no_sponsorship`. Info only: it does not move a job to `needs_review`. |
 | `sponsorship_available` | info | "visa sponsorship available / offered", "we sponsor", "will sponsor", "offer green card / visa sponsorship" (skipped when its clause contains a negation) |
-| `eligibility_statement` | review | **Fallback.** Any sentence that *mentions* an eligibility topic that no specific rule explained: sponsorship, visas (H-1B, OPT, …), immigration, work authorization, citizenship, nationality, place of birth, a passport, permanent residency / green card, a security clearance, a polygraph, classified information, a background / suitability investigation, Public Trust, export control, ITAR / EAR, U.S. person status, embargoes / sanctions tied to nationality (English, plus Spanish *ciudadanía*, *patrocinio*, *nacionalidad*). Message: "Review: the listing mentions <topic> — read the exact wording." See below for what it skips. |
+| `eligibility_statement` | review | **Fallback.** Any sentence that *mentions* an eligibility topic that no specific rule explained: sponsorship, visas (H-1B, OPT, …), immigration (incl. USCIS, "without us filing any petitions"), work authorization (incl. "work eligible"), citizenship, nationality, place of birth (incl. "foreign-born"), a passport, permanent residency / green card, a security clearance, a polygraph, classified information, a background / suitability investigation, Public Trust, export control, ITAR / EAR, U.S. person status, embargoes / sanctions tied to nationality (English, plus Spanish *ciudadanía*, *patrocinio*, *nacionalidad*). Message: "Review: the listing mentions <topic> — read the exact wording." See below for what it skips. |
 | `graduation_timing` | review | A graduation or start-date deadline earlier than the **expected graduation in your profile** (`education[].expected: true`, `end`): "December 2026 graduates", "graduated by August 2026", "start date in 2026", "must have completed a Master's degree" (when yours is still expected). "2027 or later", "since 2015" and similar lower bounds are ignored. Start dates are ignored for internships. |
 
 **Exceptions are clause-scoped.** A negation such as "not required" or "need
@@ -106,7 +106,8 @@ eligibility topic is flagged for review unless one of these explains it:
   requirement or exclusion right after it (", applicants on H-1B are excluded"
   is flagged), or the fixed wording "we will not consider your immigration
   status in hiring decisions";
-* it is Form I-9 / E-Verify onboarding wording (work-authorization words only);
+* it is Form I-9 / E-Verify onboarding wording, including "verification of your
+  identity and eligibility to work" (work-authorization words only);
 * the **whole** sentence only says the requirement does not apply ("No security
   clearance required.", "Security clearance: not required.", "U.S. citizenship
   is not required for this role."). This applies to citizenship, residency,
@@ -120,7 +121,22 @@ eligibility topic is flagged for review unless one of these explains it:
   laboratories / security", "citizen developers", "citizen services", "corporate
   citizenship", "executive sponsorship", "sponsorship deals", "business
   sponsors", "maintain public trust in …", OFAC / sanctions as job duties (no
-  nationality wording in the sentence), "classified as exempt".
+  nationality wording in the sentence), "classified as exempt", "incoming
+  sponsorship requests", "sponsorship models", "deal economics for
+  sponsorships, tentpole packages", "sponsorship for AI initiatives", "trademark
+  matters, such as clearance", "drug screen clearance", physical clearances
+  ("ground clearance of at least 8 inches"), an anti-scam notice ("we will never
+  ask for your … passport"), "a valid passport" needed only to travel (no country
+  or nationality named), "every child born in America", "more than 40
+  nationalities", "Right To Work Poster", a benefit ("relocation assistance and
+  immigration support", "visa and relocation support"), and the role's own
+  HR / immigration-operations duties ("Experience recruiting … relocation and
+  work authorization requirements", "Coordinate active immigration … cases",
+  "immigration and mobility", "immigration operations"). These business-sense
+  exceptions for duties, benefits, nationality counts and births do not apply
+  when the sentence also has condition words (*must, only, required, not,
+  except, unless, candidates, applicants, …*), and no clearance exception applies
+  when the sentence names Secret / TS / SCI / DoD / a polygraph.
 
 Flagging is fail-safe: a fallback flag only moves the job to `needs_review` and
 never blocks the shortlist.

@@ -22,13 +22,19 @@ clearance, polygraph, classified access, export control, U.S. person) that no
 specific rule explained, unless the mention is an item of an equal-opportunity
 list, a "we sponsor" statement, Form I-9 onboarding wording, a whole-sentence
 "X is not required", or a non-eligibility sense of the word ("Visa and
-Mastercard", "customs clearance", "U.S. national accounts").
+Mastercard", "customs clearance", "U.S. national accounts", an anti-scam "we will
+never ask for your passport", "visa and relocation support" offered as a
+benefit, the role's own HR / immigration-operations duties). The business-sense
+exceptions never apply to a sentence with condition words (*must, only, not,
+except, candidates, ...*), and no clearance exception applies when the sentence
+names Secret / TS / SCI / DoD / a polygraph.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from job_agent.models import EligibilityFlag
@@ -99,7 +105,7 @@ _IMM = (
     r"|(?-i:\b(?:F|J|H|L|O)-1[AB]?\b|\bH-4\b|\bE-3\b)|\b[fj]-?1\s+(?:visa|student|status)\w*"
     r"|\btn\s+(?:visa|status)\b"
     r"|\bpetitions?\s+(?:[\w\-]+\s+){0,3}?on\s+(?:[\w’']+\s+){0,2}?behalf\b|\bi-?129\b|\bi-?140\b"
-    r"|\blabor\s+certification\b"
+    r"|\blabor\s+certification\b|\buscis\b"
 )
 #: What a candidate might need help with to be employable ("assistance with work authorization").
 _AUTH_TERMS = (
@@ -130,19 +136,39 @@ _CLEARANCE_GUARD_NEG = (
     r"\b(?:clearances?|polygraphs?)\s*[:\-–]\s*(?:not\s+required|none|n/?a)\b",
 )
 #: Requirement wording right after a match: it is a requirement, not an EEO category.
-_REQ_AFTER = re.compile(r"[^,;]{0,30}?\b(?:required|mandatory|requirement|only)\b", re.I)
-#: Word right before "clearance" that makes it a non-security clearance ("customs clearance").
+_REQ_AFTER = re.compile(r"[^,;]{0,30}?\b(?:required|mandatory|requirement|only|exclusively|solely)\b", re.I)
+#: Word right before "clearance" that makes it a non-security clearance ("customs clearance", "drug screen
+#: clearance"). Not "minimum": "Minimum Clearance Required: Secret" is a security clearance.
 _NON_SECURITY_BEFORE = re.compile(
     r"\b(?:customs|medical|regulatory|tax|fda|ceiling|credit|airspace|flight|drug|import|export|trade|legal|music|"
     r"rights|copyright|financial|height|road|check|cheque|payment|bank|title|environmental|site|land|vendor|ethics|"
     r"conflicts?|irb|editorial|sample|insurance|pharmacy|pre[\s\-]?flight|baggage|border|port|cargo|freight|"
-    r"shipments?|shipping|snow|ground|vertical|overhead|minimum|wheel)[\s\-]+$", re.I)
+    r"shipments?|shipping|snow|ground|vertical|overhead|wheel|screens?|screenings?|tests?|testing|trademarks?|"
+    r"patents?)[\s\-]+$", re.I)
+#: Words that only occur with a *security* clearance; checked before any non-security exception, so
+#: "Minimum Clearance Required: Secret" or "site clearance and an active Secret" are never excused.
+_STRONG_SECURITY_CUE = re.compile(
+    r"\b(?:top\s+secret|secret|sci|dod|polygraph|classified|public\s+trust)\b|(?-i:\b(?:TS|DOE)\b)", re.I)
+#: A physical clearance, the measurement attached to the word: "clearance of at least 8 inches", "36-inch
+#: clearance". (A number elsewhere in the sentence does not count: "clearance and climb 20 ft ladders".)
+_UNIT = r"\d[\d.,/]*\s*(?:-\s*)?(?:inch(?:es)?|in\.|ft\.?|feet|foot|mm|cm|meters?|metres?|m)(?![A-Za-z])"
+_PHYSICAL_AFTER = re.compile(
+    rf"\s*(?:of|:|-|–|=)?\s*(?:(?:at\s+least|a\s+minimum\s+of|minimum(?:\s+of)?|approximately|approx\.?|about|"
+    rf"up\s+to|no\s+less\s+than|over|under|greater\s+than|less\s+than)\s+)?{_UNIT}", re.I)
+_PHYSICAL_BEFORE = re.compile(rf"{_UNIT}\s+(?:minimum\s+|min\.?\s+|vertical\s+|overhead\s+)?$", re.I)
+#: Intellectual-property sense: "trademark matters, such as clearance, enforcement, or prosecution".
+_IP_CONTEXT_BEFORE = re.compile(
+    r"\b(?:trademarks?|patents?|copyrights?|intellectual\s+property)\b[^.;]{0,40}$", re.I)
+_IP_PROCEDURE_AFTER = re.compile(
+    r"\s*(?:,|/|and|or|&)\s*(?:or\s+|and\s+)?(?:enforcement|prosecution|registration|searches|search|filings?|"
+    r"licensing|opposition|litigation|portfolio\s+management)\b", re.I)
 _EEO_TRIGGER = re.compile(
     r"\b(?:regardless\s+of|without\s+regard\s+(?:to|for)|on\s+the\s+basis\s+of|discriminat\w*|"
     r"protected\s+(?:class|status|characteristic|categor)\w*)", re.I)
 #: Words that end an EEO list ("... without regard to race. U.S. citizenship *is required*").
 _LIST_BREAK = re.compile(
-    r"[;:]|\b(?:is|are|be|must|shall|will|requir\w*|need\w*|mandatory|only|hold|possess|but|however|although|though)\b",
+    r"[;:]|\b(?:is|are|be|must|shall|will|requir\w*|need\w*|mandatory|only|hold|possess|but|however|although|though|"
+    r"exclusive\w*|solely|hir(?:e|es|ed|ing))\b",
     re.I)
 #: Clause boundaries for the guards. "preferred but not required" stays one clause.
 _CLAUSE_BREAK = re.compile(
@@ -154,18 +180,46 @@ _AND = re.compile(r"\s+and\s+", re.I)
 _PREDICATE = re.compile(r"\b(?:required|requires?|requirement|must|mandatory|only|needed|necessary)\b", re.I)
 
 
+def _physical_clearance(sentence: str, start: int, end: int) -> bool:
+    return bool(_PHYSICAL_AFTER.match(sentence, end) or _PHYSICAL_BEFORE.search(sentence, max(0, start - 30), start))
+
+
 def _non_security_clearance(sentence: str, m: re.Match[str]) -> bool:
-    """Every "clearance" in the match is a customs / medical / ... clearance."""
-    hits = [c.start() + m.start() for c in re.finditer(r"clearances?\b", m.group(0), re.I)]
-    return bool(hits) and all(_NON_SECURITY_BEFORE.search(sentence, max(0, h - 40), h) for h in hits)
+    """Every "clearance" in the match is a customs / medical / physical ... clearance.
+
+    A security cue (Secret, TS, SCI, DoD, ...) anywhere in the sentence is checked first and wins.
+    """
+    if _STRONG_SECURITY_CUE.search(sentence):
+        return False
+    hits = [(c.start() + m.start(), c.end() + m.start())
+            for c in re.finditer(r"clearances?\b", m.group(0), re.I)]
+    return bool(hits) and all(_NON_SECURITY_BEFORE.search(sentence, max(0, s - 40), s)
+                              or _physical_clearance(sentence, s, e) for s, e in hits)
 
 
 #: Form I-9 / E-Verify onboarding boilerplate: paperwork every hire completes, not a listing condition.
 _I9_BOILERPLATE = re.compile(r"\b(?:verify|verif(?:ied|ication)|i-?9|e-?verify)\b", re.I)
+#: "Right to Work Poster", "a right-to-work state" (labour-law sense), not a condition of the listing.
+_RIGHT_TO_WORK_OTHER = re.compile(
+    r"\bright[\s\-]+to[\s\-]+work[\s\-]+(?:posters?|notices?|states?|laws?|legislation|acts?|checks?)\b", re.I)
+#: A qualified right to work is more than "must be authorized to work" ("full / existing / independent right to
+#: work"): the work_authorization_required info flag is not raised, so the fallback sends it to review.
+_QUALIFIED_RIGHT = re.compile(
+    r"\b(?:full|fully|existing|independent|own|unrestricted|unconditional|permanent|lifetime|indefinite|unlimited|"
+    r"perpetual|open[\s\-]ended|unfettered|ongoing|continuing|continuous|sponsorship[\s\-]free|non[\s\-]sponsored)"
+    r"\s+(?:(?:and\s+[\w\-]+|legal|lawful)\s+)*$", re.I)
+_RIGHT_TO_WORK = re.compile(r"\b(?:right|eligibility)\s+to\s+work\b", re.I)
 
 
-def _onboarding_paperwork(sentence: str, m: re.Match[str]) -> bool:
-    return bool(_I9_BOILERPLATE.search(sentence))
+def _work_authorization_veto(sentence: str, m: re.Match[str]) -> bool:
+    """Form I-9 onboarding paperwork, a "right to work poster", or a qualified "full right to work"."""
+    if _I9_BOILERPLATE.search(sentence) or _hr_duty(sentence):
+        return True
+    for r in _RIGHT_TO_WORK.finditer(sentence, m.start(), m.end()):
+        if _RIGHT_TO_WORK_OTHER.match(sentence, r.start()) or _QUALIFIED_RIGHT.search(
+                sentence, max(0, r.start() - 50), r.start()):
+            return True
+    return False
 
 
 RULES: tuple[_Rule, ...] = (
@@ -187,7 +241,9 @@ RULES: tuple[_Rule, ...] = (
             # "sponsorship will not be provided", "sponsorship is unavailable", "Visa sponsorship: none"
             rf"\b{_SPONSORSHIP}\s+(?:[\w\-]+\s+){{0,3}}?(?:will|can|could|shall|is|are|would|may)\s*{_NOT}\s+(?:be\s+)?"
             r"(?:provided|offered|available|possible|supported|considered|granted|extended)",
-            rf"\b{_SPONSORSHIP}\s+(?:is\s+|are\s+)?(?:not\s+|un)(?:available|offered|provided|possible|supported)",
+            # "sponsorship is unavailable", "sponsorship for this program is unavailable"
+            rf"\b{_SPONSORSHIP}\s+(?:[\w\-]+\s+){{0,3}}?(?:is\s+|are\s+)?(?:not\s+|un)"
+            r"(?:available|offered|provided|possible|supported)",
             rf"\b{_SPONSORSHIP}\s*(?:available|offered|provided)?\s*[:\-–]\s*"
             r"(?:no|none|not\s+(?:available|offered|provided))\b",
             # "visas are not sponsored", "H-1B transfers cannot be processed"
@@ -269,6 +325,7 @@ RULES: tuple[_Rule, ...] = (
             rf"\b(?:valid|current|unexpired)\s+(?:{_US}|american|united\s+states)\s+passports?\b",
             rf"\b(?:{_US}|american|united\s+states)\s+passports?\s+(?:holders?|required|is\s+required|only|mandatory)\b",
             rf"\b{_US}\s+birth\s+certificates?\b",
+            rf"(?<![Nn]on[\s\-])\b{_US}[\s\-]+born\b",
             # "USC" (U.S. citizen) in recruiter shorthand, not the university
             r"\b(?:be|are|is)\s+(?:an?\s+)?(?-i:USCs?)\b(?![\s\-]+(?:students?|graduates?|grads?|alum\w*|faculty|staff|"
             r"employees?|affiliat\w*|trojans?|campus|degree)\b)",
@@ -319,6 +376,10 @@ RULES: tuple[_Rule, ...] = (
             r"\b(?:active|current|interim)\s+(?:dod\s+)?(?:secret|ts)\b",
             r"\b(?:hold|possess)\s+(?:an?\s+)?(?:active\s+|current\s+|interim\s+)?(?:dod\s+)?secret\b",
             r"\bsecret[\s\-]level\b",
+            # "obtain and maintain a DoD Secret", "requires Secret eligibility", "Clearance Level: Secret"
+            r"\b(?:dod|(?-i:DOE))\s+(?:top\s+)?secret\b", r"\b(?:top\s+)?secret[\s\-]+eligib\w*",
+            r"\bclearances?(?:\s+(?:level|type|required))*\s*[:\-–]\s*(?:an?\s+)?(?:(?:active|current|interim|dod|us|"
+            r"u\.s\.)\s+)*(?:top\s+secret|secret|ts(?:\s*/\s*sci)?|sci|public\s+trust|(?-i:Q|L))\b",
             r"\bpublic\s+trust\s+(?:clearance|position|level|designation|background|investigation|eligib\w*|"
             r"suitability|is\s+required|required)\b",
             r"\b(?:obtain|maintain|hold|possess|active|current|pass|attain|requires?|eligib\w*\s+for)\s+"
@@ -392,10 +453,14 @@ RULES: tuple[_Rule, ...] = (
             rf"\b(?:legal\s+)?(?:right|eligibility|authori[sz]ation)\s+to\s+work\s+in\s+{_USA}",
             r"\b(?:work|employment)\s+authori[sz]ation\s+(?:\w+\s+){0,3}?(?:required|mandatory|needed)\b",
             r"\brequires?\s+(?:\w+\s+){0,2}?(?:work|employment)\s+authori[sz]ation\b",
+            # a plain "(legal) right to work (in <place>)" / "eligibility to work" condition ("must have the right to
+            # work in the UK"); "... without sponsorship" still raises no_sponsorship, which suppresses this flag
+            r"\b(?:legal\s+|lawful\s+)?(?:right|eligibility)\s+to\s+work\b(?!\s+(?:remotely|from\s+home|hybrid|"
+            r"flexibl\w*|overtime|weekends?|nights?|shifts?|evenings?|holidays?|on\s+(?:site|weekends?))\b)",
         ),
         "Review: the listing states a work-authorization requirement. Compare this with your own "
         "work-authorization situation. " + _NOT_LEGAL,
-        veto=_onboarding_paperwork,
+        veto=_work_authorization_veto,
         eeo_guard=True,
         suppressed_by=("no_sponsorship",),
     ),
@@ -431,15 +496,23 @@ class _Topic:
 
 _IMM_CONTEXT = re.compile(
     r"\b(?:visas?|immigra\w*|h-?1-?bs?|green\s+cards?|work\s+(?:authori[sz]ation|permits?)|employment[\s\-]based|"
-    r"petitions?|non[\s\-]?immigrant|authori[sz]ed\s+to\s+work|right\s+to\s+work)\b|(?-i:\b(?:OPT|CPT|EAD)\b)", re.I)
+    r"petitions?|non[\s\-]?immigrant|authori[sz]ed\s+to\s+work|right\s+to\s+work|uscis)\b|(?-i:\b(?:OPT|CPT|EAD)\b)",
+    re.I)
 _BUSINESS_SPONSORSHIP_BEFORE = re.compile(
     r"\b(?:executive|business|leadership|stakeholder|project|program|programme|event|corporate|brand|sports?|team|"
     r"community|athlete|title|media|marketing|commercial|partnership|charity|charitable|nonprofit|conference|senior|"
-    r"c-suite|management|internal|cross[\s\-]functional)(?:\s+(?:and|or|&)\s+\w+)?[\s\-]+$", re.I)
+    r"c-suite|management|internal|cross[\s\-]functional|incoming|inbound|advertis\w*|podcast)"
+    r"(?:\s+(?:and|or|&)\s+\w+)?[\s\-]+$", re.I)
 _BUSINESS_SPONSORSHIP_AFTER = re.compile(
     r"[\s\-]*(?:deals?|agreements?|contracts?|packages?|revenue|sales|activations?|assets?|opportunit\w*|programs?|"
-    r"partners?|partnerships?|inventory|rights|marketing|portfolio|proposals?|decks?|pipeline|renewals?|for\s+(?:the|our|"
-    r"this|an?)\s+(?:event|program|project|initiative|team|conference|summit))\b", re.I)
+    r"partners?|partnerships?|inventory|rights|marketing|portfolio|proposals?|decks?|pipeline|renewals?|models?|"
+    r"for\s+(?:the|our|this|an?)\s+(?:event|program|project|initiative|team|conference|summit)"
+    # "secure sponsorship for AI initiatives"
+    r"|for\s+(?:(?:the|our|this|these|its|their|an?|key|new|strategic|major)\s+)?(?:[\w\-]+\s+){0,2}?"
+    r"(?:events?|programs?|projects?|initiatives?|conferences?|summits?|efforts?|transformations?|roadmaps?)"
+    # "sponsorships, tentpole packages, and multi-product bundles"
+    r"|(?:\s*,\s*|\s+(?:and|or|&)\s+)(?:[\w\-]+\s+){0,2}?(?:packages?|bundles?|activations?|advertis\w*|placements?|"
+    r"partnerships?|promotions?|media\s+buys?))\b", re.I)
 
 
 def _business_sponsorship(sentence: str, m: re.Match[str]) -> bool:
@@ -494,14 +567,26 @@ _SECURITY_CUE = re.compile(
     r"|(?-i:\bTS\b)", re.I)
 
 
+#: "clearance of a background check and drug screen".
+_SCREENING_AFTER = re.compile(
+    r"\s+(?:of|from|through|on)\s+(?:an?\s+|the\s+|your\s+|all\s+)?(?:[\w\-]+\s+){0,2}?(?:background\s+checks?|"
+    r"drug\s+(?:screens?|screenings?|tests?)|medical\s+(?:exams?|checks?)|"
+    r"pre[\s\-]?employment\s+(?:screenings?|checks?))", re.I)
+
+
 def _non_security_clearance_word(sentence: str, m: re.Match[str]) -> bool:
-    """"customs clearance", "markdown and clearance", "clearance merchandise"."""
+    """"customs clearance", "markdown and clearance", "drug screen clearance", "trademark ... clearance"."""
+    if _STRONG_SECURITY_CUE.search(sentence):
+        return False  # "Minimum Clearance Required: Secret", "site clearance and an active TS"
     before = sentence[max(0, m.start() - 40):m.start()]
-    if _NON_SECURITY_BEFORE.search(before):
+    if (_NON_SECURITY_BEFORE.search(before) or _physical_clearance(sentence, m.start(), m.end())
+            or (_IP_CONTEXT_BEFORE.search(sentence, max(0, m.start() - 60), m.start())
+                and _IP_PROCEDURE_AFTER.match(sentence, m.end()))):
         return True
     if _SECURITY_CUE.search(sentence):
         return False
-    return bool(_RETAIL_AFTER.match(sentence, m.end()) or _RETAIL_BEFORE.search(before))
+    return bool(_RETAIL_AFTER.match(sentence, m.end()) or _RETAIL_BEFORE.search(before)
+                or _SCREENING_AFTER.match(sentence, m.end()))
 
 
 _CITIZEN_OTHER_BEFORE = re.compile(
@@ -535,9 +620,110 @@ def _sanctions_duty(sentence: str, m: re.Match[str]) -> bool:
     return not _PERSON_ORIGIN.search(sentence)
 
 
-def _sports_team(sentence: str, m: re.Match[str]) -> bool:
-    before = sentence[max(0, m.start() - 20):m.start()]
-    return bool(re.search(r"\bwashington\s+$", before, re.I))
+#: Wording that makes a sentence a condition on the candidate; the business-sense exceptions below do not apply
+#: to a sentence that has any of it ("We offer visa support only for senior roles"). Unlike ``_CONDITION`` it
+#: does not include the noun "requirements" ("relocation and work authorization requirements" as an HR duty).
+_DUTY_GUARD = re.compile(
+    r"\b(?:must|only|requir(?:e|ed|es|ing)|mandatory|not|no|never|cannot|unable|without|exclud\w*|ineligible|"
+    r"disqualif\w*|unless|except\w*|considered|restrict\w*|limited|candidates?|applicants?)\b|n['’]t\b", re.I)
+#: The role's own HR / immigration-operations duties: "Experience recruiting in Ireland ... work authorization
+#: requirements", "Coordinate active immigration ... cases".
+_DUTY_START = re.compile(
+    r"^\W*(?:(?:(?:hands[\s\-]on|prior|proven|demonstrated|deep|strong)\s+)?(?:experience|expertise|knowledge|"
+    r"familiarity|exposure|background)\s+(?:(?:with|in|of)\s+)?(?:recruit\w*|coordinat\w*|manag\w*|navigat\w*|"
+    r"handl\w*|process\w*|administ\w*|advis\w*|support\w*|hiring|sourcing|onboarding|running|owning|overseeing|"
+    r"operating|partnering)|coordinate|manage|oversee|administer|process|handle|track|run|lead|triage|support|"
+    r"partner)\b", re.I)
+#: "immigration and mobility", "immigration operations": the name of an HR function.
+_IMMIGRATION_FUNCTION_AFTER = re.compile(
+    r"[\s\-]+(?:(?:and|&)\s+(?:global\s+)?mobility|operations|ops|program\s+management|case\s*(?:load|work|"
+    r"management|tracker)s?|cases)\b", re.I)
+#: A benefit the employer offers: "relocation assistance and immigration support", "visa and relocation support".
+_SUPPORT_BENEFIT = re.compile(
+    r"\b(?:offer(?:s|ed|ing)?|provid(?:e|es|ed|ing)|includ(?:e|es|ed|ing)|benefits?|perks?)\b[^.;:]{0,60}?"
+    r"\b(?:visa|immigration)(?:\s*(?:and|&|/|,)\s*relocation)?\s+(?:support|assistance|help|services)\b", re.I)
+
+
+# Per-sentence checks are cached: they run once per topic mention, and a sentence can hold many mentions.
+@lru_cache(maxsize=256)
+def _guarded(sentence: str) -> bool:
+    return bool(_DUTY_GUARD.search(sentence))
+
+
+@lru_cache(maxsize=256)
+def _hr_duty(sentence: str) -> bool:
+    return bool(_DUTY_START.search(sentence)) and not _guarded(sentence)
+
+
+@lru_cache(maxsize=256)
+def _benefit_spans(sentence: str) -> tuple[tuple[int, int], ...]:
+    return tuple(b.span() for b in _SUPPORT_BENEFIT.finditer(sentence))
+
+
+def _support_benefit(sentence: str, m: re.Match[str]) -> bool:
+    return any(lo <= m.start() < hi for lo, hi in _benefit_spans(sentence)) and not _guarded(sentence)
+
+
+def _visa_other_sense(sentence: str, m: re.Match[str]) -> bool:
+    return _visa_brand(sentence, m) or _support_benefit(sentence, m)
+
+
+def _immigration_other_sense(sentence: str, m: re.Match[str]) -> bool:
+    """A benefit offered, the role's own immigration-operations duties, or the name of that HR function."""
+    if _guarded(sentence):
+        return False
+    if _support_benefit(sentence, m) or _hr_duty(sentence):
+        return True
+    return m.group(0).lower().startswith("immigration") and bool(_IMMIGRATION_FUNCTION_AFTER.match(sentence, m.end()))
+
+
+def _work_authorization_other_sense(sentence: str, m: re.Match[str]) -> bool:
+    """"Right To Work Poster", "a right-to-work state", or the role's own HR duties."""
+    return bool(_RIGHT_TO_WORK_OTHER.match(sentence, m.start())) or _hr_duty(sentence)
+
+
+_COUNT_BEFORE = re.compile(
+    r"(?:\b\d[\d,]*\+?|\b(?:many|multiple|several|dozens\s+of|numerous|various))\s+(?:different\s+)?$", re.I)
+
+
+def _other_nationality_sense(sentence: str, m: re.Match[str]) -> bool:
+    """"the Washington Nationals"; "more than 40 nationalities" (describing the team)."""
+    before = sentence[max(0, m.start() - 30):m.start()]
+    if re.search(r"\bwashington\s+$", before, re.I):
+        return True
+    return (m.group(0).lower() == "nationalities" and bool(_COUNT_BEFORE.search(before))
+            and not _guarded(sentence))
+
+
+def _other_birth_sense(sentence: str, m: re.Match[str]) -> bool:
+    """"an investment account for every child born in America"."""
+    before = sentence[max(0, m.start() - 30):m.start()]
+    return (m.group(0).lower().startswith("born")
+            and bool(re.search(r"\b(?:child|children|baby|babies|kids?|newborns?|infants?)\s+$", before, re.I))
+            and not _guarded(sentence))
+
+
+#: Anti-scam notices: "we will never ask for your bank details, Social Security number, or passport".
+_NEVER_ASK = re.compile(
+    r"(?:\b(?:never|not)|n['’]t)\s+(?:\w+\s+){0,2}?(?:ask|request|collect)\w*\s+(?:you\s+)?(?:for|about)\b", re.I)
+_PLAIN_PASSPORT_BEFORE = re.compile(
+    r"\b(?:have|has|hold|holds|possess|carry|with)\s+(?:an?\s+)?(?:(?:valid|current|unexpired|active)\s+)?$", re.I)
+#: Any word that ties the passport to a country or nationality keeps the mention.
+_PASSPORT_ORIGIN = re.compile(
+    r"\b(?:from|issued|countr\w*|nations?|nationals?|nationality|citizen\w*|nato|eu|domestic|foreign|american|"
+    r"united|state\s+department|allow\w*|permit\w*|enabl\w*|entitl\w*|without|visa\w*)\b"
+    r"|(?-i:\bU\.?\s?S\.?(?:A\.?)?(?![A-Za-z]))", re.I)
+
+
+def _other_passport_sense(sentence: str, m: re.Match[str]) -> bool:
+    """An anti-scam "we will never ask for your passport", or "a valid passport" needed only to travel."""
+    last = None
+    for last in _NEVER_ASK.finditer(sentence, 0, m.start()):
+        pass
+    if last is not None and m.start() - last.end() <= 150 and not _LIST_BREAK.search(sentence, last.end(), m.start()):
+        return True
+    return (bool(_PLAIN_PASSPORT_BEFORE.search(sentence, max(0, m.start() - 40), m.start()))
+            and bool(re.search(r"\btravel\w*", sentence, re.I)) and not _PASSPORT_ORIGIN.search(sentence))
 
 
 _TOPICS: tuple[_Topic, ...] = (
@@ -552,14 +738,18 @@ _TOPICS: tuple[_Topic, ...] = (
     _Topic("visas", "work", _rx(
         r"\bvisas?\b", r"\bh-?1-?bs?\b", r"(?-i:\b(?:OPT|CPT|EAD)\b)", r"\bstem[\s\-]opt\b",
         r"(?-i:\b(?:F|J|H|L|O)-1[AB]?\b|\bH-4\b|\bE-3\b)", r"\btn\s+(?:visa|status)\b",
-    ), _visa_brand),
+    ), _visa_other_sense),
     _Topic("immigration", "work", _rx(
         r"\bimmigra\w*", r"\bnon[\s\-]?immigrants?\b", r"\bi-?129\b", r"\bi-?140\b", r"\bi-?485\b",
         r"\blabor\s+certification\b", r"\bperm\s+(?:process|labor|application|filing)\b",
-        r"\bpetitions?\s+(?:[\w\-]+\s+){0,3}?on\s+(?:[\w’']+\s+){0,2}?behalf\b",
-    )),
+        r"\bpetitions?\s+(?:[\w\-]+\s+){0,3}?on\s+(?:[\w’']+\s+){0,2}?behalf\b", r"\buscis\b",
+        # "able to work for us without us filing any petitions"
+        r"(?:\b(?:without|not|never|no)\b|n['’]t\b)[^.;]{0,40}?\bfil(?:e|es|ed|ing)\s+(?:[\w\-]+\s+){0,2}?"
+        r"petitions?\b",
+    ), _immigration_other_sense),
     _Topic("work authorization", "work", _rx(
         r"\b(?:work|employment)\s+(?:authori[sz]ation|permits?|eligibility)\b", r"\bwork\s+rights\b",
+        r"\bwork[\s\-]+eligible\b",
         r"\bright\s+to\s+(?:live\s+and\s+)?work\b",
         r"\b(?:authori[sz]ed|eligible|permitted|entitled|legally\s+(?:able|allowed|permitted))\s+to\s+(?:legally\s+)?"
         r"(?:work|be\s+employed|accept\s+employment)\b(?!\s+(?:overtime|remotely|from\s+home|hybrid|flexibl\w*|"
@@ -569,7 +759,7 @@ _TOPICS: tuple[_Topic, ...] = (
         r"\bemployab\w*\s+in\b", r"\b(?:legal|lawful)\s+(?:right|status|permission)\s+to\s+(?:work|remain|reside|stay)\b",
         r"\b(?:legal|lawful|immigration)\s+status\b",
         r"\bpermiso\s+de\s+trabajo\b", r"\bautorizaci[oó]n\s+(?:de|para)\s+trabaj\w*",
-    )),
+    ), _work_authorization_other_sense),
     _Topic("permanent residency", "residency", _rx(
         r"\bgreen[\s\-]?cards?\b", r"\bpermanent\s+residen\w*", r"(?-i:\bLPRs?\b)",
         r"(?-i:\bGCs?\b)\s*(?:holders?|only|required|/|or)", r"\bresidencia\s+permanente\b",
@@ -581,12 +771,13 @@ _TOPICS: tuple[_Topic, ...] = (
         r"\b(?:foreign|dual|third[\s\-]country|non[\s\-]?u\.?s\.?|united\s+states|american)\s+nationals?\b",
         rf"\b{_US}\s+national\b(?=\s*(?:$|[.,;:)!?]|(?:or|and|only|status)\b))",
         r"\bnational\s+of\b", r"\bnationals\b", r"\bamericans?\s+only\b", r"\bonly\s+americans\b",
-    ), _sports_team),
+    ), _other_nationality_sense),
     _Topic("place of birth", "citizenship", _rx(
         r"\b(?:place|country)\s+of\s+birth\b", r"\bbirthplace\b", r"\b(?:native|natural)[\s\-]born\b",
-        rf"\bborn\s+in\s+{_USA}\b", r"\bbirth\s+certificates?\b",
-    )),
-    _Topic("a passport", "citizenship", _rx(r"\bpassports?\b")),
+        rf"\bborn\s+in\s+{_USA}\b", r"\bbirth\s+certificates?\b", rf"\b{_US}[\s\-]+born\b",
+        r"\bforeign[\s\-]+born\b",
+    ), _other_birth_sense),
+    _Topic("a passport", "citizenship", _rx(r"\bpassports?\b"), _other_passport_sense),
     _Topic("a security clearance", "clearance", _rx(
         r"\bclearances?\b", r"\bclearable\b",
         r"\bcleared\s+(?:candidates?|professionals?|personnel|individuals?|applicants?|engineers?|analysts?|staff)\b",
@@ -642,6 +833,9 @@ _EEO_STATUS = _rx(
 _ONBOARDING = _rx(
     r"\b(?:form\s+)?i-?9\b", r"\be-?verify\b", r"\bemployment\s+eligibility\s+verification\b",
     r"\bverify\s+(?:your\s+|their\s+|his\s+or\s+her\s+)?(?:identity\s+and\s+)?(?:employment\s+)?eligibility\s+to\s+work\b",
+    # "contingent upon verification of your identity and eligibility to work in the United States"
+    r"\bverification\s+of\s+(?:your\s+|their\s+|his\s+or\s+her\s+|the\s+)?(?:identity\s+and\s+)?"
+    r"(?:(?:your|their)\s+)?(?:employment\s+)?eligibility\s+to\s+work\b",
 )
 #: A whole sentence that only says "X is not required" ("No security clearance required.").
 _SUBJ_WORD = (r"(?!(?:must|only|required?|requires|requirement|need\w*|but|however|unless|except|without|if|"
